@@ -1,0 +1,84 @@
+# ─── OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editors / IDEs ─────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vs/
+*.user
+*.suo
+
+# ─── Go (server/) ───────────────────────────────────────────────────────
+# Compiled binaries
+server/bin/
+server/dist/
+server/cuebooth-server
+server/cuebooth-server.exe
+# Test/coverage output
+*.test
+*.out
+coverage.html
+# Go workspace files
+go.work.sum
+# vendor/ — kept by default; uncomment to exclude
+# server/vendor/
+
+# ─── .NET / C# (sidecar/, old-reference/) ───────────────────────────────
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.pdb
+*.dll
+*.exe
+*.msi
+*.cache
+*.vspscc
+*.vssscc
+project.lock.json
+project.fragment.lock.json
+artifacts/
+StyleCopReport.xml
+*.nupkg
+*.snupkg
+# ─── Flutter / Dart (client/) ───────────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+client/build/
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+# Generated / platform build artifacts
+client/android/.gradle/
+client/android/local.properties
+client/ios/Pods/
+client/ios/.symlinks/
+client/macos/Pods/
+client/linux/build/
+client/windows/build/
+
+# ─── Secrets / local config ─────────────────────────────────────────────
+.env
+.env.*
+*.local.toml
+*.local.yaml
+*.local.json
+# CueBooth runtime config that contains site-specific identifiers
+server/configs/cuebooth.local.toml
+
+# ─── Site-specific / personal material ──────────────────────────────────
+# private/ holds the original planning notes, the reference deployment's
+# runbook + Companion + OBS configs, and the earlier C# prototype. None
+# of it belongs in the public repo. Anonymized samples derived from it
+# may later be checked into docs/.
+private/
