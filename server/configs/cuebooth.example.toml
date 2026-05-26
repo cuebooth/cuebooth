@@ -1,0 +1,43 @@
+# CueBooth server configuration — example
+#
+# Copy to cuebooth.toml and adjust for your deployment.
+# This file documents the schema; later phases add sections for OSC, VISCA,
+# OBS WebSocket, HID, and preset mappings.
+
+[server]
+# Address the WebSocket API binds to. Use 0.0.0.0 to accept connections
+# from any interface (LAN, Tailscale). Use 127.0.0.1 for local-only.
+listen = "0.0.0.0:7878"
+
+[companion]
+# Bitfocus Companion's HTTP API. Typically localhost since Companion
+# runs on the same production PC.
+base_url = "http://localhost:8000"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Future sections (sketched here, not yet wired):
+#
+# [mixer]
+#   host = "192.0.2.10"
+#   port = 10024
+#
+# [cameras.main]
+#   host = "192.0.2.20"
+#   visca_port = 1259
+#
+# [obs]
+#   host = "127.0.0.1"
+#   port = 4455
+#   password = "..."  # consider env var override
+#
+# [presets.camera.choir]
+#   companion_button = "1/3/2"
+#
+# [presets.scene.camera-with-slides]
+#   companion_button = "7/0/2"
+#
+# [presets.audio.mute.non-presenter]
+#   companion_button = "4/1/1"
+#   # or, equivalently:
+#   # osc_command = "/dca/1/on"
+#   # osc_value   = 0
