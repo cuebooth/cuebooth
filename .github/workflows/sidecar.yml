@@ -1,0 +1,33 @@
+name: sidecar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar.yml'
+  pull_request:
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar.yml'
+
+defaults:
+  run:
+    working-directory: sidecar
+
+jobs:
+  build:
+    name: build (windows)
+    # The sidecar's TargetFramework is net*-windows because Office COM
+    # interop is Windows-only. Build on a Windows runner so the toolchain
+    # is consistent with how the binary will ultimately ship.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: dotnet restore
+        run: dotnet restore
+      - name: dotnet build
+        run: dotnet build --configuration Release --no-restore
