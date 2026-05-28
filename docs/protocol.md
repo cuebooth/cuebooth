@@ -7,20 +7,20 @@
 
 This document is the normative spec for the wire protocol between a CueBooth client (typically the Flutter app) and the cuebooth-server (the Go orchestrator). Server and client implementations should be developed against this spec rather than against each other.
 
-The design rationale is in [design.md](design.md) §3.5. This document fills in the details that §3.5 only sketches.
+The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*. This document fills in the details that §3.6 only sketches.
 
 ---
 
 ## 1. Connection lifecycle
 
 1. Client opens a WebSocket to `ws://<host>:<port>/ws`.
-2. Server immediately sends a `hello` frame. Clients MUST receive a `hello` before sending any commands; servers MUST send it within 500 ms of accepting the socket.
+2. Server immediately sends a `hello` frame. Clients MUST NOT send any frame on `/ws` (`cmd`, `subscribe`/`unsubscribe`, `get_state`, or `ping`) until they have received `hello`; servers MUST send it within 500 ms of accepting the socket.
 3. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
 4. Either side may close at any time. Clients SHOULD reconnect with exponential backoff (1s → 30s cap).
 
 ### Authentication
 
-v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + Tailscale per [design.md](design.md) §3.6). A future revision will add a token handshake; that's out of scope for v1.
+v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + Tailscale per [design.md](design.md) §3.7 *Remote Access*). A future revision will add a token handshake; that's out of scope for v1.
 
 ### Versioning
 
@@ -57,7 +57,7 @@ Field naming convention: `snake_case`.
 
 ### `cmd` — execute an action
 
-A client request to mutate state. The server executes the action (via Companion, OSC, VISCA, etc. as appropriate) and the resulting state is broadcast in the next `state` or `state-delta` frame.
+A client request to mutate state. The server executes the action (via Companion, OSC, VISCA, etc. as appropriate). An accepted `cmd` is always `ack`'d, and — if it changed modeled state — the change is broadcast in the next `state` or `state-delta` frame. Commands that produce no modeled state change (e.g. `power`/`automation` targets, or a no-op `confirm_pending`/`cancel_pending`) are `ack`'d with no following state frame, so clients MUST NOT block waiting for a delta to consider a command done.
 
 ```json
 {
@@ -142,16 +142,16 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
   "rev": 142,
   "audio": {
     "channels": {
-      "presenter-lapel": { "mute": false, "fader": -6.2, "gain": 32 },
-      "podium":          { "mute": true,  "fader": -8.0, "gain": 28 }
+      "presenter-lapel": { "mute": false, "level_db": -6.2, "gain_db": 32.0 },
+      "podium":          { "mute": true,  "level_db": -8.0, "gain_db": 28.0 }
     },
     "dca": {
-      "non-presenter": { "mute": false, "fader": 0.0 },
-      "choir":         { "mute": true,  "fader": -3.0 }
+      "non-presenter": { "mute": false, "level_db": 0.0 },
+      "choir":         { "mute": true,  "level_db": -3.0 }
     }
   },
   "camera": {
-    "main": { "preset": "choir", "pan": 128, "tilt": 45, "zoom": 200 }
+    "main": { "preset": "choir", "pan": -0.25, "tilt": 0.10, "zoom": 0.40 }
   },
   "obs": {
     "scene": "camera-with-slides",
@@ -172,7 +172,9 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
 }
 ```
 
-`rev` is a monotonically increasing revision number assigned by the server. It increments on every state change. Clients use it to order updates and detect dropped frames.
+`rev` is a monotonically increasing revision number assigned by the server. It increments on every state change. Clients use it to order updates and detect dropped frames. Every `state` snapshot (including those returned by `get_state` or a subscription change) carries the current `rev`; clients resume gap detection from that value.
+
+Camera `pan`/`tilt` are absolute normalized positions in −1.0..1.0 and `zoom` in 0.0..1.0 — the same scale as the `position` command (see [§5](#5-actions-catalog)), so a client can read state and command the camera back to it. The server maps these to/from device-native units (e.g. VISCA raw) per camera configuration.
 
 ### `state-delta` — partial update
 
@@ -202,7 +204,7 @@ If a client observes a `rev` gap (e.g. `rev=143` arrives after `rev=141` with no
 
 ### `ack` / `nak` — command result
 
-Confirms a `cmd` was accepted (`ack`) or rejected (`nak`). Sent before the resulting `state-delta`.
+Confirms a `cmd` was accepted (`ack`) or rejected (`nak`). An `ack` is sent before the resulting `state-delta`, **if any** — some accepted commands produce no modeled state change and are never followed by a delta.
 
 ```json
 { "type": "ack", "id": "c123" }
@@ -263,10 +265,11 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `action` | `value` | Notes |
 |---|---|---|
 | `preset` | string | **(v1)** Recall a named preset. |
-| `pan_tilt` | `{ pan: -1.0..1.0, tilt: -1.0..1.0 }` | Continuous joystick input. Each frame replaces the previous. `{pan:0,tilt:0}` is stop. |
-| `zoom` | float `-1.0..1.0` | Continuous zoom; positive = tele, negative = wide. `0` is stop. |
+| `position` | `{ pan?: -1.0..1.0, tilt?: -1.0..1.0, zoom?: 0.0..1.0 }` | **(v1)** **Absolute** move to a normalized position. Any subset of axes may be given. Same scale as `state.camera.<id>`, so a client can read state and command back to it. |
+| `pan_tilt` | `{ pan: -1.0..1.0, tilt: -1.0..1.0 }` | **Velocity** (rate), not position. Continuous joystick input; each frame replaces the previous. `{pan:0,tilt:0}` is stop. |
+| `zoom` | float `-1.0..1.0` | **Velocity** (rate). Continuous zoom; positive = tele, negative = wide. `0` is stop. |
 
-`pan_tilt` and `zoom` SHOULD be sent at 30–60 Hz while the joystick/slider is active and a final `0` on release.
+`pan_tilt` and `zoom` carry **velocity** for smooth joystick control and SHOULD be sent at 30–60 Hz while the joystick/slider is active, with a final `0` on release. `position` carries an **absolute** normalized target and is how a client returns the camera to a known spot reliably (velocity moves can't). The two are distinct actions even though `pan_tilt` and `position` share the `pan`/`tilt` value range — one is a rate, the other a target. State reports absolute position (see §4); the server maps normalized values to/from device-native units per camera config.
 
 ### `target: audio`
 
@@ -278,7 +281,7 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `apply_profile` | `{ id: string, profile: string }` | |
 | `dca_member` | `{ dca: string, channel: string, member: bool }` | Manage DCA membership (rare). |
 
-Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). `dca_member` is the intentional exception: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed).
+Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). Channel and DCA identifiers share a single namespace — a deployment MUST NOT reuse a name for both — so `id` resolves unambiguously against channels and DCAs together. `dca_member` is the intentional exception to the single-`id` shape: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed).
 
 ### `target: scene`
 
@@ -343,6 +346,8 @@ A separate WebSocket at `/ws/meters` carries high-frequency meter data so the ma
 ```
 
 Values are dBFS. Channels/buses present in the frame are exactly those marked visible by server config (CB-024).
+
+The `channels` map keys are audio identifiers from the shared channel/DCA namespace, so a metered point may be a physical channel *or* a DCA (e.g. `choir` above is a DCA in the `state` model, not a channel). `buses` are output mix buses (e.g. the stream bus and main L/R) that are metered but not individually represented in the v1 `state` model.
 
 `ts_ms` is the server's wall-clock time in Unix epoch milliseconds (UTC) at the moment the frame was sampled. It is advisory — useful for ordering and for correlating meter frames with logged events — and is not a monotonic clock, so it MAY jump on NTP adjustment. Clients MUST NOT assume a fixed interval between successive `ts_ms` values (see backpressure above).
 

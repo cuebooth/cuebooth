@@ -265,7 +265,7 @@ The automation brain. When a slide change is detected:
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
 5. Queue deferred actions and signal the client (and/or clicker).
 
-### 3.5 Slide Rule Format (Draft)
+### 3.4 Slide Rule Format (Draft)
 
 Rules are embedded in PowerPoint slide comments (or notes). Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
 
@@ -309,7 +309,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 
-### 3.4 Client Application (Flutter)
+### 3.5 Client Application (Flutter)
 
 A single app that consolidates:
 - Companion-style button grid (camera presets, mute toggles, scene switches).
@@ -324,7 +324,7 @@ A single app that consolidates:
 
 **Framework:** Flutter (Dart). Compiles to native binaries on all targets — no bridge, no JS runtime. Desktop support (Windows, macOS, Linux) is first-party and stable. Web output uses WASM/Canvas (heavier than typical web apps, but fine for a control surface — not a public site). The widget composition model and reactive state management map well to a real-time control surface with meters, faders, and live video.
 
-### 3.5 Communication Protocol
+### 3.6 Communication Protocol
 
 Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates.
 
@@ -350,7 +350,7 @@ Client ↔ Server communication is over WebSocket with JSON messages. The server
 
 Audio meters are sent at a higher frequency (~10 Hz) on a separate WebSocket channel or as a distinct message type to avoid flooding the main state channel.
 
-### 3.6 Remote Access
+### 3.7 Remote Access
 
 The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 - On the local network: direct connection.
