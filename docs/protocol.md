@@ -16,7 +16,7 @@ The design rationale is in [design.md](design.md) §3.5. This document fills in 
 1. Client opens a WebSocket to `ws://<host>:<port>/ws`.
 2. Server immediately sends a `hello` frame. Clients MUST receive a `hello` before sending any commands; servers MUST send it within 500 ms of accepting the socket.
 3. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
-4. Either side may close at any time. Clients reconnect with exponential backoff (1s → 30s cap) is the recommended pattern.
+4. Either side may close at any time. Clients SHOULD reconnect with exponential backoff (1s → 30s cap).
 
 ### Authentication
 
@@ -47,7 +47,7 @@ Every frame is a single JSON object with a `type` field that determines the rest
 { "type": "<message-type>", ... }
 ```
 
-Unknown `type` values MUST be ignored (forwards compatibility). Malformed JSON MUST result in a connection close (code 1003, "Unsupported Data"). Servers SHOULD log such events for debugging.
+Unknown `type` values MUST be ignored (forwards compatibility). Malformed JSON MUST result in a connection close (code 1007, "Invalid frame payload data"). Servers SHOULD log such events for debugging.
 
 Field naming convention: `snake_case`.
 
@@ -80,6 +80,8 @@ A client request to mutate state. The server executes the action (via Companion,
 ### `subscribe` / `unsubscribe`
 
 Opt in or out of state-update streams. v1 supports subscribing to topics; the default subscription is everything except meters (which require the `/ws/meters` endpoint).
+
+The valid v1 topics are: `audio`, `camera`, `obs`, `slides`, `stream`. (Meters are not a topic — they have their own `/ws/meters` endpoint.) Subscribing to or unsubscribing from any other topic string is a protocol violation and yields an `error` with code `unknown_topic`. New topics MAY be added in minor versions.
 
 ```json
 { "type": "subscribe",   "topics": ["audio", "camera", "obs", "slides"] }
@@ -227,6 +229,8 @@ After sending `error`, the server MAY close the connection.
 
 Per-`target` action names and `value` shapes. This list grows as phases land; v1.0 ships with the subset marked **(v1)**.
 
+Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd`; servers MUST also accept an explicit `null` as equivalent. (`none` is shorthand for "no payload", not a JSON value.)
+
 ### `target: camera`
 
 | `action` | `value` | Notes |
@@ -331,6 +335,7 @@ Strings used in `nak.error.code` and `error.code`. Open-ended — implementation
 | `protocol` | Frame violated the wire protocol (wrong order, malformed envelope) |
 | `unknown_target` | `cmd.target` not recognized |
 | `unknown_action` | `cmd.target` is recognized but `cmd.action` is not |
+| `unknown_topic` | `subscribe`/`unsubscribe` named a topic not in the valid set |
 | `unknown_preset` | Referenced preset name not in server config |
 | `unknown_channel` | Referenced audio channel/DCA not in server config |
 | `device_unavailable` | Downstream device (mixer, camera, OBS, Companion) not reachable |
