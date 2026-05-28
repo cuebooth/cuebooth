@@ -265,7 +265,7 @@ The automation brain. When a slide change is detected:
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
 5. Queue deferred actions and signal the client (and/or clicker).
 
-### 3.5 Slide Rule Format (Draft)
+### 3.4 Slide Rule Format (Draft)
 
 Rules are embedded in PowerPoint slide comments (or notes). Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
 
@@ -309,7 +309,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 
-### 3.4 Client Application (Flutter)
+### 3.5 Client Application (Flutter)
 
 A single app that consolidates:
 - Companion-style button grid (camera presets, mute toggles, scene switches).
@@ -324,33 +324,34 @@ A single app that consolidates:
 
 **Framework:** Flutter (Dart). Compiles to native binaries on all targets — no bridge, no JS runtime. Desktop support (Windows, macOS, Linux) is first-party and stable. Web output uses WASM/Canvas (heavier than typical web apps, but fine for a control surface — not a public site). The widget composition model and reactive state management map well to a real-time control surface with meters, faders, and live video.
 
-### 3.5 Communication Protocol
+### 3.6 Communication Protocol
 
-Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates.
+Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates. The normative wire format — every message type, field, the per-target actions catalog, and the meter channel — is specified in [`protocol.md`](protocol.md); the example below is an abbreviated illustration and follows the v1 shapes defined there.
 
-```json
+```jsonc
 // Client → Server: command
 { "type": "cmd", "target": "camera", "action": "preset", "value": "choir" }
 
-// Server → Client: state update
+// Server → Client: state update (abbreviated — see protocol.md for the full shape)
 {
   "type": "state",
+  "rev": 142,
   "audio": {
     "channels": {
-      "pastor-lapel": { "mute": false, "fader": -6.2, "gain": 32, "meter": -18.4 },
-      "podium": { "mute": true, "fader": -8.0, "gain": 28, "meter": -60.0 }
+      "presenter-lapel": { "mute": false, "level_db": -6.2, "gain_db": 32.0 },
+      "podium": { "mute": true, "level_db": -8.0, "gain_db": 28.0 }
     }
   },
-  "camera": { "preset": "choir", "pan": 128, "tilt": 45, "zoom": 200 },
-  "obs": { "scene": "Scripture/Announcments", "streaming": true, "recording": true },
-  "slides": { "current": 5, "total": 24, "pendingActions": 2 },
-  "stream": { "platform": "restream", "viewers": 12, "uptime": "00:42:15" }
+  "camera": { "main": { "preset": "choir", "pan": -0.25, "tilt": 0.10, "zoom": 0.40 } },
+  "obs": { "scene": "camera-with-slides", "streaming": true, "recording": true, "uptime_seconds": 2535 },
+  "slides": { "current": 5, "total": 24, "pending_actions": [] },
+  "stream": { "platform": "restream", "viewers": 12 }
 }
 ```
 
-Audio meters are sent at a higher frequency (~10 Hz) on a separate WebSocket channel or as a distinct message type to avoid flooding the main state channel.
+Audio meters are sent at a higher frequency (~10 Hz, configurable) on a separate WebSocket endpoint (`/ws/meters`) to avoid flooding the main state channel; see [`protocol.md`](protocol.md) §6 (*Meter channel*).
 
-### 3.6 Remote Access
+### 3.7 Remote Access
 
 The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 - On the local network: direct connection.

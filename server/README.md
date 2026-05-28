@@ -15,7 +15,7 @@ The server is the brain of CueBooth. It does **not** reimplement protocol-level 
   - OBS WebSocket for video preview relay.
   - Raw USB HID for the slide clicker.
 
-See [`../docs/design.md`](../docs/design.md) §3 for the full architecture and the "delegate to Companion unless there's a specific reason not to" principle.
+See [`../docs/design.md`](../docs/design.md) §3 for the full architecture and the "delegate to Companion unless there's a specific reason not to" principle. The client ↔ server wire protocol is specified in [`../docs/protocol.md`](../docs/protocol.md).
 
 ## Status
 
