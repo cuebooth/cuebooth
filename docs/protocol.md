@@ -24,7 +24,7 @@ v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + T
 
 ### Versioning
 
-The `hello` frame carries a `proto` field naming the protocol version. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
+The `hello` frame carries a `proto` field naming the protocol version. The document's "v1" label denotes this protocol's **major** version; the current on-wire `proto` string is `1.0` — so "v1" and `proto: "1.0"` refer to the same protocol. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
 
 ```json
 {
@@ -35,7 +35,7 @@ The `hello` frame carries a `proto` field naming the protocol version. Clients M
 }
 ```
 
-When v2 lands, servers may opt to maintain v1 compatibility by feature-detecting the client. Clients should not assume v1 servers will ever be retrofitted with v2.
+When v2 lands, version negotiation is expected to use the WebSocket subprotocol mechanism (`Sec-WebSocket-Protocol`) or a separate versioned endpoint; the concrete scheme is out of scope for v1. (A v1 server cannot infer the client's version from the live connection, since it MUST send `hello` before receiving any client frame — so negotiation has to happen at or before the handshake.) Clients should not assume v1 servers will ever be retrofitted with v2.
 
 ---
 
@@ -77,9 +77,23 @@ A client request to mutate state. The server executes the action (via Companion,
 | `value` | any | depends | Per-action payload. May be string, number, bool, or object. |
 | `camera_id` | string | depends | Required for `target: camera` in multi-camera deployments. Optional and ignored in single-camera setups. |
 
+**Target → state mapping.** A `target` is an operator-meaningful verb object; it does not always share its name with the state key (or subscription topic) it affects. The protocol deliberately abstracts the underlying tools rather than exposing them, so some targets map onto the `obs` domain:
+
+| `target` | Mutates state under | Subscribe topic to watch |
+|---|---|---|
+| `camera` | `camera` | `camera` |
+| `audio` | `audio` | `audio` |
+| `scene` | `obs.scene` | `obs` |
+| `stream` (start/stop) | `obs.streaming` | `obs` |
+| `recording` | `obs.recording` | `obs` |
+| `slides` | `slides` | `slides` |
+| `power` / `automation` | — (no state key; deferred/advisory) | — |
+
+Note the `stream` **target** (start/stop streaming, reflected in `obs.streaming`) is distinct from the `stream` **state key**, which carries streaming-platform metadata (`platform`, `viewers`). A client watching live on/off status subscribes to `obs`, not `stream`.
+
 ### `subscribe` / `unsubscribe`
 
-Opt in or out of state-update streams. v1 supports subscribing to topics; the default subscription is everything except meters (which require the `/ws/meters` endpoint).
+Opt in or out of state-update streams. v1 supports subscribing to topics; the default subscription is all topics (meters are separate — they have their own `/ws/meters` endpoint, see §6).
 
 The valid v1 topics are: `audio`, `camera`, `obs`, `slides`, `stream`. (Meters are not a topic — they have their own `/ws/meters` endpoint.) Subscribing to or unsubscribing from any other topic string is a protocol violation and yields an `error` with code `unknown_topic`. New topics MAY be added in minor versions.
 
@@ -89,6 +103,16 @@ The valid v1 topics are: `audio`, `camera`, `obs`, `slides`, `stream`. (Meters a
 ```
 
 If a client never sends `subscribe`, it is implicitly subscribed to all non-meter topics.
+
+### `get_state`
+
+Request a fresh full `state` snapshot for the **current** subscription, without changing it. This is the dedicated re-sync mechanism — use it to recover after a detected `rev` gap (see [`state-delta`](#state-delta--partial-update)) instead of toggling the subscription.
+
+```json
+{ "type": "get_state" }
+```
+
+The server responds with a `state` frame scoped to the topics the client is currently subscribed to.
 
 ### `ping`
 
@@ -110,7 +134,7 @@ See [Connection lifecycle](#1-connection-lifecycle).
 
 ### `state` — full state snapshot
 
-Sent once after `hello`, and again any time a client `subscribe`s or after a server-side reset.
+Sent once after `hello`, again whenever a client changes its subscription (`subscribe`/`unsubscribe`) or requests `get_state`, and after a server-side reset. A `state` snapshot contains only the topics the client is currently subscribed to; the example below shows the default subscription (all non-meter topics).
 
 ```json
 {
@@ -172,8 +196,9 @@ Apply rules:
 - Object values are merged recursively.
 - `null` removes the key.
 - Arrays are replaced wholesale.
+- Because `null` is reserved for deletion, no field is ever *set* to a literal JSON `null`; the state model has no null-valued fields by design.
 
-If a client observes a `rev` gap (e.g. `rev=143` arrives after `rev=141` with no `142`), it MUST request a re-sync via `subscribe` (which returns a fresh `state`).
+If a client observes a `rev` gap (e.g. `rev=143` arrives after `rev=141` with no `142`), it MUST request a re-sync by sending `get_state`, which returns a fresh `state` for the current subscription.
 
 ### `ack` / `nak` — command result
 
@@ -208,6 +233,8 @@ For things that aren't state changes but the operator should see: feedback detec
 ```
 
 `severity` is one of `info`, `warn`, `error`. Events are advisory; the resulting state changes (if any) come through `state-delta` separately.
+
+`id` is a server-assigned unique event identifier. Events are not acked, but clients MAY use `id` to de-duplicate (e.g. across a reconnect) and to correlate an event with server logs.
 
 ### `error` — protocol-level error
 
@@ -248,8 +275,10 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `set_mute` | `{ id: "<channel-or-dca>", mute: bool }` | **(v1)** |
 | `set_fader` | `{ id: string, level_db: float }` | Continuous OK; ≤30 Hz suggested. |
 | `set_gain` | `{ id: string, gain_db: float }` | |
-| `apply_profile` | `{ channel: string, profile: string }` | |
+| `apply_profile` | `{ id: string, profile: string }` | |
 | `dca_member` | `{ dca: string, channel: string, member: bool }` | Manage DCA membership (rare). |
+
+Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). `dca_member` is the intentional exception: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed).
 
 ### `target: scene`
 
