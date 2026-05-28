@@ -201,5 +201,5 @@ For deck-wide validation before an event, the planned `cuebooth-server check-dec
 
 ## See also
 
-- [Design document](design.md) §3.5 — the formal DSL definition and the routing logic that turns rules into actions
+- [Design document](design.md) §3.4 — the formal DSL definition and the routing logic that turns rules into actions
 - Server config reference (lands with CB-011 + CB-044) — preset name → Companion button / OSC command mappings
