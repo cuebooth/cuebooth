@@ -3,7 +3,7 @@
 **Version:** v1 (draft)
 **Transport:** WebSocket, JSON text frames
 **Endpoint:** `/ws` on the server's HTTP listener
-**Meter endpoint:** `/ws/meters` (see [Meter channel](#meter-channel))
+**Meter endpoint:** `/ws/meters` (see [Meter channel](#6-meter-channel))
 
 This document is the normative spec for the wire protocol between a CueBooth client (typically the Flutter app) and the cuebooth-server (the Go orchestrator). Server and client implementations should be developed against this spec rather than against each other.
 
@@ -72,7 +72,7 @@ A client request to mutate state. The server executes the action (via Companion,
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Client-chosen correlation ID. Echoed back in any `ack`/`nak` for this command. |
-| `target` | string | yes | One of: `camera`, `audio`, `scene`, `slide`, `stream`, `recording`, `power`, `automation`. Other targets MAY be added in minor versions. |
+| `target` | string | yes | One of: `camera`, `audio`, `scene`, `slides`, `stream`, `recording`, `power`, `automation`. Other targets MAY be added in minor versions. |
 | `action` | string | yes | Per-target verb; see [§5 Actions catalog](#5-actions-catalog). |
 | `value` | any | depends | Per-action payload. May be string, number, bool, or object. |
 | `camera_id` | string | depends | Required for `target: camera` in multi-camera deployments. Optional and ignored in single-camera setups. |
@@ -257,7 +257,7 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 |---|---|---|
 | `set` | string | **(v1)** Switch to the named scene preset. |
 
-### `target: slide`
+### `target: slides`
 
 | `action` | `value` | Notes |
 |---|---|---|
@@ -314,6 +314,8 @@ A separate WebSocket at `/ws/meters` carries high-frequency meter data so the ma
 ```
 
 Values are dBFS. Channels/buses present in the frame are exactly those marked visible by server config (CB-024).
+
+`ts_ms` is the server's wall-clock time in Unix epoch milliseconds (UTC) at the moment the frame was sampled. It is advisory — useful for ordering and for correlating meter frames with logged events — and is not a monotonic clock, so it MAY jump on NTP adjustment. Clients MUST NOT assume a fixed interval between successive `ts_ms` values (see backpressure above).
 
 ---
 
