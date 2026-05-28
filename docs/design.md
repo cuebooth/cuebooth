@@ -328,7 +328,7 @@ A single app that consolidates:
 
 Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates. The normative wire format — every message type, field, the per-target actions catalog, and the meter channel — is specified in [`protocol.md`](protocol.md); the example below is an abbreviated illustration and follows the v1 shapes defined there.
 
-```json
+```jsonc
 // Client → Server: command
 { "type": "cmd", "target": "camera", "action": "preset", "value": "choir" }
 
@@ -349,7 +349,7 @@ Client ↔ Server communication is over WebSocket with JSON messages. The server
 }
 ```
 
-Audio meters are sent at a higher frequency (~10 Hz) on a separate WebSocket channel or as a distinct message type to avoid flooding the main state channel.
+Audio meters are sent at a higher frequency (~10 Hz, configurable) on a separate WebSocket endpoint (`/ws/meters`) to avoid flooding the main state channel; see [`protocol.md`](protocol.md) §6 (*Meter channel*).
 
 ### 3.7 Remote Access
 

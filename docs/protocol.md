@@ -24,7 +24,7 @@ v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + T
 
 ### Versioning
 
-The `hello` frame carries a `proto` field naming the protocol version. The document's "v1" label denotes this protocol's **major** version; the current on-wire `proto` string is `1.0` — so "v1" and `proto: "1.0"` refer to the same protocol. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
+The `hello` frame carries a `proto` field naming the protocol version. The document's "v1" label denotes this protocol's **major** version; the current on-wire `proto` string is `1.0` — so "v1" and `proto: "1.0"` refer to the same protocol. The `proto` string is `MAJOR.MINOR`, where both components are non-negative integers with no leading zeros; the major version is the substring before the first `.`, compared as an integer. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
 
 ```json
 {
@@ -75,7 +75,7 @@ A client request to mutate state. The server executes the action (via Companion,
 | `target` | string | yes | One of: `camera`, `audio`, `scene`, `slides`, `stream`, `recording`, `power`, `automation`. Other targets MAY be added in minor versions. |
 | `action` | string | yes | Per-target verb; see [§5 Actions catalog](#5-actions-catalog). |
 | `value` | any | depends | Per-action payload. May be string, number, bool, or object. |
-| `camera_id` | string | depends | Required for `target: camera` in multi-camera deployments. Optional and ignored in single-camera setups. |
+| `camera_id` | string | depends | Required for `target: camera` in multi-camera deployments. Optional and ignored in single-camera setups, where the lone camera is keyed `main` in `state.camera` (see §4). |
 
 **Target → state mapping.** A `target` is an operator-meaningful verb object; it does not always share its name with the state key (or subscription topic) it affects. The protocol deliberately abstracts the underlying tools rather than exposing them, so some targets map onto the `obs` domain:
 
@@ -174,7 +174,7 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
 
 `rev` is a monotonically increasing revision number assigned by the server. It increments on every state change. Clients use it to order updates and detect dropped frames. Every `state` snapshot (including those returned by `get_state` or a subscription change) carries the current `rev`; clients resume gap detection from that value.
 
-Camera `pan`/`tilt` are absolute normalized positions in −1.0..1.0 and `zoom` in 0.0..1.0 — the same scale as the `position` command (see [§5](#5-actions-catalog)), so a client can read state and command the camera back to it. The server maps these to/from device-native units (e.g. VISCA raw) per camera configuration.
+Camera `pan`/`tilt` are absolute normalized positions in −1.0..1.0 and `zoom` in 0.0..1.0 — the same scale as the `position` command (see [§5](#5-actions-catalog)), so a client can read state and command the camera back to it. The server maps these to/from device-native units (e.g. VISCA raw) per camera configuration. In single-camera deployments the lone camera is keyed `main` (as in the example above), so a client that omits `camera_id` on its commands reads and writes that one camera; multi-camera deployments key each camera by its `camera_id`.
 
 ### `state-delta` — partial update
 
@@ -269,7 +269,7 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `pan_tilt` | `{ pan: -1.0..1.0, tilt: -1.0..1.0 }` | **Velocity** (rate), not position. Continuous joystick input; each frame replaces the previous. `{pan:0,tilt:0}` is stop. |
 | `zoom` | float `-1.0..1.0` | **Velocity** (rate). Continuous zoom; positive = tele, negative = wide. `0` is stop. |
 
-`pan_tilt` and `zoom` carry **velocity** for smooth joystick control and SHOULD be sent at 30–60 Hz while the joystick/slider is active, with a final `0` on release. `position` carries an **absolute** normalized target and is how a client returns the camera to a known spot reliably (velocity moves can't). The two are distinct actions even though `pan_tilt` and `position` share the `pan`/`tilt` value range — one is a rate, the other a target. State reports absolute position (see §4); the server maps normalized values to/from device-native units per camera config.
+`pan_tilt` and `zoom` carry **velocity** for smooth joystick control and SHOULD be sent at 30–60 Hz while the joystick/slider is active, with a final `0` on release. `position` carries an **absolute** normalized target and is how a client returns the camera to a known spot reliably (velocity moves can't). The two are distinct actions even though `pan_tilt` and `position` share the `pan`/`tilt` value range — one is a rate, the other a target. State reports absolute position (see §4); the server maps normalized values to/from device-native units per camera config. `zoom` carries the same hazard under a single name: the standalone `zoom` action is a **velocity** in −1.0..1.0 (positive = tele, negative = wide), while `position.zoom` is an **absolute** target in 0.0..1.0 — same field name, different range and meaning, so don't conflate them.
 
 ### `target: audio`
 
@@ -281,7 +281,7 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `apply_profile` | `{ id: string, profile: string }` | |
 | `dca_member` | `{ dca: string, channel: string, member: bool }` | Manage DCA membership (rare). |
 
-Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). Channel and DCA identifiers share a single namespace — a deployment MUST NOT reuse a name for both — so `id` resolves unambiguously against channels and DCAs together. `dca_member` is the intentional exception to the single-`id` shape: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed).
+Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). Channel and DCA identifiers share a single namespace — a deployment MUST NOT reuse a name for both — so `id` resolves unambiguously against channels and DCAs together. `dca_member` is the intentional exception to the single-`id` shape: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed). Not every audio action applies to both kinds of `id`: `set_gain` is **channel-only**, since DCAs expose just `{ mute, level_db }` in the state model (no `gain_db`) — a `set_gain` whose `id` resolves to a DCA is invalid and MUST be `nak`'d. DCAs accept `set_mute`, `set_fader`, and `dca_member`; channels accept every audio action.
 
 ### `target: scene`
 
