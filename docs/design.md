@@ -326,25 +326,26 @@ A single app that consolidates:
 
 ### 3.6 Communication Protocol
 
-Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates.
+Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates. The normative wire format — every message type, field, the per-target actions catalog, and the meter channel — is specified in [`protocol.md`](protocol.md); the example below is an abbreviated illustration and follows the v1 shapes defined there.
 
 ```json
 // Client → Server: command
 { "type": "cmd", "target": "camera", "action": "preset", "value": "choir" }
 
-// Server → Client: state update
+// Server → Client: state update (abbreviated — see protocol.md for the full shape)
 {
   "type": "state",
+  "rev": 142,
   "audio": {
     "channels": {
-      "pastor-lapel": { "mute": false, "fader": -6.2, "gain": 32, "meter": -18.4 },
-      "podium": { "mute": true, "fader": -8.0, "gain": 28, "meter": -60.0 }
+      "presenter-lapel": { "mute": false, "level_db": -6.2, "gain_db": 32.0 },
+      "podium": { "mute": true, "level_db": -8.0, "gain_db": 28.0 }
     }
   },
-  "camera": { "preset": "choir", "pan": 128, "tilt": 45, "zoom": 200 },
-  "obs": { "scene": "Scripture/Announcments", "streaming": true, "recording": true },
-  "slides": { "current": 5, "total": 24, "pendingActions": 2 },
-  "stream": { "platform": "restream", "viewers": 12, "uptime": "00:42:15" }
+  "camera": { "main": { "preset": "choir", "pan": -0.25, "tilt": 0.10, "zoom": 0.40 } },
+  "obs": { "scene": "camera-with-slides", "streaming": true, "recording": true, "uptime_seconds": 2535 },
+  "slides": { "current": 5, "total": 24, "pending_actions": [] },
+  "stream": { "platform": "restream", "viewers": 12 }
 }
 ```
 

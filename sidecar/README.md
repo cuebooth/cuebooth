@@ -11,7 +11,7 @@ PowerPoint COM interop is much easier from .NET than from Go. Rather than embedd
 - Forwards events to the server over a local IPC channel (named pipe or localhost WebSocket — TBD).
 - If PowerPoint is ever replaced (e.g., by Keynote, Google Slides, or a CueBooth-native slide app), only this sidecar needs to be replaced.
 
-See [`../docs/design.md`](../docs/design.md) §3.3 ("PowerPoint Monitor") for the full design and §4 (Phase 4 — Slide Engine).
+See [`../docs/design.md`](../docs/design.md) §3.3 ("PowerPoint Monitor") for the full design and §5 (Phase 4 — Slide Engine).
 
 ## Status
 
