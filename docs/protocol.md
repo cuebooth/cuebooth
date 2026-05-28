@@ -15,8 +15,9 @@ The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*
 
 1. Client opens a WebSocket to `ws://<host>:<port>/ws`.
 2. Server immediately sends a `hello` frame. Clients MUST NOT send any frame on `/ws` (`cmd`, `subscribe`/`unsubscribe`, `get_state`, or `ping`) until they have received `hello`; servers MUST send it within 500 ms of accepting the socket.
-3. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
-4. Either side may close at any time. Clients SHOULD reconnect with exponential backoff (1s → 30s cap).
+3. Server then sends an initial `state` snapshot for the client's default subscription (all non-meter topics) — see [§4](#4-server--client-messages). No `subscribe` or `get_state` is required to receive it.
+4. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
+5. Either side may close at any time. Clients SHOULD reconnect with exponential backoff (1s → 30s cap).
 
 ### Authentication
 
@@ -72,7 +73,7 @@ A client request to mutate state. The server executes the action (via Companion,
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Client-chosen correlation ID. Echoed back in any `ack`/`nak` for this command. |
-| `target` | string | yes | One of: `camera`, `audio`, `scene`, `slides`, `stream`, `recording`, `power`, `automation`. Other targets MAY be added in minor versions. |
+| `target` | string | yes | One of: `camera`, `audio`, `scene`, `slides`, `streaming`, `recording`, `power`, `automation`. Other targets MAY be added in minor versions. |
 | `action` | string | yes | Per-target verb; see [§5 Actions catalog](#5-actions-catalog). |
 | `value` | any | depends | Per-action payload. May be string, number, bool, or object. |
 | `camera_id` | string | depends | Required for `target: camera` in multi-camera deployments. Optional and ignored in single-camera setups, where the lone camera is keyed `main` in `state.camera` (see §4). |
@@ -84,12 +85,12 @@ A client request to mutate state. The server executes the action (via Companion,
 | `camera` | `camera` | `camera` |
 | `audio` | `audio` | `audio` |
 | `scene` | `obs.scene` | `obs` |
-| `stream` (start/stop) | `obs.streaming` | `obs` |
+| `streaming` (start/stop) | `obs.streaming` | `obs` |
 | `recording` | `obs.recording` | `obs` |
 | `slides` | `slides` | `slides` |
 | `power` / `automation` | — (no state key; deferred/advisory) | — |
 
-Note the `stream` **target** (start/stop streaming, reflected in `obs.streaming`) is distinct from the `stream` **state key**, which carries streaming-platform metadata (`platform`, `viewers`). A client watching live on/off status subscribes to `obs`, not `stream`.
+Note the `streaming` **target** (start/stop, reflected in `obs.streaming` and watched via the `obs` topic) is named distinctly from the `stream` **state key** and its matching `stream` topic, which carry streaming-platform metadata (`platform`, `viewers`). A client watching live on/off status subscribes to `obs`, not `stream`. (The target was renamed from `stream` to `streaming` precisely to avoid this collision — start/stop verbs map to `obs.streaming`, while the `stream` key/topic carries platform info.)
 
 ### `subscribe` / `unsubscribe`
 
@@ -175,6 +176,8 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
 `rev` is a monotonically increasing revision number assigned by the server. It increments on every state change. Clients use it to order updates and detect dropped frames. Every `state` snapshot (including those returned by `get_state` or a subscription change) carries the current `rev`; clients resume gap detection from that value.
 
 Camera `pan`/`tilt` are absolute normalized positions in −1.0..1.0 and `zoom` in 0.0..1.0 — the same scale as the `position` command (see [§5](#5-actions-catalog)), so a client can read state and command the camera back to it. The server maps these to/from device-native units (e.g. VISCA raw) per camera configuration. In single-camera deployments the lone camera is keyed `main` (as in the example above), so a client that omits `camera_id` on its commands reads and writes that one camera; multi-camera deployments key each camera by its `camera_id`.
+
+`preset` holds the name of the last recalled preset. Once a subsequent `position`, `pan_tilt`, or `zoom` command moves the camera off it, the server sets `preset` to `""` (empty string = no active preset). It is never set to `null` — `null` is delete-only under the delta rules (see [`state-delta`](#state-delta--partial-update)), so the empty string is the off-preset sentinel.
 
 ### `state-delta` — partial update
 
@@ -271,6 +274,8 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 
 `pan_tilt` and `zoom` carry **velocity** for smooth joystick control and SHOULD be sent at 30–60 Hz while the joystick/slider is active, with a final `0` on release. `position` carries an **absolute** normalized target and is how a client returns the camera to a known spot reliably (velocity moves can't). The two are distinct actions even though `pan_tilt` and `position` share the `pan`/`tilt` value range — one is a rate, the other a target. State reports absolute position (see §4); the server maps normalized values to/from device-native units per camera config. `zoom` carries the same hazard under a single name: the standalone `zoom` action is a **velocity** in −1.0..1.0 (positive = tele, negative = wide), while `position.zoom` is an **absolute** target in 0.0..1.0 — same field name, different range and meaning, so don't conflate them.
 
+During a continuous move the server MUST NOT emit a `state-delta` per velocity-input frame. It coalesces camera position updates and reports `camera.<id>` `pan`/`tilt`/`zoom` at a bounded rate (≤10 Hz suggested) plus a final delta once motion settles. Position state is therefore eventually-consistent while a move is in progress and authoritative once it settles — `/ws` is never driven at the 30–60 Hz velocity-input rate (the same flooding concern that puts meters on their own `/ws/meters` endpoint, see §6).
+
 ### `target: audio`
 
 | `action` | `value` | Notes |
@@ -281,7 +286,7 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 | `apply_profile` | `{ id: string, profile: string }` | |
 | `dca_member` | `{ dca: string, channel: string, member: bool }` | Manage DCA membership (rare). |
 
-Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). Channel and DCA identifiers share a single namespace — a deployment MUST NOT reuse a name for both — so `id` resolves unambiguously against channels and DCAs together. `dca_member` is the intentional exception to the single-`id` shape: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed). Not every audio action applies to both kinds of `id`: `set_gain` is **channel-only**, since DCAs expose just `{ mute, level_db }` in the state model (no `gain_db`) — a `set_gain` whose `id` resolves to a DCA is invalid and MUST be `nak`'d. DCAs accept `set_mute`, `set_fader`, and `dca_member`; channels accept every audio action.
+Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `set_mute`). Channel and DCA identifiers share a single namespace — a deployment MUST NOT reuse a name for both — so `id` resolves unambiguously against channels and DCAs together. `dca_member` is the intentional exception to the single-`id` shape: it names two distinct roles — `dca` (the group) and `channel` (the member being added or removed). Not every audio action applies to both kinds of `id`: `set_gain` is **channel-only**, since DCAs expose just `{ mute, level_db }` in the state model (no `gain_db`) — a `set_gain` whose `id` resolves to a DCA is invalid and MUST be `nak`'d with `invalid_target_kind` (see §8). DCAs accept `set_mute`, `set_fader`, and `dca_member`; channels accept every audio action.
 
 ### `target: scene`
 
@@ -298,7 +303,7 @@ Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `
 | `confirm_pending` | none | Drain queued `apply: on-confirm` rule actions. |
 | `cancel_pending` | none | Discard them. |
 
-### `target: stream` / `target: recording`
+### `target: streaming` / `target: recording`
 
 | `action` | `value` | Notes |
 |---|---|---|
@@ -374,6 +379,7 @@ Strings used in `nak.error.code` and `error.code`. Open-ended — implementation
 | `unknown_topic` | `subscribe`/`unsubscribe` named a topic not in the valid set |
 | `unknown_preset` | Referenced preset name not in server config |
 | `unknown_channel` | Referenced audio channel/DCA not in server config |
+| `invalid_target_kind` | `id` exists but is the wrong kind for the action (e.g. `set_gain` targeting a DCA, which has no `gain_db`) |
 | `device_unavailable` | Downstream device (mixer, camera, OBS, Companion) not reachable |
 | `permission_denied` | Action not permitted in current context (e.g., automation override locked out) |
 | `internal` | Server-side error not otherwise classified |
@@ -386,3 +392,4 @@ Strings used in `nak.error.code` and `error.code`. Open-ended — implementation
 - Field-level access control (e.g., read-only viewer clients)
 - Compression for `meters` frames at high client counts
 - Binary frames for screenshot/video preview (currently planned over the main `/ws` channel using base64 JSON — see CB-061)
+- Observable state for the `power` / `automation` targets — e.g. reading back `automation set_enabled` toggles so multi-client UIs can reconcile them. These targets are advisory in v1 with no state key.
