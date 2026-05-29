@@ -147,8 +147,8 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
       "podium":          { "mute": true,  "level_db": -8.0, "gain_db": 28.0 }
     },
     "dca": {
-      "non-presenter": { "mute": false, "level_db": 0.0 },
-      "choir":         { "mute": true,  "level_db": -3.0 }
+      "non-choir": { "mute": false, "level_db": 0.0 },
+      "choir":     { "mute": true,  "level_db": -3.0 }
     }
   },
   "camera": {
@@ -300,7 +300,7 @@ Across audio actions `id` is the channel-or-DCA identifier (same meaning as in `
 |---|---|---|
 | `next` | none | **(v1)** Advance one slide. |
 | `prev` | none | **(v1)** |
-| `confirm_pending` | none | Drain queued `apply: on-confirm` rule actions. |
+| `confirm_pending` | none | Apply the pending `apply: on-confirm` rule actions. |
 | `cancel_pending` | none | Discard them. |
 
 ### `target: streaming` / `target: recording`
