@@ -265,7 +265,7 @@ The automation brain. When a slide change is detected:
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
 5. Hold the deferred actions as the slide's pending set (replacing any prior un-confirmed pending) and signal the client (and/or clicker).
 
-### 3.4 Slide Rule Format (Draft)
+### 3.4 Slide Rule Format
 
 Rules are embedded in PowerPoint slide notes. Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
 
