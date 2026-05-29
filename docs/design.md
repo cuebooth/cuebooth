@@ -75,7 +75,7 @@ The goal is to reduce operator complexity such that a non-technical person can r
 | Scene | OBS Name | Content | Typical Use |
 |-------|----------|---------|-------------|
 | Beginning | `Beginning` | Countdown timer + slideshow (Opening.png, Announcements.png) | Pre-service (10 min before) |
-| Camera + Slides | `Scripture/Announcments` | PTZ camera with slides overlay (upper-left, ~50% scale) | Hymns, readings, responsive readings |
+| Camera + Slides | `Scripture/Announcements` | PTZ camera with slides overlay (upper-left, ~50% scale) | Hymns, readings, responsive readings |
 | Camera Only | `Just Camera` | PTZ camera full frame | Sermon, announcements, prayers |
 | Slides Only | `PowerPoint` | Slides full frame (Monitor 3 capture) | Attributions, specific readings |
 
@@ -296,7 +296,7 @@ companion_button = "1/0/2"     # page/row/column in Companion
 
 [presets.scene.camera-with-slides]
 companion_button = "1/3/1"
-# Actual OBS scene: "Scripture/Announcments"
+# Actual OBS scene: "Scripture/Announcements"
 
 [presets.audio.mute.non-choir]
 companion_button = "1/1/0"     # OR direct OSC:
@@ -304,7 +304,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 # osc_value = 0
 ```
 
-- `apply: immediate` — actions execute as soon as the slide changes.
+- `apply: immediate` (the default when `apply` is omitted) — actions execute as soon as the slide changes.
 - `apply: on-confirm` — actions become the slide's pending set until the operator presses the confirm button on the clicker; advancing to another slide replaces the pending set without applying it.
 - Repeated `audio.mute`/`audio.unmute` lines accumulate: their targets union together, equivalent to a single comma-separated line.
 - Slide authors use friendly preset names; the server config handles the routing details.

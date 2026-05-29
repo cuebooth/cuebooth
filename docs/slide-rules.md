@@ -4,7 +4,7 @@ This guide is for the person who builds the slide deck for a CueBooth-driven eve
 
 CueBooth watches the active PowerPoint presentation. On every slide change it reads that slide's notes, looks for a `@cuebooth` block, and executes the rules it finds — either immediately, or held as a pending action set for the operator to confirm with a clicker press.
 
-You write rules using a small, line-oriented DSL inside slide notes. The names you reference (`choir`, `podium`, `camera-with-slides`, `non-choir`) are **logical preset names** defined once in the server's config for your deployment — you don't need to know IPs, OSC paths, or Companion button coordinates.
+You write rules using a small, line-oriented DSL inside slide notes. The names you reference (`choir`, `podium`, `camera-with-slides`, `non-choir`) are **logical preset names** defined in the server's config for your deployment — you don't need to know IPs, OSC paths, or Companion button coordinates.
 
 This guide covers the DSL. Ask your operator for the list of preset names available in your deployment.
 
@@ -109,7 +109,7 @@ When a slide's `apply: on-confirm` actions are pending, the operator's view show
 
 Because of that, **confirm while you're still on the slide.** If you advance to another slide first, the pending set is *not* applied — it's replaced by whatever the new slide defines (a new pending set, immediate actions, or nothing). This is deliberate: it stops a run of un-confirmed slides from piling up and then firing a minute's worth of camera moves and mic changes all at once.
 
-If a slide should trigger no automation, omit the rule block.
+If a slide should trigger no automation, omit the rule block — or include an empty `@cuebooth` block if you'd rather make the no-op explicit for anyone reading the deck. Both behave identically; omitting is simplest.
 
 ---
 
@@ -155,7 +155,7 @@ apply: immediate
 @cuebooth
 ```
 
-(A truly empty rule block — explicit confirmation that no automation is intended for this slide. Equivalent to omitting the block entirely; some authors prefer the explicit form.)
+(A truly empty rule block — the optional explicit form of "no automation intended for this slide." Equivalent to omitting the block entirely.)
 
 ### Transition into a song, deferring the audio change
 
@@ -183,7 +183,10 @@ The server's TOML config (typically `cuebooth.toml`) defines all preset names av
 [presets.camera.podium]
 [presets.scene.camera-with-slides]
 [presets.audio.mute.non-choir]
+[presets.audio.unmute.choir]
 ```
+
+Audio presets are namespaced by action: muting and unmuting are separate entries, so a group you both mute and unmute (like `choir`) has a `presets.audio.mute.choir` **and** a `presets.audio.unmute.choir` — each maps to its own Companion button or OSC value.
 
 Ask your operator for the canonical list, or for read access to the config file. A future addition (planned, not yet tracked) is a `cuebooth-server list-presets` command that prints the available names.
 
@@ -191,7 +194,7 @@ Ask your operator for the canonical list, or for read access to the config file.
 
 ## Validation
 
-The server checks rule blocks when it parses the deck, logging a warning for anything it can't resolve (such as a preset name that isn't defined in the server config). Later, when the slide actually becomes active, any unresolved action is skipped while the rest of the slide's actions still fire, and the operator sees the warning in the client. This is intentional: a typo in one action shouldn't break the whole transition.
+The server parses a slide's `@cuebooth` block when that slide becomes active. If an action references a preset name that isn't defined in the server config, the server logs a warning, skips just that action, and still fires the rest — and the operator sees the warning in the client. This is intentional: a typo in one action shouldn't break the whole transition.
 
 For deck-wide validation before an event, a planned (not yet tracked) `cuebooth-server check-deck <path-to-pptx>` command will list every unrecognized preset name across the whole deck.
 
@@ -202,7 +205,7 @@ For deck-wide validation before an event, a planned (not yet tracked) `cuebooth-
 - **Keep blocks short.** If a slide needs more than ~6 lines of rules, consider whether the deployment's preset names are too granular.
 - **Name presets by intent, not by hardware.** `presenter` is better than `ch3-lapel`; the config maps intent to hardware.
 - **Use `on-confirm` sparingly.** It adds operator load. Reserve it for cases where slide-timing genuinely should lead audio/camera-timing.
-- **Empty rule blocks are valid.** They communicate "this slide is intentionally no-op" to anyone reading the deck later.
+- **Empty rule blocks are optional but valid.** Omitting the block is simplest; an empty block makes an intentional no-op explicit to anyone reading the deck later.
 - **The block is plain text in notes.** Anyone with PowerPoint can read and edit it; no special tooling required.
 
 ---
