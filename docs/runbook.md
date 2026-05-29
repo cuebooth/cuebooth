@@ -189,5 +189,5 @@ Document the symptoms you've actually encountered at your site, with the recover
 ## See also
 
 - [Design document](design.md) — full system architecture
-- [Slide rule authoring guide](slide-rules.md) — `@cuebooth` DSL for slide-driven automation
+- [Slide Rules](slide-rules.md) — `@cuebooth` DSL for slide-driven automation
 - [WebSocket protocol](protocol.md) — client/server wire spec
