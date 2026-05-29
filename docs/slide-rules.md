@@ -60,12 +60,19 @@ scene: camera-only
 
 ### `audio.mute: <preset>[, <preset>, ...]`
 
-Mutes one or more channels, DCA groups, or named groups. Values can be a single preset name or a comma-separated list.
+Mutes one or more channels, DCA groups, or named groups. The value can be a single preset name:
 
 ```
 audio.mute: non-choir
+```
+
+…or a comma-separated list:
+
+```
 audio.mute: choir, podium, presenter-lapel
 ```
+
+If `audio.mute` (or `audio.unmute`) appears on more than one line, the targets **accumulate** — every listed preset is muted, exactly as if you had written them on a single comma-separated line. The lines union together; a later line does not replace an earlier one.
 
 ### `audio.unmute: <preset>[, <preset>, ...]`
 
@@ -152,7 +159,7 @@ apply: immediate
 
 ### Transition into a song, deferring the audio change
 
-The reader is announcing the upcoming song while the music director moves to the piano. You want the song slide to appear during the announcement, but you don't want the reader's mic muted yet.
+The reader is announcing the upcoming song while the music director moves to the piano. Advancing to this slide puts it on the in-room projector right away — that happens on the presenter's click, independent of `@cuebooth` — but you don't want the reader's mic muted, or the camera and program scene to change, until the music actually starts.
 
 ```
 @cuebooth
@@ -163,7 +170,7 @@ audio.unmute: choir
 apply: on-confirm
 ```
 
-The operator (or the clicker's confirm button) fires the audio + camera change at the right moment.
+`apply: on-confirm` defers the *whole* block, so the camera move, scene switch, and audio change all wait together. The slide is already showing in the room; the operator (or the clicker's confirm button) fires the `@cuebooth` actions at the right moment.
 
 ---
 
@@ -178,7 +185,7 @@ The server's TOML config (typically `cuebooth.toml`) defines all preset names av
 [presets.audio.mute.non-choir]
 ```
 
-Ask your operator for the canonical list, or for read access to the config file. A future addition (tracked in CB-044) is a `cuebooth-server list-presets` command that prints the available names.
+Ask your operator for the canonical list, or for read access to the config file. A future addition (planned, not yet tracked) is a `cuebooth-server list-presets` command that prints the available names.
 
 ---
 
@@ -186,7 +193,7 @@ Ask your operator for the canonical list, or for read access to the config file.
 
 The server checks rule blocks when it parses the deck, logging a warning for anything it can't resolve (such as a preset name that isn't defined in the server config). Later, when the slide actually becomes active, any unresolved action is skipped while the rest of the slide's actions still fire, and the operator sees the warning in the client. This is intentional: a typo in one action shouldn't break the whole transition.
 
-For deck-wide validation before an event, the planned `cuebooth-server check-deck <path-to-pptx>` command will list every unrecognized preset name across the whole deck.
+For deck-wide validation before an event, a planned (not yet tracked) `cuebooth-server check-deck <path-to-pptx>` command will list every unrecognized preset name across the whole deck.
 
 ---
 

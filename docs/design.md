@@ -306,6 +306,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 
 - `apply: immediate` — actions execute as soon as the slide changes.
 - `apply: on-confirm` — actions become the slide's pending set until the operator presses the confirm button on the clicker; advancing to another slide replaces the pending set without applying it.
+- Repeated `audio.mute`/`audio.unmute` lines accumulate: their targets union together, equivalent to a single comma-separated line.
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 

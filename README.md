@@ -38,6 +38,7 @@ Every CueBooth component that runs on Windows is intended to ship as a real Wind
 ## Documentation
 
 - [Design](docs/design.md) — architecture, technology choices, phased plan
+- [Slide Rules](docs/slide-rules.md) — authoring `@cuebooth` rules in slide notes
 
 Sample configuration files and an operator-facing runbook will be added as the implementation phases land.
 
