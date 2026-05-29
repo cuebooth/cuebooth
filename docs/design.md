@@ -212,7 +212,7 @@ This means the existing Companion configuration continues to work and evolve ind
 
 A small, focused process (~200 lines) that handles PowerPoint COM automation:
 - Connects to PowerPoint via COM events (not polling) to detect slide changes.
-- Reads slide metadata/comments (where CueBooth rules are defined).
+- Reads slide metadata/notes (where CueBooth rules are defined).
 - Forwards events to the Go server over a local named pipe or localhost WebSocket.
 - If PowerPoint is ever replaced, only this sidecar changes.
 
@@ -260,19 +260,19 @@ Delivers OBS program and preview feeds to connected clients. Companion doesn't e
 
 The automation brain. When a slide change is detected:
 1. Receive slide change event + metadata from the C# sidecar.
-2. Parse the rule definitions from the slide's comments.
-3. Determine which actions to execute immediately vs. queue for operator confirmation.
+2. Parse the rule definitions from the slide's notes.
+3. Determine which actions to execute immediately vs. hold as the pending set for operator confirmation.
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
-5. Queue deferred actions and signal the client (and/or clicker).
+5. Hold the deferred actions as the slide's pending set (replacing any prior un-confirmed pending) and signal the client (and/or clicker).
 
 ### 3.4 Slide Rule Format (Draft)
 
-Rules are embedded in PowerPoint slide comments (or notes). Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
+Rules are embedded in PowerPoint slide notes. Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
 
 ```
 @cuebooth
-camera: choir
-scene: camera+slides
+camera.main: choir
+scene: camera-with-slides
 audio.mute: non-choir
 audio.unmute: choir
 apply: immediate
@@ -280,10 +280,10 @@ apply: immediate
 
 ```
 @cuebooth
-camera: podium-slides
-scene: camera+slides
+camera.main: podium-with-slides
+scene: camera-with-slides
 audio.mute: choir
-audio.unmute: podium, pastor
+audio.unmute: podium, presenter
 apply: on-confirm
 ```
 
@@ -294,7 +294,7 @@ The server config maps these names to actual actions:
 [presets.camera.choir]
 companion_button = "1/0/2"     # page/row/column in Companion
 
-[presets.scene.camera+slides]
+[presets.scene.camera-with-slides]
 companion_button = "1/3/1"
 # Actual OBS scene: "Scripture/Announcments"
 
@@ -305,7 +305,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 ```
 
 - `apply: immediate` — actions execute as soon as the slide changes.
-- `apply: on-confirm` — actions queue until the operator presses the confirm button on the clicker.
+- `apply: on-confirm` — actions become the slide's pending set until the operator presses the confirm button on the clicker; advancing to another slide replaces the pending set without applying it.
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 
@@ -373,7 +373,7 @@ The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 | Video Relay (Phase 1) | OBS WebSocket screenshots | Companion doesn't expose this; simple first implementation |
 | Video Relay (Phase 2) | SRT/RTMP → WebRTC | Low-latency live preview |
 | HID Input | Raw USB HID (Go) | Bypass Norwii app + AHK entirely |
-| Slide Rules | Custom DSL in slide comments | Human-readable, version-controlled with slides |
+| Slide Rules | Custom DSL in slide notes | Human-readable, version-controlled with slides |
 | Remote Access | Tailscale | Already deployed, zero additional config |
 | Project Management | GitHub Projects | Already in use for other projects |
 | Source Control | GitHub (monorepo) | Server + client + docs in one repo |
@@ -521,7 +521,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 
 ### Phase 4 — Slide Engine
 - **CB-040** `sidecar` — PowerPoint COM event-based slide change detection
-- **CB-041** `sidecar` — Slide metadata/comment extraction and IPC to Go server
+- **CB-041** `sidecar` — Slide metadata/notes extraction and IPC to Go server
 - **CB-042** `server` — Slide rule DSL parser
 - **CB-043** `server` — Rule action executor: route to Companion HTTP or direct OSC, immediate vs. deferred
 - **CB-044** `server` — Service configuration file: preset names → Companion button IDs + OSC paths

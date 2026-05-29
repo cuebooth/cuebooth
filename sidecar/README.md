@@ -7,7 +7,7 @@ A small C# (.NET) process that watches PowerPoint via COM events and forwards sl
 PowerPoint COM interop is much easier from .NET than from Go. Rather than embedding COM handling in the server, this sidecar isolates it:
 
 - Subscribes to PowerPoint COM events (no polling) to detect slide changes.
-- Reads slide notes/comments where `@cuebooth` rules are authored.
+- Reads slide notes where `@cuebooth` rules are authored.
 - Forwards events to the server over a local IPC channel (named pipe or localhost WebSocket — TBD).
 - If PowerPoint is ever replaced (e.g., by Keynote, Google Slides, or a CueBooth-native slide app), only this sidecar needs to be replaced.
 

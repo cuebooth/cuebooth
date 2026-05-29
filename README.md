@@ -7,7 +7,7 @@ Live events that combine a video switcher, an audio mixer, a PTZ camera or two, 
 - A **Go server** on the production PC that orchestrates everything.
 - A **Flutter client** (iPad, iPhone, Android, desktop, web) — a single control surface usable from anywhere on the network or over Tailscale.
 - A small **C# sidecar** that watches PowerPoint via COM events.
-- **Slide-driven automation** — slide comments declare desired camera, audio, and scene state, applied immediately or on operator confirm.
+- **Slide-driven automation** — slide notes declare desired camera, audio, and scene state, applied immediately or on operator confirm.
 - **Direct OSC / VISCA / OBS-WS** only where existing tooling (Bitfocus Companion) is inadequate: real-time audio meters, velocity-based PTZ, video preview relay.
 
 A core goal is that a basic event can be run by a non-technical operator with just a slide clicker, while an experienced operator retains full manual control of everything.
