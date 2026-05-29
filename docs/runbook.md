@@ -44,7 +44,7 @@ Target completion: at least **30 minutes** before event start.
 If you have CueBooth's pre-event automation set up (CB-081, Phase 8), this is a one-button operation from the client. Otherwise, follow the manual sequence:
 
 1. Production PC.
-2. Wireless mic receivers (in the order their batteries were last charged — least-fresh first, so problems surface early).
+2. Wireless mic transmitters/packs (in the order their batteries were last charged — least-fresh first, so problems surface early). Their receivers are mains-powered and can be switched on at any time.
 3. Mixer.
 4. In-house speakers — **after** the mixer is up, to avoid pops.
 5. PTZ cameras.
@@ -169,7 +169,7 @@ If you have CueBooth's post-event sequence (CB-082, Phase 8), it's one button. O
 Document the symptoms you've actually encountered at your site, with the recovery steps. Common patterns to capture:
 
 - **Client can't connect to server.** Check the server process is running on the production PC, the host/port the client is dialing is reachable, and any firewall rules.
-- **Slide clicker not advancing slides.** Confirm the clicker dongle is plugged in. Confirm the CueBooth server's HID monitor sees events (CB-051 will add a debug stream).
+- **Slide clicker not advancing slides.** Confirm the clicker dongle is plugged in. Confirm the CueBooth server's HID monitor sees events (HID capture lands in CB-050/CB-051).
 - **No audio on stream.** Check the stream-output bus on the mixer isn't muted; check the USB audio path between mixer and PC.
 - **Camera not responding.** Power-cycle the camera. Verify network reachability from the production PC.
 - **OBS dropped frames.** Check upstream bandwidth, CPU usage, and the streaming-platform's status page.
