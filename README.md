@@ -38,9 +38,11 @@ Every CueBooth component that runs on Windows is intended to ship as a real Wind
 ## Documentation
 
 - [Design](docs/design.md) — architecture, technology choices, phased plan
+- [Operator runbook](docs/runbook.md) — pre-event setup → going live → teardown, as a template
 - [Slide Rules](docs/slide-rules.md) — authoring `@cuebooth` rules in slide notes
+- [WebSocket protocol](docs/protocol.md) — client/server wire spec
 
-Sample configuration files and an operator-facing runbook will be added as the implementation phases land.
+Sample configuration files will be added as the implementation phases land.
 
 ## License
 
