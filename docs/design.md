@@ -291,7 +291,7 @@ The server config maps these names to actual actions:
 
 ```toml
 # cuebooth.toml (excerpt)
-[presets.camera.choir]
+[presets.camera.main.choir]      # camera presets are namespaced by camera id
 companion_button = "1/0/2"     # page/row/column in Companion
 
 [presets.scene.camera-with-slides]
@@ -307,6 +307,8 @@ companion_button = "1/1/0"     # OR direct OSC:
 - `apply: immediate` (the default when `apply` is omitted) — actions execute as soon as the slide changes.
 - `apply: on-confirm` — actions become the slide's pending set until the operator presses the confirm button on the clicker; advancing to another slide replaces the pending set without applying it.
 - Repeated `audio.mute`/`audio.unmute` lines accumulate: their targets union together, equivalent to a single comma-separated line.
+- Keys are case-insensitive; preset-name values are case-sensitive. The block begins at the `@cuebooth` line and ends at the next blank line or the end of the notes; surrounding note text is ignored.
+- Validation is non-fatal per action: if a rule references a preset name not in the config, the server logs a warning, skips just that action, and still fires the rest (the operator sees the warning in the client), so a single typo never breaks the whole transition. This is deliberately softer than interactive `/ws` commands, which reject an unknown preset outright with an `unknown_preset` nak (see [`protocol.md`](protocol.md) §8) — a slide rule fires automatically mid-event with no prompt to correct, so skip-and-continue beats failing the transition.
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 

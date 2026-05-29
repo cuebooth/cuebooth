@@ -12,7 +12,7 @@ This guide covers the DSL. Ask your operator for the list of preset names availa
 
 ## Where rules go
 
-Open the **Notes** pane below a slide in PowerPoint (View → Notes). Add a `@cuebooth` block anywhere in the notes. Everything before it (or after a blank line following the block) is treated as ordinary notes and ignored.
+Open the **Notes** pane below a slide in PowerPoint (View → Notes). Add a `@cuebooth` block anywhere in the notes. The block **starts** at the `@cuebooth` line and **runs to the next blank line or the end of the notes**; text before `@cuebooth`, and anything after the block's terminating blank line, is treated as ordinary notes and ignored.
 
 ```
 This is the offertory hymn. The hymn number is in the projected slide.
@@ -25,6 +25,8 @@ audio.unmute: choir
 apply: immediate
 ```
 
+In the notes above, only the `@cuebooth` line and the five key lines beneath it are the rule block. The first line (`This is the offertory hymn…`) comes before `@cuebooth`, so it's ordinary notes and is ignored.
+
 That's it. When the slideshow advances to this slide, CueBooth will recall the `choir` camera preset, switch the OBS scene to camera-with-slides, mute the non-choir DCA group, and unmute the choir.
 
 ---
@@ -35,7 +37,7 @@ Keys are case-insensitive. One key per line. Values are trimmed of surrounding w
 
 ### `camera.<id>: <preset-name>`
 
-Recalls a named camera preset on a specific camera, identified by `<id>` (defined in config). The preset typically maps to a Companion button that drives a VISCA preset recall.
+Recalls a named camera preset on a specific camera, identified by `<id>`. Both the camera `<id>` and its presets are defined in config: a `camera.<id>: <preset>` rule resolves to the `[presets.camera.<id>.<preset>]` config entry, which maps to a Companion button that drives a VISCA preset recall on that camera.
 
 ```
 camera.main: podium
@@ -52,7 +54,7 @@ camera.front: wide
 
 ### `scene: <scene-preset-name>`
 
-Switches the OBS scene. The value is a logical scene preset name from the config — not the raw OBS scene name. The config maps it to either a Companion button or a direct OBS-WebSocket call.
+Switches the OBS scene. The value is a logical scene preset name from the config — not the raw OBS scene name. The config maps it to a Companion button that drives the OBS scene switch.
 
 ```
 scene: camera-only
@@ -72,7 +74,7 @@ audio.mute: non-choir
 audio.mute: choir, podium, presenter-lapel
 ```
 
-If `audio.mute` (or `audio.unmute`) appears on more than one line, the targets **accumulate** — every listed preset is muted, exactly as if you had written them on a single comma-separated line. The lines union together; a later line does not replace an earlier one.
+If `audio.mute` (or `audio.unmute`) appears on more than one line, the targets for that key **accumulate** — every preset on the `audio.mute` lines is muted, and every preset on the `audio.unmute` lines is unmuted, exactly as if you had written each key's targets on a single comma-separated line. The lines union together; a later line of the same key adds to, rather than replaces, an earlier one.
 
 ### `audio.unmute: <preset>[, <preset>, ...]`
 
@@ -179,12 +181,15 @@ apply: on-confirm
 The server's TOML config (typically `cuebooth.toml`) defines all preset names available. Look for sections like:
 
 ```toml
-[presets.camera.choir]
-[presets.camera.podium]
+[presets.camera.main.choir]
+[presets.camera.main.podium]
+[presets.camera.front.wide]
 [presets.scene.camera-with-slides]
 [presets.audio.mute.non-choir]
 [presets.audio.unmute.choir]
 ```
+
+Camera presets are namespaced by camera id: `presets.camera.main.choir` is the `choir` preset *on the camera with id `main`*, distinct from `presets.camera.front.choir`. That's how a `camera.<id>` rule resolves to a specific camera — the id is part of the config key, not just a label.
 
 Audio presets are namespaced by action: muting and unmuting are separate entries, so a group you both mute and unmute (like `choir`) has a `presets.audio.mute.choir` **and** a `presets.audio.unmute.choir` — each maps to its own Companion button or OSC value.
 
