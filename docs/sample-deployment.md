@@ -167,7 +167,8 @@ companion_button = "1/3/2"
 # ─── OBS scenes ─────────────────────────────────────────────────────────
 
 [presets.scene.beginning]
-companion_button = "7/0/5"
+companion_button = "7/0/0"
+# Actual OBS scene: "Beginning"
 
 [presets.scene.camera-only]
 companion_button = "7/0/1"
@@ -179,6 +180,7 @@ companion_button = "7/0/2"
 
 [presets.scene.slides-only]
 companion_button = "7/0/3"
+# Actual OBS scene: "PowerPoint"
 
 # ─── Audio mute targets ─────────────────────────────────────────────────
 # DCAs and channels can be muted/unmuted either via Companion (which has
@@ -274,7 +276,7 @@ No `@cuebooth` block. The pre-roll happens before the slideshow advances. OBS is
 @cuebooth
 camera.main: piano
 scene: camera-with-slides
-audio.mute: non-choir, choir
+audio.mute: presenter, podium, choir
 audio.unmute: piano
 apply: immediate
 ```
@@ -369,7 +371,7 @@ The bits that stay the same:
 - The protocol between client and server.
 - The runbook's overall shape: pre-event → going live → segments → teardown.
 
-When you stand up your own deployment, copy the example template `cuebooth.example.toml` to `cuebooth.toml` (the name the server loads, used in §6 and elsewhere in the docs) and edit the preset sections. Keep your filled-in version in your own private repo (not in the public CueBooth repo) — it documents your specific install in a way that's useful to your team but not to outsiders.
+When you stand up your own deployment, use the §6 snippet above as the starting point for your own `cuebooth.toml` (the name the server loads) and edit the preset sections. Keep your filled-in version in your own private repo (not in the public CueBooth repo) — it documents your specific install in a way that's useful to your team but not to outsiders.
 
 ---
 
