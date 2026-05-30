@@ -17,7 +17,8 @@ enum ConnectionState {
 ///
 /// Authority lies with the server: clients send commands and receive state
 /// broadcasts. The transport reconnects with exponential backoff on drops.
-/// See ../../../docs/design.md §3.5 (Communication Protocol).
+/// See ../../../docs/design.md §3.6 (Communication Protocol) and
+/// ../../../docs/protocol.md for the wire spec.
 class ServerConnection extends ChangeNotifier {
   ServerConnection();
 
@@ -83,8 +84,14 @@ class ServerConnection extends ChangeNotifier {
         onDone: _onDone,
         cancelOnError: true,
       );
-      // Optimistically mark connected. If the handshake fails the error
-      // handler will downgrade the state.
+      // Optimistically mark connected once the socket opens. If the handshake
+      // fails the error handler downgrades the state.
+      //
+      // NOTE (protocol.md §1): the server sends a `hello` frame first, and
+      // clients MUST NOT send any frame on /ws until they receive it. Gating
+      // `connected` on receipt of `hello` (and resetting backoff there) is
+      // wired in CB-014 alongside the command UI; until then nothing calls
+      // send(), so the optimistic state here is safe as a placeholder.
       _backoff = _initialBackoff;
       _setState(ConnectionState.connected);
     } catch (e) {
