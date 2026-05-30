@@ -5,7 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Connection state to the CueBooth server.
-enum ConnectionState {
+///
+/// Named to avoid colliding with Flutter's built-in `ConnectionState`
+/// (from `AsyncSnapshot`/`StreamBuilder`), which screens consuming
+/// [ServerConnection.messages] will have in scope.
+enum ServerConnectionState {
   disconnected,
   connecting,
   connected,
@@ -32,8 +36,8 @@ class ServerConnection extends ChangeNotifier {
   Timer? _reconnectTimer;
   bool _stopRequested = false;
 
-  ConnectionState _state = ConnectionState.disconnected;
-  ConnectionState get state => _state;
+  ServerConnectionState _state = ServerConnectionState.disconnected;
+  ServerConnectionState get state => _state;
 
   String? _lastError;
   String? get lastError => _lastError;
@@ -60,12 +64,14 @@ class ServerConnection extends ChangeNotifier {
     _subscription = null;
     await _channel?.sink.close();
     _channel = null;
-    _setState(ConnectionState.disconnected);
+    _setState(ServerConnectionState.disconnected);
   }
 
   /// Send a command to the server. Returns false if not currently connected.
   bool send(Map<String, dynamic> message) {
-    if (_state != ConnectionState.connected || _channel == null) return false;
+    if (_state != ServerConnectionState.connected || _channel == null) {
+      return false;
+    }
     _channel!.sink.add(jsonEncode(message));
     return true;
   }
@@ -74,7 +80,7 @@ class ServerConnection extends ChangeNotifier {
     final uri = _uri;
     if (uri == null) return;
 
-    _setState(ConnectionState.connecting);
+    _setState(ServerConnectionState.connecting);
     try {
       final channel = WebSocketChannel.connect(uri);
       _channel = channel;
@@ -89,19 +95,25 @@ class ServerConnection extends ChangeNotifier {
       //
       // NOTE (protocol.md §1): the server sends a `hello` frame first, and
       // clients MUST NOT send any frame on /ws until they receive it. Gating
-      // `connected` on receipt of `hello` (and resetting backoff there) is
-      // wired in CB-014 alongside the command UI; until then nothing calls
-      // send(), so the optimistic state here is safe as a placeholder.
-      _backoff = _initialBackoff;
-      _setState(ConnectionState.connected);
+      // `connected` on receipt of `hello` — and resetting the reconnect
+      // backoff there, on a *confirmed* connection — is wired in CB-014
+      // alongside the command UI. We deliberately do not reset _backoff here:
+      // WebSocketChannel.connect() returns without throwing even when the
+      // server is unreachable (failures arrive async via onError/onDone), so
+      // resetting on every attempt would pin the delay at the initial value
+      // and defeat escalation toward the cap. A fresh connect() still resets.
+      _setState(ServerConnectionState.connected);
     } catch (e) {
       _lastError = e.toString();
-      _setState(ConnectionState.error);
+      _setState(ServerConnectionState.error);
       _scheduleReconnect();
     }
   }
 
   void _onMessage(dynamic data) {
+    // A frame can arrive after teardown has begun (subscription cancellation
+    // is async); never add to a closed controller.
+    if (_messages.isClosed) return;
     try {
       final decoded = jsonDecode(data is String ? data : data.toString());
       if (decoded is Map<String, dynamic>) {
@@ -114,8 +126,9 @@ class ServerConnection extends ChangeNotifier {
   }
 
   void _onError(Object error, StackTrace _) {
+    if (_stopRequested) return;
     _lastError = error.toString();
-    _setState(ConnectionState.error);
+    _setState(ServerConnectionState.error);
     _scheduleReconnect();
   }
 
@@ -127,7 +140,7 @@ class ServerConnection extends ChangeNotifier {
   void _scheduleReconnect() {
     if (_stopRequested) return;
     _reconnectTimer?.cancel();
-    _setState(ConnectionState.reconnecting);
+    _setState(ServerConnectionState.reconnecting);
     final delay = _backoff;
     _backoff = Duration(
       milliseconds: (_backoff.inMilliseconds * 2).clamp(
@@ -138,7 +151,7 @@ class ServerConnection extends ChangeNotifier {
     _reconnectTimer = Timer(delay, _open);
   }
 
-  void _setState(ConnectionState s) {
+  void _setState(ServerConnectionState s) {
     if (_state == s) return;
     _state = s;
     notifyListeners();
@@ -146,7 +159,16 @@ class ServerConnection extends ChangeNotifier {
 
   @override
   void dispose() {
-    disconnect();
+    // Synchronous teardown only — do not delegate to the async disconnect(),
+    // which would let awaited work (and _setState -> notifyListeners) run
+    // after super.dispose(). Cancellations are fire-and-forget here.
+    _stopRequested = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
     _messages.close();
     super.dispose();
   }

@@ -31,6 +31,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final port = int.tryParse(_portCtrl.text.trim()) ?? 7878;
     await widget.connection.connect(host, port);
     if (!mounted) return;
+    // TODO(CB-014): connect() swallows failures (it transitions to error/
+    // reconnecting rather than throwing), so this navigates regardless of
+    // outcome. Real wiring waits for the `connected` state and surfaces
+    // connection errors (e.g. a SnackBar) before pushing the home screen.
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => HomeScreen(connection: widget.connection),
@@ -64,10 +68,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
                   decoration: const InputDecoration(labelText: 'Port'),
                 ),
                 const SizedBox(height: 24),
-                FilledButton(
-                  onPressed: _connect,
-                  child: const Text('Connect'),
-                ),
+                FilledButton(onPressed: _connect, child: const Text('Connect')),
               ],
             ),
           ),
