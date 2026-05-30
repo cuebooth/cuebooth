@@ -141,24 +141,27 @@ port = 4455
 
 # ─── Camera presets ─────────────────────────────────────────────────────
 # Each maps a logical name (used in slide rules + client UI) to a
-# Companion button that, when pressed, recalls a VISCA preset.
+# Companion button that, when pressed, recalls a VISCA preset. Presets are
+# namespaced by camera id ([presets.camera.<id>.<name>]) — all the ones
+# below live on the `main` camera; a `front` camera would get its own
+# [presets.camera.front.*] entries.
 
-[presets.camera.podium]
+[presets.camera.main.podium]
 companion_button = "1/1/1"
 
-[presets.camera.podium-with-slides]
+[presets.camera.main.podium-with-slides]
 companion_button = "1/1/3"
 
-[presets.camera.piano]
+[presets.camera.main.piano]
 companion_button = "1/1/4"
 
-[presets.camera.altar-wide]
+[presets.camera.main.altar-wide]
 companion_button = "1/1/5"
 
-[presets.camera.sanctuary-wide]
+[presets.camera.main.sanctuary-wide]
 companion_button = "1/1/6"
 
-[presets.camera.choir]
+[presets.camera.main.choir]
 companion_button = "1/3/2"
 
 # ─── OBS scenes ─────────────────────────────────────────────────────────
@@ -210,16 +213,13 @@ osc_value = 0
 osc_command = "/ch/03/mix/on"
 osc_value = 1
 
-# ─── Combined macros ────────────────────────────────────────────────────
-# Pre-baked Companion macros that chain camera + audio for one segment.
-# Slide rules can reference these as `camera: choir-view` to fire the
-# whole thing at once.
+[presets.audio.mute.piano]
+osc_command = "/ch/10/mix/on"
+osc_value = 0
 
-[presets.macro.choir-view]
-companion_button = "7/2/1"
-
-[presets.macro.piano-only]
-companion_button = "7/2/0"
+[presets.audio.unmute.piano]
+osc_command = "/ch/10/mix/on"
+osc_value = 1
 
 # ─── Visible audio channels ─────────────────────────────────────────────
 # Which channels appear in the client mixer view, in what order, with
@@ -270,7 +270,7 @@ No `@cuebooth` block. The pre-roll happens before the slideshow advances. OBS is
 
 ```
 @cuebooth
-camera: piano
+camera.main: piano
 scene: camera-with-slides
 audio.mute: non-presenter, choir
 audio.unmute: piano
@@ -281,7 +281,7 @@ apply: immediate
 
 ```
 @cuebooth
-camera: sanctuary-wide
+camera.main: sanctuary-wide
 scene: camera-only
 audio.unmute: presenter, podium
 apply: immediate
@@ -293,18 +293,20 @@ The reader announces the upcoming piece while still on slide 3. The operator adv
 
 ```
 @cuebooth
-camera: choir-view
+camera.main: choir
 scene: camera-with-slides
+audio.unmute: choir
+audio.mute: presenter, podium
 apply: on-confirm
 ```
 
-Note `camera: choir-view` references the **combined macro** preset (§6), which fires camera + audio mute pattern atomically.
+`apply: on-confirm` defers the **whole** block, so the camera move, scene switch, and audio change all wait and fire together when the operator confirms — the deferred-transition pattern from the [slide rule authoring guide](slide-rules.md). (The operator can also fire the equivalent combined Companion macro by hand from the button grid; see §5.)
 
 ### Slide 5 — First reading at the podium
 
 ```
 @cuebooth
-camera: podium-with-slides
+camera.main: podium-with-slides
 scene: camera-with-slides
 audio.unmute: podium
 audio.mute: choir
