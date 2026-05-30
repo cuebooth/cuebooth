@@ -2,7 +2,7 @@
 //
 // The config maps logical action names used by the slide DSL and the Flutter
 // client to concrete Companion button coordinates and/or direct OSC commands.
-// See docs/design.md §3.5 for the design rationale and example.
+// See docs/design.md §3.4 (Slide Rule Format) for the design rationale and example.
 package config
 
 import (

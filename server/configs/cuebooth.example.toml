@@ -30,13 +30,13 @@ base_url = "http://localhost:8000"
 #   port = 4455
 #   password = "..."  # consider env var override
 #
-# [presets.camera.choir]
+# [presets.camera.main.choir]   # camera presets are namespaced by camera id
 #   companion_button = "1/3/2"
 #
 # [presets.scene.camera-with-slides]
 #   companion_button = "7/0/2"
 #
-# [presets.audio.mute.non-presenter]
+# [presets.audio.mute.non-choir]
 #   companion_button = "4/1/1"
 #   # or, equivalently:
 #   # osc_command = "/dca/1/on"
