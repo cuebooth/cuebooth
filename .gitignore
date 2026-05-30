@@ -73,8 +73,13 @@ client/windows/build/
 *.local.toml
 *.local.yaml
 *.local.json
-# CueBooth runtime config that contains site-specific identifiers
-server/configs/cuebooth.local.toml
+# CueBooth runtime config that contains site-specific identifiers.
+# This is the file the server loads by default (cmd/cuebooth-server/main.go)
+# and the one docs/sample-deployment.md tells operators to create from the
+# §6 sample — it holds the OBS password and LAN IPs, so it must stay local.
+# Only *.example.toml is tracked. (*.local.toml above already covers any
+# cuebooth.local.toml variant.)
+server/configs/cuebooth.toml
 
 # ─── Site-specific / personal material ──────────────────────────────────
 # private/ holds the original planning notes, the reference deployment's

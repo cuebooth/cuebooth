@@ -19,15 +19,20 @@ See [`../docs/design.md`](../docs/design.md) §3 for the full architecture and t
 
 ## Status
 
-Not yet scaffolded. The Go module, directory structure under `cmd/` and `internal/`, and config skeleton will be created in Phase 1 (see design doc §5).
+Skeleton scaffolded (Phase 0): the Go module, directory layout, config loader, and a Windows-service-capable entrypoint are in place. The `internal/` packages are documented stubs; their functional implementations land in Phase 1+ (see design doc §5).
 
-Planned layout:
+Layout:
 
 ```
 server/
 ├── go.mod
-├── cmd/cuebooth-server/main.go
+├── Makefile
+├── cmd/cuebooth-server/
+│   ├── main.go              Entrypoint + flag/config wiring
+│   ├── service_windows.go   Windows service wrapper
+│   └── service_other.go     Non-Windows build (run in foreground)
 ├── internal/
+│   ├── config/       TOML config loader and schema
 │   ├── companion/    Companion HTTP API client
 │   ├── audio/        Mixer OSC client, meters, automation
 │   ├── camera/       VISCA velocity PTZ
@@ -36,7 +41,7 @@ server/
 │   ├── hid/          USB HID input (clicker)
 │   └── api/          WebSocket API server for clients
 └── configs/
-    └── cuebooth.toml
+    └── cuebooth.example.toml   Copy to cuebooth.toml and edit
 ```
 
 ## Distribution
