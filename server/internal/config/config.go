@@ -50,11 +50,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	// Warn (rather than reject) on keys we don't recognize: a typo like
-	// "listenn" would otherwise silently fall back to the default. We don't
-	// hard-fail because the example config advertises forthcoming sections
-	// ([mixer], [obs], [presets.*], ...) that aren't wired into the struct yet.
+	// Warn (rather than reject) on unrecognized keys so a typo like "listenn"
+	// surfaces instead of silently falling back to the default. We only warn
+	// for keys we'd expect to decode — top-level scalars and keys inside tables
+	// we actually map (see decodedTables). The example and deployment configs
+	// advertise forthcoming sections ([mixer], [obs], [presets.*], ...) that
+	// aren't wired into the struct yet; warning on those would flood a
+	// docs-following operator with noise on every startup.
 	for _, key := range md.Undecoded() {
+		if !warnableKey(key) {
+			continue
+		}
 		slog.Warn("ignoring unknown config key", "path", path, "key", key.String())
 	}
 
@@ -63,6 +69,25 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// decodedTables are the top-level [tables] currently mapped into Config.
+// Keep this in sync as new sections are wired up; warnableKey uses it to
+// suppress warnings for not-yet-implemented sections.
+var decodedTables = map[string]bool{
+	"server":    true,
+	"companion": true,
+}
+
+// warnableKey reports whether an undecoded TOML key is worth warning about:
+// top-level scalars (e.g. a misspelled root key) and keys nested under a table
+// we actually decode (e.g. [server] listenn). Keys under tables we don't decode
+// yet are expected forward-compat sections, so they're ignored silently.
+func warnableKey(key toml.Key) bool {
+	if len(key) <= 1 {
+		return true
+	}
+	return decodedTables[key[0]]
 }
 
 func defaults() *Config {
