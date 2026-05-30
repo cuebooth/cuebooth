@@ -1,8 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required to reach the CueBooth server over the LAN / Tailscale.
+         Declared here (not only in debug/) so release builds can connect. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- The server sits on a trusted LAN / Tailscale network and is reached
+         over cleartext ws:// (LAN IPs have no TLS cert; Tailscale encrypts in
+         transit). Allow cleartext so API >= 28 release builds aren't blocked.
+         wss:// is a future option. -->
     <application
         android:label="cuebooth_client"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

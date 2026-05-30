@@ -26,6 +26,16 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- The CueBooth server is reached by LAN IP / Tailscale address over
+		     cleartext ws:// (see docs/protocol.md §1). Allow cleartext to local
+		     hosts only, rather than globally disabling ATS. wss:// is future. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CueBooth connects to your production server on the local network.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

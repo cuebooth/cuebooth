@@ -14,6 +14,12 @@ enum ServerConnectionState {
   connecting,
   connected,
   reconnecting,
+  // NOTE: not currently observable as a rendered state — _onError and the
+  // _open() catch set `error`, then immediately call _scheduleReconnect(),
+  // which sets `reconnecting` in the same synchronous turn, so ChangeNotifier
+  // coalesces the two notifications. It becomes observable once explicit
+  // connect-failure handling (without auto-reconnect) lands in CB-014;
+  // `lastError` is retained regardless.
   error,
 }
 
@@ -50,6 +56,11 @@ class ServerConnection extends ChangeNotifier {
   Future<void> connect(String host, int port) async {
     await disconnect();
     _stopRequested = false;
+    // ws:// (cleartext) is the v1 scheme: the server is reached by LAN IP or
+    // Tailscale address with no public TLS cert, and Tailscale already encrypts
+    // in transit. wss:// — the TLS equivalent, needed for HTTPS-hosted web
+    // (mixed content) or TLS-fronted deployments — is future work. See
+    // docs/protocol.md §1 and design.md §3.5.
     _uri = Uri(scheme: 'ws', host: host, port: port, path: '/ws');
     _backoff = _initialBackoff;
     _open();
@@ -102,6 +113,13 @@ class ServerConnection extends ChangeNotifier {
       // server is unreachable (failures arrive async via onError/onDone), so
       // resetting on every attempt would pin the delay at the initial value
       // and defeat escalation toward the cap. A fresh connect() still resets.
+      //
+      // UI-state caveat: because this transition is synchronous, against a down
+      // server the state cycles connecting -> connected -> reconnecting each
+      // retry, so a status indicator bound to `state` briefly flashes
+      // "connected" per cycle. Awaiting `channel.ready` (web_socket_channel
+      // 3.x) before this transition would fix both the false-connected flash
+      // and the pre-hello send window; deferred to CB-014.
       _setState(ServerConnectionState.connected);
     } catch (e) {
       _lastError = e.toString();
@@ -114,8 +132,12 @@ class ServerConnection extends ChangeNotifier {
     // A frame can arrive after teardown has begun (subscription cancellation
     // is async); never add to a closed controller.
     if (_messages.isClosed) return;
+    // Protocol v1 frames are text JSON (docs/protocol.md §2). Ignore non-String
+    // frames rather than stringifying them: toString() on a binary List<int>
+    // never yields valid JSON and would only fall through to the catch below.
+    if (data is! String) return;
     try {
-      final decoded = jsonDecode(data is String ? data : data.toString());
+      final decoded = jsonDecode(data);
       if (decoded is Map<String, dynamic>) {
         _messages.add(decoded);
       }
