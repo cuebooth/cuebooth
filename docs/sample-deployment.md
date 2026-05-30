@@ -100,8 +100,8 @@ The primary operating page (page 7 in our setup) has:
 
 - **Row 0:** OBS scene buttons (Beginning, Just Camera, Camera+Slides, PowerPoint).
 - **Rows 1–2:** Combined macros — each button recalls a camera preset *and* sets the audio mute pattern for that segment. Examples:
-  - `Podium` → recall podium camera preset, unmute non-presenter DCA, mute choir.
-  - `Choir` → recall choir camera preset, mute non-presenter DCA, unmute choir.
+  - `Podium` → recall podium camera preset, unmute non-choir DCA, mute choir.
+  - `Choir` → recall choir camera preset, mute non-choir DCA, unmute choir.
   - `Piano` → recall piano camera preset, mute everyone except piano.
 - **Row 3:** Slide forward/back + quick-access mute toggles.
 
@@ -182,13 +182,15 @@ companion_button = "7/0/3"
 
 # ─── Audio mute targets ─────────────────────────────────────────────────
 # DCAs and channels can be muted/unmuted either via Companion (which has
-# pre-wired toggles) or via direct OSC. CueBooth uses Companion for
-# discrete toggles and direct OSC for fader drag / meter streaming.
+# pre-wired toggles) or via direct OSC — both work for discrete toggles, so
+# mix the two as convenient (Companion buttons below, direct OSC below
+# that). CueBooth additionally uses direct OSC for fader drag / meter
+# streaming, which Companion doesn't cover.
 
-[presets.audio.mute.non-presenter]
+[presets.audio.mute.non-choir]
 companion_button = "4/1/1"
 
-[presets.audio.unmute.non-presenter]
+[presets.audio.unmute.non-choir]
 companion_button = "4/2/1"
 
 [presets.audio.mute.choir]
@@ -272,7 +274,7 @@ No `@cuebooth` block. The pre-roll happens before the slideshow advances. OBS is
 @cuebooth
 camera.main: piano
 scene: camera-with-slides
-audio.mute: non-presenter, choir
+audio.mute: non-choir, choir
 audio.unmute: piano
 apply: immediate
 ```
@@ -300,7 +302,7 @@ audio.mute: presenter, podium
 apply: on-confirm
 ```
 
-`apply: on-confirm` defers the **whole** block, so the camera move, scene switch, and audio change all wait and fire together when the operator confirms — the deferred-transition pattern from the [slide rule authoring guide](slide-rules.md). (The operator can also fire the equivalent combined Companion macro by hand from the button grid; see §5.)
+`apply: on-confirm` defers the **whole** block, so the camera move, scene switch, and audio change all wait and fire together when the operator confirms — the deferred-transition pattern from the [slide rule authoring guide](slide-rules.md). (A similar combined Companion macro exists for manual use from the button grid, though it covers only the camera + audio change — not the scene switch — and uses the non-choir/choir DCA pattern rather than these exact channels; see §5.)
 
 ### Slide 5 — First reading at the podium
 
@@ -367,7 +369,7 @@ The bits that stay the same:
 - The protocol between client and server.
 - The runbook's overall shape: pre-event → going live → segments → teardown.
 
-When you stand up your own deployment, copy `cuebooth.example.toml` and edit the preset sections. Keep your filled-in version in your own private repo (not in the public CueBooth repo) — it documents your specific install in a way that's useful to your team but not to outsiders.
+When you stand up your own deployment, copy the example template `cuebooth.example.toml` to `cuebooth.toml` (the name the server loads, used in §6 and elsewhere in the docs) and edit the preset sections. Keep your filled-in version in your own private repo (not in the public CueBooth repo) — it documents your specific install in a way that's useful to your team but not to outsiders.
 
 ---
 
