@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -44,8 +45,17 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := defaults()
-	if _, err := toml.Decode(string(data), cfg); err != nil {
+	md, err := toml.Decode(string(data), cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+
+	// Warn (rather than reject) on keys we don't recognize: a typo like
+	// "listenn" would otherwise silently fall back to the default. We don't
+	// hard-fail because the example config advertises forthcoming sections
+	// ([mixer], [obs], [presets.*], ...) that aren't wired into the struct yet.
+	for _, key := range md.Undecoded() {
+		slog.Warn("ignoring unknown config key", "path", path, "key", key.String())
 	}
 
 	if err := cfg.validate(); err != nil {

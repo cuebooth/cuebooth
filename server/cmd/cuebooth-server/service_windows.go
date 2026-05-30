@@ -57,16 +57,23 @@ func (h *serviceHandler) Execute(args []string, requests <-chan svc.ChangeReques
 			case svc.Stop, svc.Shutdown:
 				status <- svc.Status{State: svc.StopPending}
 				cancel()
-				<-errCh
-				status <- svc.Status{State: svc.Stopped}
-				return false, 0
+				return h.stopped(status, <-errCh)
 			}
 		case err := <-errCh:
-			if err != nil {
-				h.logger.Error("server exited with error", "err", err)
-			}
-			status <- svc.Status{State: svc.Stopped}
-			return false, 0
+			return h.stopped(status, err)
 		}
 	}
+}
+
+// stopped reports the service as stopped and maps run's exit to an SCM result.
+// A non-nil error is surfaced as a service-specific failure (non-zero exit
+// code with svcSpecificEC = true) so the SCM can trigger any configured
+// recovery actions, e.g. restart-on-failure. A clean exit returns 0.
+func (h *serviceHandler) stopped(status chan<- svc.Status, err error) (bool, uint32) {
+	status <- svc.Status{State: svc.Stopped}
+	if err != nil {
+		h.logger.Error("server exited with error", "err", err)
+		return true, 1
+	}
+	return false, 0
 }

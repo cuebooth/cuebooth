@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/config"
 )
@@ -25,6 +24,9 @@ func main() {
 	configPath := flag.String("config", defaultConfigPath, "path to the cuebooth.toml configuration file")
 	flag.Parse()
 
+	// TODO(phase1): when launched by the Windows SCM there is no console
+	// attached, so stderr is discarded and these logs are lost. Route the
+	// service path to the Windows Event Log (or a file) instead of os.Stderr.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -58,9 +60,8 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 
 	logger.Info("cuebooth-server stopping")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	_ = shutdownCtx
+	// TODO(phase1): bound subsystem teardown (audio/OSC, VISCA, OBS, HID, API)
+	// with a timeout context here once those subsystems exist to shut down.
 
 	return nil
 }
