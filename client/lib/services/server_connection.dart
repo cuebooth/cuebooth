@@ -88,6 +88,13 @@ class ServerConnection extends ChangeNotifier {
   }
 
   void _open() {
+    // A reconnect Timer that already fired can't be unscheduled by
+    // Timer.cancel() — its callback is enqueued — so _open may run after
+    // disconnect()/dispose(). Bail out rather than reopen a socket or notify
+    // listeners post-teardown (mirrors the _stopRequested guard in _onError,
+    // _onDone, and _scheduleReconnect).
+    if (_stopRequested) return;
+
     final uri = _uri;
     if (uri == null) return;
 

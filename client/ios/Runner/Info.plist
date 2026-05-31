@@ -30,7 +30,17 @@
 	<dict>
 		<!-- The CueBooth server is reached by LAN IP / Tailscale address over
 		     cleartext ws:// (see docs/protocol.md §1). Allow cleartext to local
-		     hosts only, rather than globally disabling ATS. wss:// is future. -->
+		     hosts only, rather than globally disabling ATS. wss:// is future.
+
+		     CB-014 device-verify: NSAllowsLocalNetworking reliably exempts
+		     .local / dot-less / link-local / loopback, but on some iOS versions
+		     does NOT exempt cleartext to numeric private-range IPs (192.168.x,
+		     10.x, Tailscale 100.64/10) — which is exactly this app's primary
+		     input. Confirm ws:// to a real LAN/Tailscale IP connects on a
+		     physical device; if blocked, add NSExceptionDomains (or, last
+		     resort, NSAllowsArbitraryLoads). Default 127.0.0.1 (loopback) is
+		     already covered. Android (usesCleartextTraffic) and macOS
+		     (network.client) have no such limitation. -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
