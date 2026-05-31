@@ -18,9 +18,11 @@ enum ServerConnectionState {
   // on a bad server address and does not auto-reconnect. The connection-failure
   // path (_onError and the _open() catch), however, sets `error` then
   // immediately calls _scheduleReconnect(), which sets `reconnecting` in the
-  // same synchronous turn, so ChangeNotifier coalesces the two and `error`
-  // isn't rendered for that path until connect-failure handling is finished in
-  // CB-014. `lastError` is retained regardless.
+  // same synchronous turn. notifyListeners() does fire on both calls, but a
+  // widget listener only schedules a rebuild for the next frame, which then
+  // reads the latest _state (reconnecting) — so the transient `error` isn't
+  // rendered for that path until connect-failure handling lands in CB-014.
+  // `lastError` is retained regardless.
   error,
 }
 
@@ -81,7 +83,9 @@ class ServerConnection extends ChangeNotifier {
     }
     _uri = uri;
     _backoff = _initialBackoff;
-    _open(_generation);
+    // Claim a fresh token for this attempt so a concurrent connect() (e.g. a
+    // Connect double-tap) or an already-queued stale timer is superseded.
+    _open(++_generation);
   }
 
   /// Cleanly close the connection and stop any reconnect attempts.
@@ -118,6 +122,16 @@ class ServerConnection extends ChangeNotifier {
 
     final uri = _uri;
     if (uri == null) return;
+
+    // Defensively drop any existing connection before opening a new one. The
+    // generation guard alone doesn't fully cover concurrent connect() calls
+    // (each increments _generation right before its own synchronous _open, so
+    // both can pass the guard); closing here ensures a second open can never
+    // orphan a live socket/subscription still feeding the messages stream.
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
 
     _setState(ServerConnectionState.connecting);
     try {

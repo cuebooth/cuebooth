@@ -1,8 +1,8 @@
-gradle-wrapper.jar
+# NB: the Gradle wrapper (gradlew, gradlew.bat, gradle/wrapper/gradle-wrapper.jar)
+# is intentionally NOT ignored — it must be committed so fresh clones and CI can
+# run Gradle / `flutter build apk` without a system Gradle install.
 /.gradle
 /captures/
-/gradlew
-/gradlew.bat
 /local.properties
 GeneratedPluginRegistrant.java
 .cxx/
