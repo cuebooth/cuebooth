@@ -1,0 +1,3 @@
+# Placeholder so the widgets/ directory (part of the lib/ structure described
+# in the PR / design.md §8) is tracked by git. Reusable widgets land here in
+# later phases (CB-015, CB-025+, ...); remove this file once real widgets exist.

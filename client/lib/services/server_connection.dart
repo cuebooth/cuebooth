@@ -14,12 +14,13 @@ enum ServerConnectionState {
   connecting,
   connected,
   reconnecting,
-  // NOTE: not currently observable as a rendered state — _onError and the
-  // _open() catch set `error`, then immediately call _scheduleReconnect(),
-  // which sets `reconnecting` in the same synchronous turn, so ChangeNotifier
-  // coalesces the two notifications. It becomes observable once explicit
-  // connect-failure handling (without auto-reconnect) lands in CB-014;
-  // `lastError` is retained regardless.
+  // NOTE: observable now for invalid-input failures — connect() sets `error`
+  // on a bad server address and does not auto-reconnect. The connection-failure
+  // path (_onError and the _open() catch), however, sets `error` then
+  // immediately calls _scheduleReconnect(), which sets `reconnecting` in the
+  // same synchronous turn, so ChangeNotifier coalesces the two and `error`
+  // isn't rendered for that path until connect-failure handling is finished in
+  // CB-014. `lastError` is retained regardless.
   error,
 }
 
@@ -42,6 +43,12 @@ class ServerConnection extends ChangeNotifier {
   Timer? _reconnectTimer;
   bool _stopRequested = false;
 
+  // Bumped on every connect/disconnect/dispose to invalidate already-queued
+  // reconnect Timer callbacks (Timer.cancel() can't unschedule one that has
+  // already fired). _open() ignores callbacks whose captured generation is
+  // stale, preventing a duplicate socket from a connect()-during-reconnect.
+  int _generation = 0;
+
   ServerConnectionState _state = ServerConnectionState.disconnected;
   ServerConnectionState get state => _state;
 
@@ -61,14 +68,26 @@ class ServerConnection extends ChangeNotifier {
     // in transit. wss:// — the TLS equivalent, needed for HTTPS-hosted web
     // (mixed content) or TLS-fronted deployments — is future work. See
     // docs/protocol.md §1 and design.md §3.5.
-    _uri = Uri(scheme: 'ws', host: host, port: port, path: '/ws');
+    final Uri uri;
+    try {
+      uri = Uri(scheme: 'ws', host: host, port: port, path: '/ws');
+    } on FormatException catch (e) {
+      // Bad user input (a pasted "ws://host", a host with a slash, etc.) makes
+      // the Uri constructor throw. Surface it as an error state instead of
+      // letting it crash the caller, and don't auto-reconnect on input error.
+      _lastError = 'Invalid server address: ${e.message}';
+      _setState(ServerConnectionState.error);
+      return;
+    }
+    _uri = uri;
     _backoff = _initialBackoff;
-    _open();
+    _open(_generation);
   }
 
   /// Cleanly close the connection and stop any reconnect attempts.
   Future<void> disconnect() async {
     _stopRequested = true;
+    _generation++;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _subscription?.cancel();
@@ -87,13 +106,15 @@ class ServerConnection extends ChangeNotifier {
     return true;
   }
 
-  void _open() {
+  void _open(int gen) {
     // A reconnect Timer that already fired can't be unscheduled by
     // Timer.cancel() — its callback is enqueued — so _open may run after
-    // disconnect()/dispose(). Bail out rather than reopen a socket or notify
-    // listeners post-teardown (mirrors the _stopRequested guard in _onError,
-    // _onDone, and _scheduleReconnect).
-    if (_stopRequested) return;
+    // teardown or after a newer connect(). Bail if teardown has begun, or if a
+    // later connect/disconnect/dispose has superseded this attempt (stale
+    // generation); otherwise a stale callback would open a duplicate socket and
+    // orphan _channel/_subscription. Mirrors the _stopRequested guard in
+    // _onError/_onDone/_scheduleReconnect.
+    if (_stopRequested || gen != _generation) return;
 
     final uri = _uri;
     if (uri == null) return;
@@ -177,7 +198,8 @@ class ServerConnection extends ChangeNotifier {
         _maxBackoff.inMilliseconds,
       ),
     );
-    _reconnectTimer = Timer(delay, _open);
+    final gen = _generation;
+    _reconnectTimer = Timer(delay, () => _open(gen));
   }
 
   void _setState(ServerConnectionState s) {
@@ -192,6 +214,7 @@ class ServerConnection extends ChangeNotifier {
     // which would let awaited work (and _setState -> notifyListeners) run
     // after super.dispose(). Cancellations are fire-and-forget here.
     _stopRequested = true;
+    _generation++;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _subscription?.cancel();
