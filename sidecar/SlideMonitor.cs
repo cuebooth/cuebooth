@@ -21,9 +21,9 @@ internal sealed class SlideMonitor : BackgroundService
     // Emit snake_case JSON keys to match the project's wire-format convention
     // (docs/protocol.md — server_version, level_db, ...). NOTE: this is the
     // internal sidecar→server pipe format, not the WebSocket `slides` state
-    // shape — the field *names* differ (this uses slide_index/total_slides and
-    // carries notes_text; the WS block uses current/total). Only the casing
-    // convention is shared.
+    // shape. The WS block is {current, total, title, pending_actions}; this pipe
+    // is {slide_index, total_slides, title, notes_text}. Only `title` and the
+    // snake_case casing convention are shared.
     private static readonly JsonSerializerOptions _jsonOptions =
         new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
@@ -98,12 +98,14 @@ internal sealed class SlideMonitor : BackgroundService
     /// </summary>
     private Application? TryAttach()
     {
+        object? obj = null;
         try
         {
             CLSIDFromProgID("PowerPoint.Application", out var clsid);
-            GetActiveObject(ref clsid, IntPtr.Zero, out var obj);
+            GetActiveObject(ref clsid, IntPtr.Zero, out obj);
+            var app = (Application)obj; // cast before logging success
             _log.LogInformation("attached to running PowerPoint");
-            return (Application)obj;
+            return app;
         }
         catch (Exception ex)
         {
@@ -115,6 +117,9 @@ internal sealed class SlideMonitor : BackgroundService
             // the catch-all and — with the default StopHost behavior — take down
             // the whole sidecar. Return null and let the caller retry.
             _log.LogDebug(ex, "could not attach to PowerPoint; will retry");
+            // If GetActiveObject produced an RCW before a later throw (e.g. the
+            // cast), release it so repeated retries don't accumulate COM refs.
+            Release(obj);
             return null;
         }
     }
@@ -124,12 +129,12 @@ internal sealed class SlideMonitor : BackgroundService
         using var timer = new PeriodicTimer(_pollInterval);
         var lastPosition = -1;
 
-        // Per-tick top-level RCWs (the SlideShowWindows collection and the show
-        // window) are released below in finally blocks, since at 250 ms they'd
-        // otherwise accumulate fast. TODO(CB-040): the deeper extraction chains
-        // (show.View, .Slide, .Presentation.Slides, the title/notes hops) still
-        // create RCWs that aren't individually released — deferred to the CB-040
-        // rework where leak behavior can be verified on Windows.
+        // RCW release scope: the SlideShowWindows collection and the show window
+        // are released below in finally blocks (at 250 ms they'd otherwise
+        // accumulate fast). Everything reached *through* the show window —
+        // show.View, .Slide, .Presentation.Slides, and the title/notes hops — is
+        // NOT individually released yet; that is deferred to the CB-040 rework,
+        // where leak behavior can be verified on Windows.
         while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
             // SlideShowWindows is empty unless a show is running; only report
