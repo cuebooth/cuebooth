@@ -7,6 +7,8 @@
 
 This document is the normative spec for the wire protocol between a CueBooth client (typically the Flutter app) and the cuebooth-server (the Go orchestrator). Server and client implementations should be developed against this spec rather than against each other.
 
+> **Scope:** this covers only the client↔server WebSocket protocol. The PowerPoint sidecar reaches the server over a separate local named pipe (newline-delimited JSON); that channel's payload contract is formalized in CB-041, not here.
+
 The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*. This document fills in the details that §3.6 only sketches.
 
 ---

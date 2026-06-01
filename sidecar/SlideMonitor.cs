@@ -129,18 +129,28 @@ internal sealed class SlideMonitor : BackgroundService
             var position = show.View.CurrentShowPosition;
             if (position == lastPosition) continue; // de-dup: emit only on change
 
-            lastPosition = position;
-            Emit(show, position);
+            // Advance the de-dup state only after a successful emit: if Emit
+            // fails (it swallows/logs COM hiccups), lastPosition stays put so the
+            // next tick retries this slide instead of skipping it until the
+            // operator navigates away and back.
+            if (Emit(show)) lastPosition = position;
         }
     }
 
-    private void Emit(SlideShowWindow show, int position)
+    // Returns true if the payload was built and queued; false on a logged
+    // failure, so the caller can retry on the next poll tick.
+    private bool Emit(SlideShowWindow show)
     {
         try
         {
             var slide = show.View.Slide;
+            // slide_index and total_slides are both file-relative: Slide.SlideIndex
+            // is the slide's 1-based position in the presentation, paired with the
+            // file's Slides.Count. (CurrentShowPosition — used above for de-dup —
+            // is show-relative and would disagree with Slides.Count when the deck
+            // has hidden slides or runs a custom show, e.g. "20 of 24" at the end.)
             var payload = new SlideChangedPayload(
-                SlideIndex: position,
+                SlideIndex: slide.SlideIndex,
                 TotalSlides: show.Presentation.Slides.Count,
                 Title: ReadTitle(slide),
                 NotesText: ReadNotes(slide));
@@ -148,10 +158,12 @@ internal sealed class SlideMonitor : BackgroundService
             var json = JsonSerializer.Serialize(payload, _jsonOptions);
             _pipe.Broadcast(json);
             _log.LogInformation("slide change {Index}/{Total}", payload.SlideIndex, payload.TotalSlides);
+            return true;
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "failed to emit slide change");
+            return false;
         }
     }
 
@@ -215,10 +227,12 @@ internal sealed class SlideMonitor : BackgroundService
 }
 
 /// <summary>
-/// Wire format for slide-changed events sent to the Go server. Serialized with
-/// snake_case keys ({slide_index, total_slides, title, notes_text}) per the
-/// project JSON convention (docs/protocol.md). Internal sidecar→server format,
-/// distinct from the WebSocket `slides` state shape.
+/// Wire format for slide-changed events sent to the Go server over the named
+/// pipe: snake_case keys {slide_index, total_slides, title, notes_text}. Only
+/// the snake_case *casing* follows docs/protocol.md — that document is the
+/// normative spec for the client↔server WebSocket protocol, not this
+/// sidecar↔server pipe contract, which is formalized in CB-041 (#31). Distinct
+/// from the WebSocket `slides` state shape (current/total).
 /// </summary>
 internal sealed record SlideChangedPayload(
     int SlideIndex,

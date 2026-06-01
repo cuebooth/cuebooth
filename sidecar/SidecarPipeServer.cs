@@ -66,6 +66,14 @@ internal sealed class SidecarPipeServer : BackgroundService
                 _log.LogInformation("waiting for Go server on \\\\.\\pipe\\{Pipe}", PipeName);
                 await pipe.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
                 _log.LogInformation("Go server connected");
+
+                // Discard anything buffered while no consumer was connected:
+                // those are stale transitions from while the server was down, and
+                // slide state is last-write-wins, so replaying them on reconnect
+                // would walk the server through outdated slides. (Sending the
+                // current slide on connect is initial-sync, tracked in CB-041.)
+                while (_queue.Reader.TryRead(out _)) { }
+
                 await PumpAsync(pipe, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -93,6 +101,9 @@ internal sealed class SidecarPipeServer : BackgroundService
         {
             while (reader.TryRead(out var json))
             {
+                // If the client dropped between reads, the line just dequeued is
+                // discarded (not re-queued). Benign under last-write-wins slide
+                // state; revisit if precise delivery is ever required.
                 if (!pipe.IsConnected) return;
                 var bytes = Encoding.UTF8.GetBytes(json + "\n");
                 await pipe.WriteAsync(bytes, ct).ConfigureAwait(false);

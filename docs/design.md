@@ -211,14 +211,16 @@ This means the existing Companion configuration continues to work and evolve ind
 #### PowerPoint Monitor (C# Sidecar)
 
 A small, focused process (~200 lines) that handles PowerPoint COM automation:
-- Connects to PowerPoint via COM events (not polling) to detect slide changes.
-  *(Phasing: CB-006 ships an initial polling implementation — simpler and
-  dependency-free, with no STA-thread/message-pump machinery — which CB-040
-  supersedes with this event-based design to cut latency and idle CPU. Polling
-  vs. events is a latency/efficiency choice; the slide-change payload and the
-  IPC contract are identical either way.)*
+- Connects to PowerPoint via COM to detect slide changes — events in the target
+  design; CB-006 ships an initial polling implementation.
+  *(Phasing: polling is simpler and dependency-free, with no STA-thread/message-
+  pump machinery; CB-040 supersedes it with the event-based design to cut latency
+  and idle CPU. Polling vs. events is a latency/efficiency choice — the
+  slide-change payload and the IPC contract are identical either way.)*
 - Reads slide metadata/notes (where CueBooth rules are defined).
 - Forwards events to the Go server over a local named pipe or localhost WebSocket.
+  The pipe payload contract (distinct from the client↔server WebSocket protocol
+  in [protocol.md](protocol.md)) is formalized in CB-041.
 - If PowerPoint is ever replaced, only this sidecar changes.
 
 C# is used because COM interop in Go is painful, and .NET is already on every Windows machine.
