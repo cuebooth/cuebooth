@@ -18,7 +18,7 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 ## Status
 
-Phase 0 — foundation and documentation. The design is complete; implementation has not yet begun. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
+Phase 0 — foundation, documentation, and project scaffolding. The design is complete and the server, client, and sidecar skeletons are landing now; feature implementation (Phase 1 onward) has not yet begun. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
 ## Repository Layout
 

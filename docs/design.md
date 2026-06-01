@@ -211,9 +211,16 @@ This means the existing Companion configuration continues to work and evolve ind
 #### PowerPoint Monitor (C# Sidecar)
 
 A small, focused process (~200 lines) that handles PowerPoint COM automation:
-- Connects to PowerPoint via COM events (not polling) to detect slide changes.
+- Connects to PowerPoint via COM to detect slide changes — events in the target
+  design; CB-006 ships an initial polling implementation.
+  *(Phasing: polling is simpler and dependency-free, with no STA-thread/message-
+  pump machinery; CB-040 supersedes it with the event-based design to cut latency
+  and idle CPU. Polling vs. events is a latency/efficiency choice — the
+  slide-change payload and the IPC contract are identical either way.)*
 - Reads slide metadata/notes (where CueBooth rules are defined).
 - Forwards events to the Go server over a local named pipe or localhost WebSocket.
+  The pipe payload contract (distinct from the client↔server WebSocket protocol
+  in [protocol.md](protocol.md)) is formalized in CB-041.
 - If PowerPoint is ever replaced, only this sidecar changes.
 
 C# is used because COM interop in Go is painful, and .NET is already on every Windows machine.
@@ -491,7 +498,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-003** `infra` — Create GitHub repo, project board, and CI scaffolding
 - **CB-004** `server` — Go project skeleton: module init, directory structure, config loading, Windows service wrapper
 - **CB-005** `client` — Flutter project skeleton: multi-platform setup, WebSocket connection scaffold, basic navigation
-- **CB-006** `sidecar` — C# project skeleton: .NET console app, PowerPoint COM interop proof-of-concept
+- **CB-006** `sidecar` — C# project skeleton: .NET worker service, PowerPoint COM interop proof-of-concept via an initial **polling** slide monitor (superseded by CB-040)
 
 ### Phase 1 — Server Core + Companion Integration
 - **CB-010** `server` — Companion HTTP API client: button press, button state read, variable read/write
@@ -523,7 +530,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-035** `server` — Multi-camera addressing for second camera
 
 ### Phase 4 — Slide Engine
-- **CB-040** `sidecar` — PowerPoint COM event-based slide change detection
+- **CB-040** `sidecar` — PowerPoint COM **event-based** slide change detection (supersedes CB-006's polling monitor; lower latency/idle CPU, needs an STA thread + message pump)
 - **CB-041** `sidecar` — Slide metadata/notes extraction and IPC to Go server
 - **CB-042** `server` — Slide rule DSL parser
 - **CB-043** `server` — Rule action executor: route to Companion HTTP or direct OSC, immediate vs. deferred
