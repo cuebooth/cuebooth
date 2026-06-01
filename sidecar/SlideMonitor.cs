@@ -52,12 +52,13 @@ internal sealed class SlideMonitor : BackgroundService
             var app = TryAttach();
             if (app is null)
             {
-                await DelayQuietly(_attachRetry, stoppingToken);
+                await DelayQuietly(_attachRetry, stoppingToken).ConfigureAwait(false);
                 continue;
             }
+            var faulted = false;
             try
             {
-                await PollLoopAsync(app, stoppingToken);
+                await PollLoopAsync(app, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -67,17 +68,23 @@ internal sealed class SlideMonitor : BackgroundService
             {
                 // PowerPoint closed mid-show; drop the reference and re-attach.
                 _log.LogInformation(ex, "PowerPoint connection lost; will re-attach");
+                faulted = true;
             }
             catch (Exception ex)
             {
                 // Never let an unexpected error kill the monitor permanently;
                 // log and fall through to re-attach.
-                _log.LogWarning(ex, "slide monitor error; re-attaching");
+                _log.LogWarning(ex, "slide monitor error; will re-attach");
+                faulted = true;
             }
             finally
             {
                 Release(app);
             }
+            // Back off after a fault (the app RCW is already released above) so a
+            // deterministic recurring poll error doesn't churn the COM attach and
+            // spam logs every poll interval. The null-attach path backs off above.
+            if (faulted) await DelayQuietly(_attachRetry, stoppingToken).ConfigureAwait(false);
         }
     }
 
@@ -98,9 +105,16 @@ internal sealed class SlideMonitor : BackgroundService
             _log.LogInformation("attached to running PowerPoint");
             return (Application)obj;
         }
-        catch (COMException)
+        catch (Exception ex)
         {
-            // MK_E_UNAVAILABLE etc. — PowerPoint isn't running yet.
+            // Catch broadly, not just COMException: besides the expected
+            // MK_E_UNAVAILABLE (PowerPoint not running yet), the cast can throw
+            // InvalidCastException if the ROT hands back an unexpected object, and
+            // the P/Invokes can surface non-COM marshaling failures. This runs
+            // outside ExecuteAsync's try, so an escaping exception would bypass
+            // the catch-all and — with the default StopHost behavior — take down
+            // the whole sidecar. Return null and let the caller retry.
+            _log.LogDebug(ex, "could not attach to PowerPoint; will retry");
             return null;
         }
     }
@@ -110,30 +124,40 @@ internal sealed class SlideMonitor : BackgroundService
         using var timer = new PeriodicTimer(_pollInterval);
         var lastPosition = -1;
 
-        // TODO(CB-040): each tick (and the title/notes extraction chains) creates
-        // COM RCWs that should be released with Marshal.ReleaseComObject to avoid
-        // leaking references and keeping the PowerPoint process alive. Polling
-        // makes this more pressing than the event model would. Deferred to the
-        // CB-040 rework, where leak behavior can be verified on Windows.
-        while (await timer.WaitForNextTickAsync(ct))
+        // Per-tick top-level RCWs (the SlideShowWindows collection and the show
+        // window) are released below in finally blocks, since at 250 ms they'd
+        // otherwise accumulate fast. TODO(CB-040): the deeper extraction chains
+        // (show.View, .Slide, .Presentation.Slides, the title/notes hops) still
+        // create RCWs that aren't individually released — deferred to the CB-040
+        // rework where leak behavior can be verified on Windows.
+        while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
             // SlideShowWindows is empty unless a show is running; only report
             // during an active slideshow (the operator running their deck).
-            if (app.SlideShowWindows.Count < 1)
+            var windows = app.SlideShowWindows;
+            try
             {
-                lastPosition = -1; // re-emit the opening slide when a show (re)starts
-                continue;
+                if (windows.Count < 1)
+                {
+                    lastPosition = -1; // re-emit the opening slide when a show (re)starts
+                    continue;
+                }
+
+                var show = windows[1];
+                try
+                {
+                    var position = show.View.CurrentShowPosition;
+                    if (position == lastPosition) continue; // de-dup: emit only on change
+
+                    // Advance the de-dup state only after a successful emit: if Emit
+                    // fails (it swallows/logs COM hiccups), lastPosition stays put so
+                    // the next tick retries this slide instead of skipping it until
+                    // the operator navigates away and back.
+                    if (Emit(show)) lastPosition = position;
+                }
+                finally { Release(show); }
             }
-
-            var show = app.SlideShowWindows[1];
-            var position = show.View.CurrentShowPosition;
-            if (position == lastPosition) continue; // de-dup: emit only on change
-
-            // Advance the de-dup state only after a successful emit: if Emit
-            // fails (it swallows/logs COM hiccups), lastPosition stays put so the
-            // next tick retries this slide instead of skipping it until the
-            // operator navigates away and back.
-            if (Emit(show)) lastPosition = position;
+            finally { Release(windows); }
         }
     }
 
@@ -201,7 +225,7 @@ internal sealed class SlideMonitor : BackgroundService
 
     private static async Task DelayQuietly(TimeSpan delay, CancellationToken ct)
     {
-        try { await Task.Delay(delay, ct); }
+        try { await Task.Delay(delay, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { /* shutting down */ }
     }
 

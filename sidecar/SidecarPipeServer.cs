@@ -91,14 +91,40 @@ internal sealed class SidecarPipeServer : BackgroundService
         }
     }
 
-    // Single writer to the pipe: drain queued lines until the client
-    // disconnects or shutdown is requested, then return so the accept loop can
-    // recycle the pipe for the next connection.
+    // Wake at least this often while idle so a client disconnect during a quiet
+    // stretch is noticed and the pipe recycled, instead of blocking on
+    // WaitToReadAsync until the next slide change.
+    private static readonly TimeSpan _idleProbe = TimeSpan.FromSeconds(2);
+
+    // Single writer to the pipe: drain queued lines until the client disconnects
+    // or shutdown is requested, then return so the accept loop can recycle the
+    // pipe for the next connection.
     private async Task PumpAsync(NamedPipeServerStream pipe, CancellationToken ct)
     {
         var reader = _queue.Reader;
-        while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
+        while (true)
         {
+            if (!pipe.IsConnected) return; // client gone — let the accept loop recycle
+
+            // Wait for the next payload, but wake on an idle-probe timeout so an
+            // idle disconnect is still detected (the top-of-loop IsConnected check
+            // then recycles). NOTE: IsConnected on a one-way (Out) pipe isn't fully
+            // reliable for remote disconnect without I/O — the robust mechanism is
+            // a periodic heartbeat write (or a duplex read) coordinated with the Go
+            // consumer, deferred to CB-041 along with the pipe contract.
+            using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            idleCts.CancelAfter(_idleProbe);
+            bool hasData;
+            try
+            {
+                hasData = await reader.WaitToReadAsync(idleCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                continue; // idle-probe elapsed (not shutdown) — re-check IsConnected
+            }
+            if (!hasData) return; // channel completed
+
             while (reader.TryRead(out var json))
             {
                 // If the client dropped between reads, the line just dequeued is
