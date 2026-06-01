@@ -10,6 +10,13 @@ namespace CueBooth.Sidecar;
 /// </summary>
 internal sealed class SlideMonitor : BackgroundService
 {
+    // Emit snake_case JSON keys to match the project's wire convention
+    // (docs/protocol.md — e.g. server_version, level_db, uptime_seconds). The
+    // Go server consumes this pipe and re-exposes slide state on its WebSocket
+    // `slides` topic, so the pipe payload follows the same casing.
+    private static readonly JsonSerializerOptions _jsonOptions =
+        new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+
     private readonly ILogger<SlideMonitor> _log;
     private readonly SidecarPipeServer _pipe;
     private Application? _ppt;
@@ -68,7 +75,7 @@ internal sealed class SlideMonitor : BackgroundService
                 Title: SafeTitle(slide),
                 NotesText: notes);
 
-            var json = JsonSerializer.Serialize(payload);
+            var json = JsonSerializer.Serialize(payload, _jsonOptions);
             _pipe.Broadcast(json);
             _log.LogInformation("slide change {Index}/{Total}", payload.SlideIndex, payload.TotalSlides);
         }
@@ -115,7 +122,9 @@ internal sealed class SlideMonitor : BackgroundService
 }
 
 /// <summary>
-/// Wire format for slide-changed events sent to the Go server.
+/// Wire format for slide-changed events sent to the Go server. Serialized with
+/// snake_case keys ({slide_index, total_slides, title, notes_text}) per the
+/// project JSON convention (docs/protocol.md).
 /// </summary>
 internal sealed record SlideChangedPayload(
     int SlideIndex,

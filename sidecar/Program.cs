@@ -2,12 +2,12 @@
 //
 // Hosts two long-running services:
 //   * SlideMonitor — subscribes to PowerPoint COM events and forwards
-//     {slideIndex, totalSlides, notesText, ...} payloads on slide change.
+//     {slide_index, total_slides, title, notes_text} payloads on slide change.
 //   * SidecarPipeServer — accepts a single Go-server connection over a
 //     named pipe (\\.\pipe\cuebooth-sidecar) and delivers payloads to it
 //     as newline-delimited JSON.
 //
-// See ../docs/design.md §3.3 (PowerPoint Monitor) and §4 (Phase 4 —
+// See ../docs/design.md §3.3 (PowerPoint Monitor) and §5 (Phase 4 —
 // Slide Engine).
 
 using CueBooth.Sidecar;
