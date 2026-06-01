@@ -28,6 +28,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   Future<void> _connect() async {
     final host = _hostCtrl.text.trim();
+    // TODO(CB-014): a non-numeric port silently falls back to 7878 with no
+    // feedback; proper field validation lands with the connect-flow wiring.
     final port = int.tryParse(_portCtrl.text.trim()) ?? 7878;
     await widget.connection.connect(host, port);
     if (!mounted) return;

@@ -65,6 +65,15 @@ class ServerConnection extends ChangeNotifier {
   Future<void> connect(String host, int port) async {
     await disconnect();
     _stopRequested = false;
+    // Reject obviously-invalid input up front with an error state (no auto-
+    // reconnect) instead of letting it fail asynchronously into the reconnect
+    // loop. An empty host produces ws://:port, which doesn't throw but never
+    // connects; fuller validation/feedback is CB-014.
+    if (host.trim().isEmpty) {
+      _lastError = 'Server address is required.';
+      _setState(ServerConnectionState.error);
+      return;
+    }
     // ws:// (cleartext) is the v1 scheme: the server is reached by LAN IP or
     // Tailscale address with no public TLS cert, and Tailscale already encrypts
     // in transit. wss:// — the TLS equivalent, needed for HTTPS-hosted web
@@ -212,7 +221,10 @@ class ServerConnection extends ChangeNotifier {
         _maxBackoff.inMilliseconds,
       ),
     );
-    final gen = _generation;
+    // Bump the generation so an earlier reconnect Timer that already fired (its
+    // _open callback enqueued, immune to Timer.cancel()) goes stale and bails in
+    // _open instead of triggering an extra open cycle.
+    final gen = ++_generation;
     _reconnectTimer = Timer(delay, () => _open(gen));
   }
 
