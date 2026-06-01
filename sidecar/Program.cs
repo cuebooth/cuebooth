@@ -1,8 +1,10 @@
 // CueBooth PowerPoint sidecar — entry point.
 //
 // Hosts two long-running services:
-//   * SlideMonitor — subscribes to PowerPoint COM events and forwards
+//   * SlideMonitor — polls PowerPoint during an active slideshow and forwards
 //     {slide_index, total_slides, title, notes_text} payloads on slide change.
+//     (CB-006 polls; CB-040 supersedes it with COM event sinks — see
+//     docs/design.md §3.3.)
 //   * SidecarPipeServer — accepts a single Go-server connection over a
 //     named pipe (\\.\pipe\cuebooth-sidecar) and delivers payloads to it
 //     as newline-delimited JSON.

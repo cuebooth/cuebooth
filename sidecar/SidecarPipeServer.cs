@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text;
+using System.Threading.Channels;
 
 namespace CueBooth.Sidecar;
 
@@ -8,43 +9,46 @@ namespace CueBooth.Sidecar;
 /// server as newline-delimited JSON. A single connection at a time — the Go
 /// server is the only consumer.
 ///
+/// Payloads are handed off through a bounded channel: producers (the slide
+/// monitor) enqueue without blocking, and a single drain loop is the only
+/// writer to the pipe. This keeps slide detection off pipe I/O — a slow or
+/// stalled consumer can't block the monitor — and guarantees each JSON line is
+/// written atomically, with no byte interleaving from concurrent writes.
+///
 /// IPC choice: named pipe over localhost WebSocket because (a) no port to
 /// configure, (b) Windows-native security via pipe ACLs if needed later,
 /// (c) the Go side can use \\.\pipe\cuebooth-sidecar with the os package.
+///
+/// TODO(security): the pipe uses the default security descriptor, so any local
+/// user could connect and read slide notes. On a shared machine, restrict it
+/// to the current user (NamedPipeServerStreamAcl.Create with a PipeSecurity).
+/// Deferred — low risk on a single-operator production PC.
 /// </summary>
 internal sealed class SidecarPipeServer : BackgroundService
 {
     public const string PipeName = "cuebooth-sidecar";
 
     private readonly ILogger<SidecarPipeServer> _log;
-    private readonly object _gate = new();
-    private NamedPipeServerStream? _current;
+
+    // Bounded + DropOldest: if no consumer is connected the queue can't grow
+    // without bound, and for slide state it's the most recent entries that
+    // matter. Single reader — the drain loop in ExecuteAsync.
+    private readonly Channel<string> _queue = Channel.CreateBounded<string>(
+        new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+        });
 
     public SidecarPipeServer(ILogger<SidecarPipeServer> log) => _log = log;
 
     /// <summary>
-    /// Send a single line (the JSON payload) to the connected client, if any.
-    /// Drops the message silently if nothing's connected — the Go server is
-    /// responsible for connecting before slides matter.
+    /// Queue a JSON line for delivery. Non-blocking: returns immediately and
+    /// never stalls the caller (the slide monitor's poll loop) on pipe I/O.
+    /// Drops silently if the queue is full or the server is shutting down — the
+    /// Go server is responsible for connecting before slides matter.
     /// </summary>
-    public void Broadcast(string json)
-    {
-        NamedPipeServerStream? pipe;
-        lock (_gate) { pipe = _current; }
-        if (pipe is null || !pipe.IsConnected) return;
-
-        try
-        {
-            var bytes = Encoding.UTF8.GetBytes(json + "\n");
-            pipe.Write(bytes, 0, bytes.Length);
-            pipe.Flush();
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "pipe write failed; dropping client");
-            DropCurrent();
-        }
-    }
+    public void Broadcast(string json) => _queue.Writer.TryWrite(json);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -62,33 +66,38 @@ internal sealed class SidecarPipeServer : BackgroundService
                 _log.LogInformation("waiting for Go server on \\\\.\\pipe\\{Pipe}", PipeName);
                 await pipe.WaitForConnectionAsync(stoppingToken).ConfigureAwait(false);
                 _log.LogInformation("Go server connected");
-                lock (_gate) { _current = pipe; }
-
-                // Block until either the client disconnects or we're shutting
-                // down. We don't read from the pipe — it's one-way.
-                while (!stoppingToken.IsCancellationRequested && pipe.IsConnected)
-                {
-                    try { await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken); }
-                    catch (TaskCanceledException) { break; }
-                }
+                await PumpAsync(pipe, stoppingToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not TaskCanceledException)
+            catch (OperationCanceledException)
+            {
+                break; // shutting down
+            }
+            catch (Exception ex)
             {
                 _log.LogWarning(ex, "pipe error; recycling");
             }
             finally
             {
-                DropCurrent();
-                try { await pipe.DisposeAsync(); } catch { /* ignore */ }
+                try { await pipe.DisposeAsync().ConfigureAwait(false); } catch { /* ignore */ }
             }
         }
     }
 
-    private void DropCurrent()
+    // Single writer to the pipe: drain queued lines until the client
+    // disconnects or shutdown is requested, then return so the accept loop can
+    // recycle the pipe for the next connection.
+    private async Task PumpAsync(NamedPipeServerStream pipe, CancellationToken ct)
     {
-        lock (_gate)
+        var reader = _queue.Reader;
+        while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
         {
-            _current = null;
+            while (reader.TryRead(out var json))
+            {
+                if (!pipe.IsConnected) return;
+                var bytes = Encoding.UTF8.GetBytes(json + "\n");
+                await pipe.WriteAsync(bytes, ct).ConfigureAwait(false);
+                await pipe.FlushAsync(ct).ConfigureAwait(false);
+            }
         }
     }
 }
