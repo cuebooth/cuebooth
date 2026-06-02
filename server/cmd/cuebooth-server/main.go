@@ -15,10 +15,16 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/cuebooth/cuebooth/server/internal/api"
+	"github.com/cuebooth/cuebooth/server/internal/companion"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 )
 
 const defaultConfigPath = "configs/cuebooth.toml"
+
+// version is the server build version, advertised to clients in the protocol
+// hello frame. Wired to a real build stamp when release packaging lands (CB-087).
+const version = "0.1.0"
 
 func main() {
 	configPath := flag.String("config", defaultConfigPath, "path to the cuebooth.toml configuration file")
@@ -53,15 +59,24 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 		"companion", cfg.Companion.BaseURL,
 	)
 
+	comp, err := companion.New(cfg.Companion.BaseURL, companion.WithLogger(logger))
+	if err != nil {
+		return err
+	}
+
+	srv := api.NewServer(cfg, comp, api.WithLogger(logger), api.WithVersion(version))
+
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	<-ctx.Done()
+	// Run blocks until ctx is cancelled (signal or, under the Windows SCM, a
+	// stop request), then shuts the HTTP/WebSocket server down gracefully.
+	err = srv.Run(ctx)
 
 	logger.Info("cuebooth-server stopping")
 
-	// TODO(phase1): bound subsystem teardown (audio/OSC, VISCA, OBS, HID, API)
-	// with a timeout context here once those subsystems exist to shut down.
+	// TODO(phase2+): bound teardown of the remaining subsystems (audio/OSC,
+	// VISCA, OBS, HID) here once those exist to shut down.
 
-	return nil
+	return err
 }

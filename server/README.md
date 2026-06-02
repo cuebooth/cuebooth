@@ -19,7 +19,14 @@ See [`../docs/design.md`](../docs/design.md) §3 for the full architecture and t
 
 ## Status
 
-Phase 1 in progress. The Go module, directory layout, and a Windows-service-capable entrypoint are in place (Phase 0). Implemented so far: the config loader with the preset-mapping schema (`internal/config`, CB-011) and the Companion HTTP API client (`internal/companion`, CB-010). The remaining `internal/` packages (`audio`, `camera`, `obs`, `slides`, `hid`, `api`) are documented stubs whose implementations land in later phases (see design doc §5).
+Phase 1 in progress. The Go module, directory layout, and a Windows-service-capable entrypoint are in place (Phase 0). Implemented so far:
+
+- `internal/config` (CB-011) — config loader with the preset-mapping schema.
+- `internal/companion` (CB-010) — Companion HTTP API client.
+- `internal/api` (CB-012) — WebSocket API server: client connections, command routing, state broadcast, the reserved `/ws/meters` endpoint, ping/pong keepalive, and graceful shutdown.
+- `internal/state` (CB-013) — authoritative state store with monotonic revisions and sparse deltas, plus a pluggable poller for background sources.
+
+The entrypoint now wires these together: it loads config, builds the Companion client, and serves the API until stopped. The remaining `internal/` packages (`audio`, `camera`, `obs`, `slides`, `hid`) are documented stubs whose implementations land in later phases (see design doc §5).
 
 Layout:
 
@@ -39,7 +46,8 @@ server/
 │   ├── obs/          OBS WebSocket client (video relay)
 │   ├── slides/       Slide rule parser and executor
 │   ├── hid/          USB HID input (clicker)
-│   └── api/          WebSocket API server for clients
+│   ├── api/          WebSocket API server for clients
+│   └── state/        Authoritative state store + aggregation
 └── configs/
     └── cuebooth.example.toml   Copy to cuebooth.toml and edit
 ```
