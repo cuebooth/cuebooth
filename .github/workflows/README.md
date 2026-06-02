@@ -1,10 +1,10 @@
 # CueBooth CI/CD Workflows
 
-GitHub Actions workflows live here. None are implemented yet — this README captures the planned set so the design isn't lost between Phase 0 (scaffolding) and Phase 1+ (implementation).
+GitHub Actions workflows live here. The per-PR/push build-test workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml`); the release/installer builds are still planned, tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71). This README captures the full intended set.
 
 ## Planned Workflows
 
-### Per-PR / per-push checks
+### Per-PR / per-push checks (implemented)
 
 | Component | Job | Notes |
 |-----------|-----|-------|
@@ -12,7 +12,7 @@ GitHub Actions workflows live here. None are implemented yet — this README cap
 | `client/`  | `flutter analyze`, `flutter test` | Run on Linux for speed. |
 | `sidecar/` | `dotnet build`, `dotnet test` | Windows runner — uses Office COM types, but build itself can be Linux. |
 
-### Release builds
+### Release builds (planned — [CB-087](https://github.com/cuebooth/cuebooth/issues/71))
 
 Triggered by version tags (e.g. `v0.1.0`). All Windows-bound components must produce a real Windows installer.
 
@@ -37,4 +37,4 @@ An earlier prototype used a Visual Studio Installer (`.vdproj`), which is deprec
 
 ## Status
 
-Not yet scaffolded. Phase 0 (foundation) intentionally stops at this README. Phase 1 of the design will add the first real CI workflow (Go build + test for the server).
+The per-PR/push build-test workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml`) — landed in #68 (CB-003). The release/installer builds are not yet scaffolded; they're tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71) and will land alongside the first version-tagged release.
