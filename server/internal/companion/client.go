@@ -57,12 +57,14 @@ func WithHTTPClient(hc *http.Client) Option {
 
 // WithRetries sets how many times a transient failure is retried (in addition
 // to the initial attempt) and the base backoff between attempts. The backoff
-// grows linearly with the attempt number. A maxRetries of 0 disables retrying.
+// grows linearly with the attempt number. A maxRetries of 0 disables retrying;
+// negative values are clamped to 0.
 func WithRetries(maxRetries int, backoff time.Duration) Option {
 	return func(c *Client) {
-		if maxRetries >= 0 {
-			c.maxRetries = maxRetries
+		if maxRetries < 0 {
+			maxRetries = 0
 		}
+		c.maxRetries = maxRetries
 		if backoff > 0 {
 			c.backoff = backoff
 		}
@@ -220,24 +222,40 @@ func (c *Client) attempt(ctx context.Context, method, path, body, contentType st
 		req.Header.Set("Content-Type", contentType)
 	}
 
+	// Only idempotent reads (GET) may be retried on an ambiguous failure. A
+	// transport error or lost response on a POST might mean Companion already
+	// pressed the button or applied the write, so re-sending could double-
+	// actuate. (Trade-off: a POST that fails with connection-refused — which
+	// definitely never reached Companion — also isn't retried; we surface the
+	// error and favor never double-actuating. Reads, including state polling,
+	// retry as before.)
+	idempotent := method == http.MethodGet
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Transport-level failures (connection refused, timeout, reset) are
-		// transient — Companion may be restarting. A cancelled context is not.
-		return nil, ctx.Err() == nil, err
+		// No response received. Retry only idempotent requests, and never once
+		// the caller's context is done.
+		return nil, idempotent && ctx.Err() == nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if !idempotent {
+			// Success. The response body is unused for actuation/writes, so a
+			// body-read error here is irrelevant and must not trigger a re-send.
+			return nil, false, nil
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return nil, true, fmt.Errorf("read response body: %w", readErr)
 		}
 		return respBody, false, nil
 	}
 
-	// 5xx and 429 are transient; other 4xx are permanent (bad request, unknown
-	// button/variable) and shouldn't be retried.
+	// Non-2xx: Companion responded that it did not perform the action. 5xx and
+	// 429 are transient and safe to retry for any method; other 4xx are
+	// permanent (bad request, unknown button/variable) and shouldn't be retried.
+	respBody, _ := io.ReadAll(resp.Body)
 	retryable := resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
 	return nil, retryable, fmt.Errorf("unexpected status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
 }

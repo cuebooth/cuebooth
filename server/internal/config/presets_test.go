@@ -205,6 +205,10 @@ companion_button = "1/0"`,
 		"osc without value": `
 [presets.audio.mute.x]
 osc_command = "/foo"`,
+		"osc not an address": `
+[presets.audio.mute.x]
+osc_command = "ch01"
+osc_value = 0`,
 	}
 	base := "[server]\nlisten = \"0.0.0.0:7878\"\n[companion]\nbase_url = \"http://localhost:8000\"\n"
 	for name, frag := range bad {

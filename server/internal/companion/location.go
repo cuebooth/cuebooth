@@ -31,7 +31,8 @@ func ParseLocation(s string) (Location, error) {
 
 	nums := make([]int, 3)
 	for i, p := range parts {
-		n, err := strconv.Atoi(strings.TrimSpace(p))
+		p = strings.TrimSpace(p)
+		n, err := strconv.Atoi(p)
 		if err != nil {
 			return Location{}, fmt.Errorf("invalid button coordinate %q: component %q is not an integer", s, p)
 		}

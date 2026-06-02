@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 )
@@ -146,6 +147,9 @@ func (r ActionRef) validate() error {
 			return err
 		}
 	case hasOSC:
+		if !strings.HasPrefix(r.OSCCommand, "/") {
+			return errors.New("osc_command must be an OSC address starting with \"/\"")
+		}
 		if !r.OSCValue.Set {
 			return errors.New("osc_command requires osc_value")
 		}
