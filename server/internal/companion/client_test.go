@@ -130,6 +130,24 @@ func TestRetryOnServerError(t *testing.T) {
 	}
 }
 
+func TestRetryOn429(t *testing.T) {
+	var calls atomic.Int32
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		// 429 is the only non-5xx status that retries — exercise that branch.
+		if calls.Add(1) <= 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	if err := c.Press(context.Background(), Location{1, 0, 0}); err != nil {
+		t.Fatalf("Press: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2 (429 then success)", got)
+	}
+}
+
 func TestNoRetryOnClientError(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

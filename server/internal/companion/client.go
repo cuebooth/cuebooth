@@ -233,9 +233,10 @@ func (c *Client) attempt(ctx context.Context, method, path, body, contentType st
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// No response received. Retry only idempotent requests, and never once
-		// the caller's context is done.
-		return nil, idempotent && ctx.Err() == nil, err
+		// No response received: retry only idempotent requests. (do owns the
+		// cancellation rule — it stops retrying once ctx is done regardless of
+		// this flag.)
+		return nil, idempotent, err
 	}
 	defer resp.Body.Close()
 
@@ -252,9 +253,13 @@ func (c *Client) attempt(ctx context.Context, method, path, body, contentType st
 		return respBody, false, nil
 	}
 
-	// Non-2xx: Companion responded that it did not perform the action. 5xx and
-	// 429 are transient and safe to retry for any method; other 4xx are
-	// permanent (bad request, unknown button/variable) and shouldn't be retried.
+	// Non-2xx: Companion responded, so the request reached it and completed
+	// without performing the action. That makes 5xx/429 safe to retry for ANY
+	// method — unlike a transport error (above), where a POST's fate is unknown,
+	// a status response means no side effect occurred. (Companion's API is a
+	// direct localhost endpoint with no intermediary that could emit a 5xx after
+	// the action ran.) 5xx and 429 are transient; other 4xx are permanent (bad
+	// request, unknown button/variable) and aren't retried.
 	respBody, _ := io.ReadAll(resp.Body)
 	retryable := resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
 	return nil, retryable, fmt.Errorf("unexpected status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
