@@ -83,6 +83,18 @@ func (s *Store) Snapshot(topics map[string]bool) (rev int, data map[string]any) 
 	return s.rev, FilterTopics(s.cur, topics)
 }
 
+// SnapshotInto runs fn under the read lock with the current revision and a
+// state object scoped to topics. Holding the lock across fn lets a caller
+// enqueue the snapshot (and, on connect, register for broadcasts) atomically
+// with respect to Update's observer — so a client never receives a higher-rev
+// delta ahead of, or in place of, its snapshot frame. fn must not call back
+// into the Store or block.
+func (s *Store) SnapshotInto(topics map[string]bool, fn func(rev int, data map[string]any)) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	fn(s.rev, FilterTopics(s.cur, topics))
+}
+
 // Rev returns the current revision.
 func (s *Store) Rev() int {
 	s.mu.RLock()

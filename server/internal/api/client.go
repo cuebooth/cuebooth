@@ -138,22 +138,18 @@ func (c *clientConn) run(parentCtx context.Context) {
 	dispatchCtx, cancelDispatch := context.WithCancel(parentCtx)
 	defer cancelDispatch()
 
-	hello := mustMarshal(helloFrame{
+	// Queue hello, then the initial state snapshot, before the write loop runs.
+	// Registering with the hub inside SnapshotInto (under the store read lock)
+	// makes the snapshot read, its enqueue, and registration atomic with respect
+	// to Update's broadcast: the client receives deltas exactly from the snapshot
+	// revision onward — no gap, and nothing reordered ahead of the snapshot.
+	c.enqueue(mustMarshal(helloFrame{
 		Type:          typeHello,
 		Proto:         ProtoVersion,
 		ServerVersion: c.server.version,
 		ServerID:      c.server.serverID,
-	})
-	if err := c.writeDirect(hello); err != nil {
-		c.conn.CloseNow()
-		return
-	}
-	if err := c.writeDirect(c.snapshotFrame()); err != nil {
-		c.conn.CloseNow()
-		return
-	}
-
-	c.server.hub.add(c)
+	}))
+	c.sendSnapshot(func() { c.server.hub.add(c) })
 	defer c.server.hub.remove(c)
 
 	// Bridge server shutdown to a close, and stop in-flight command work once
@@ -176,14 +172,6 @@ func (c *clientConn) run(parentCtx context.Context) {
 	c.close("connection closed")
 	wg.Wait()
 	c.server.logger.Debug("client connection closed", "reason", c.reason())
-}
-
-// writeDirect writes a frame synchronously. Only used before the write loop
-// starts, so it never races another writer.
-func (c *clientConn) writeDirect(frame []byte) error {
-	wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-	defer cancel()
-	return c.conn.Write(wctx, websocket.MessageText, frame)
 }
 
 // writeLoop is the sole writer of data frames and tears the connection down. On
@@ -286,7 +274,7 @@ func (c *clientConn) handle(ctx context.Context, data []byte) {
 	case typeUnsubscribe:
 		c.handleSubscription(data, false)
 	case typeGetState:
-		c.enqueue(c.snapshotFrame())
+		c.sendSnapshot(nil)
 	case typePing:
 		var f pingFrame
 		_ = json.Unmarshal(data, &f)
@@ -340,13 +328,23 @@ func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
 	c.mu.Unlock()
 
 	// A subscription change is followed by a fresh state snapshot (protocol.md §4).
-	c.enqueue(c.snapshotFrame())
+	c.sendSnapshot(nil)
 }
 
-// snapshotFrame builds a `state` frame scoped to the client's current subscription.
-func (c *clientConn) snapshotFrame() []byte {
-	rev, data := c.server.store.Snapshot(c.topicsSnapshot())
-	return mustMarshal(stateFrame{Type: typeState, Rev: rev, Data: data})
+// sendSnapshot enqueues a `state` frame scoped to the client's current
+// subscription. The snapshot read and its enqueue happen together under the
+// store lock (SnapshotInto), so a concurrent Update can't slip a higher-rev
+// delta ahead of the snapshot. If andUnderLock is non-nil it runs under the
+// same lock right after the enqueue — used at connect time to register with the
+// hub atomically with the initial snapshot.
+func (c *clientConn) sendSnapshot(andUnderLock func()) {
+	topics := c.topicsSnapshot()
+	c.server.store.SnapshotInto(topics, func(rev int, data map[string]any) {
+		c.enqueue(mustMarshal(stateFrame{Type: typeState, Rev: rev, Data: data}))
+		if andUnderLock != nil {
+			andUnderLock()
+		}
+	})
 }
 
 // mustMarshal marshals a frame that is statically known to be encodable. A

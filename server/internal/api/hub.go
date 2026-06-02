@@ -27,12 +27,6 @@ func (h *hub) remove(c *clientConn) {
 	h.mu.Unlock()
 }
 
-func (h *hub) count() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.clients)
-}
-
 // broadcastDelta sends a state-delta to every client whose subscription
 // intersects the patch. The patch is scoped per client, so a client subscribed
 // to only [camera] never sees obs changes. A client whose send buffer is full
