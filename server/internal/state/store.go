@@ -57,13 +57,7 @@ func (s *Store) Update(mutate func(*State)) (Result, error) {
 func (s *Store) Snapshot(topics map[string]bool) (rev int, data map[string]any) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := map[string]any{}
-	for k, v := range s.cur {
-		if topics[k] {
-			out[k] = v
-		}
-	}
-	return s.rev, out
+	return s.rev, FilterTopics(s.cur, topics)
 }
 
 // Rev returns the current revision.

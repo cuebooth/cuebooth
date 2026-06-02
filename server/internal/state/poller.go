@@ -76,6 +76,10 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) tick(ctx context.Context) {
+	// Sources are fetched sequentially. That's fine for the small, fast set
+	// expected here (a handful of local Companion variable reads); if a future
+	// deployment adds many or slow sources such that one Fetch could delay the
+	// others past the interval, fetch them concurrently with a bounded errgroup.
 	appliers := make([]func(*State), 0, len(p.sources))
 	for _, src := range p.sources {
 		apply, err := src.Fetch(ctx)

@@ -114,14 +114,14 @@ func TestDeletionBecomesNull(t *testing.T) {
 	}
 }
 
-func TestScopePatch(t *testing.T) {
+func TestFilterTopics(t *testing.T) {
 	patch := map[string]any{"obs": map[string]any{"scene": "a"}, "camera": map[string]any{}}
-	got := scopePatch(patch, map[string]bool{"camera": true})
+	got := FilterTopics(patch, map[string]bool{"camera": true})
 	want := map[string]any{"camera": map[string]any{}}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("scopePatch = %v, want %v", got, want)
+		t.Errorf("FilterTopics = %v, want %v", got, want)
 	}
-	if scopePatch(patch, map[string]bool{"slides": true}) != nil {
+	if FilterTopics(patch, map[string]bool{"slides": true}) != nil {
 		t.Errorf("non-intersecting scope should be nil")
 	}
 }

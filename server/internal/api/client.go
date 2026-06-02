@@ -62,6 +62,9 @@ func validTopic(t string) bool { return slices.Contains(state.Topics, t) }
 
 // enqueue queues a pre-marshalled frame for the write loop. If the buffer is
 // full the client is too slow: fail it so it reconnects and re-syncs.
+//
+// enqueue is called by the hub while it holds hub.mu (broadcastDelta), so the
+// close it may trigger MUST NOT acquire hub.mu — see the lock-order note on close.
 func (c *clientConn) enqueue(frame []byte) {
 	select {
 	case c.send <- frame:
@@ -72,6 +75,11 @@ func (c *clientConn) enqueue(frame []byte) {
 
 // close records the close status (once) and cancels the connection's context;
 // the write loop performs the actual close handshake.
+//
+// Lock order: close acquires only c.mu and never hub.mu. This is required
+// because the hub calls enqueue (which can call close) while holding hub.mu;
+// taking hub.mu here would deadlock. Unregistration from the hub happens later,
+// in run's deferred hub.remove, not here.
 func (c *clientConn) close(code websocket.StatusCode, reason string) {
 	c.mu.Lock()
 	if !c.closing {
@@ -105,16 +113,7 @@ func (c *clientConn) topicsSnapshot() map[string]bool {
 func (c *clientConn) scopePatch(patch map[string]any) map[string]any {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := map[string]any{}
-	for k, v := range patch {
-		if c.topics[k] {
-			out[k] = v
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return state.FilterTopics(patch, c.topics)
 }
 
 // run drives the connection: it sends hello and the initial snapshot directly
@@ -165,6 +164,10 @@ func (c *clientConn) writeLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Flush anything already queued (e.g. a protocol `error` frame
+			// enqueued just before close) before the connection is closed, so a
+			// final frame isn't lost to the race between enqueue and cancel.
+			c.flushRemaining()
 			return
 		case frame := <-c.send:
 			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
@@ -174,6 +177,25 @@ func (c *clientConn) writeLoop(ctx context.Context) {
 				c.cancel()
 				return
 			}
+		}
+	}
+}
+
+// flushRemaining best-effort drains and writes any frames still queued at
+// shutdown. It uses a fresh context (ctx is already done here) bounded by
+// writeTimeout per frame, and stops at the first write error or empty queue.
+func (c *clientConn) flushRemaining() {
+	for {
+		select {
+		case frame := <-c.send:
+			wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+			err := c.conn.Write(wctx, websocket.MessageText, frame)
+			cancel()
+			if err != nil {
+				return
+			}
+		default:
+			return
 		}
 	}
 }

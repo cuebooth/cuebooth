@@ -46,11 +46,13 @@ func diff(old, new map[string]any) map[string]any {
 	return patch
 }
 
-// scopePatch returns the subset of a top-level patch limited to the given
-// topics (protocol subscription filtering). Returns nil if nothing remains.
-func scopePatch(patch map[string]any, topics map[string]bool) map[string]any {
+// FilterTopics returns the subset of a top-level object (a full state map or a
+// delta patch) limited to the given topic keys — the single implementation of
+// protocol subscription filtering, used by both Store.Snapshot and the hub's
+// per-client delta scoping. Returns nil if nothing remains.
+func FilterTopics(m map[string]any, topics map[string]bool) map[string]any {
 	out := map[string]any{}
-	for k, v := range patch {
+	for k, v := range m {
 		if topics[k] {
 			out[k] = v
 		}

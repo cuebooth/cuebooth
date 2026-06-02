@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -39,6 +40,11 @@ type Server struct {
 
 	pollInterval time.Duration
 	sources      []state.Source
+
+	// conns tracks live WebSocket handler goroutines (both /ws and /ws/meters)
+	// so shutdown can wait for them — http.Server.Shutdown does not wait for
+	// hijacked connections.
+	conns sync.WaitGroup
 }
 
 // Option configures a Server.
@@ -134,7 +140,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.serve(ctx, ln)
+}
 
+// serve runs the poller and HTTP server on an already-bound listener until ctx
+// is cancelled, then shuts down gracefully. Split from Run so tests can supply
+// their own listener and observe its address.
+func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	go s.poller.Run(ctx)
 
 	s.httpServer = &http.Server{
@@ -149,15 +161,35 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.hub.closeAll(websocket.StatusGoingAway, "server shutting down")
 		sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		return s.httpServer.Shutdown(sctx)
+		// Stop accepting new connections first (Shutdown closes the listener but
+		// does NOT wait for hijacked WebSocket handlers), then close the live
+		// clients gracefully. Meter connections unblock on their own because
+		// their request context descends from this (cancelled) ctx via
+		// BaseContext. Finally wait for all handler goroutines to finish so
+		// close frames are actually flushed before Run returns.
+		err := s.httpServer.Shutdown(sctx)
+		s.hub.closeAll(websocket.StatusGoingAway, "server shutting down")
+		s.waitConns(sctx)
+		return err
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
+	}
+}
+
+// waitConns blocks until all WebSocket handler goroutines have returned or ctx
+// expires.
+func (s *Server) waitConns(ctx context.Context) {
+	done := make(chan struct{})
+	go func() { s.conns.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		s.logger.Warn("timed out waiting for websocket connections to close")
 	}
 }
 
@@ -172,6 +204,8 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("websocket accept failed", "err", err)
 		return
 	}
+	s.conns.Add(1)
+	defer s.conns.Done()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	newClientConn(s, conn, cancel).run(ctx)
@@ -187,7 +221,14 @@ func (s *Server) serveMeters(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("meters websocket accept failed", "err", err)
 		return
 	}
+	s.conns.Add(1)
+	defer s.conns.Done()
 	defer conn.CloseNow()
+	// r.Context() descends from the server's base context (set in Run), so it is
+	// cancelled on shutdown — unblocking this read and letting the goroutine exit
+	// rather than leaking until the client disconnects. Phase 2 (CB-021) pushes
+	// `meters` frames here; for now the read just keeps the socket open and
+	// detects client-side close.
 	ctx := r.Context()
 	for {
 		if _, _, err := conn.Read(ctx); err != nil {
