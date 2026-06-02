@@ -19,7 +19,7 @@ See [`../docs/design.md`](../docs/design.md) §3 for the full architecture and t
 
 ## Status
 
-Skeleton scaffolded (Phase 0): the Go module, directory layout, config loader, and a Windows-service-capable entrypoint are in place. The `internal/` packages are documented stubs; their functional implementations land in Phase 1+ (see design doc §5).
+Phase 1 in progress. The Go module, directory layout, and a Windows-service-capable entrypoint are in place (Phase 0). Implemented so far: the config loader with the preset-mapping schema (`internal/config`, CB-011) and the Companion HTTP API client (`internal/companion`, CB-010). The remaining `internal/` packages (`audio`, `camera`, `obs`, `slides`, `hid`, `api`) are documented stubs whose implementations land in later phases (see design doc §5).
 
 Layout:
 

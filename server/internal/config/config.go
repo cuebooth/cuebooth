@@ -13,12 +13,16 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Config is the root of the cuebooth.toml schema. Sections are intentionally
-// flat at the top level; preset mappings nest under [presets.<kind>.<name>]
-// and are loaded lazily as Phase 1+ work lands.
+// Config is the root of the cuebooth.toml schema. Preset mappings nest under
+// [presets.<kind>.<name>] (see presets.go). Sections for later phases (mixer,
+// cameras, obs, visible-channel lists) are sketched in the example config but
+// not yet decoded here; see the Undecoded handling in Load.
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
 	Companion CompanionConfig `toml:"companion"`
+	// Presets maps logical action names (used in slide rules and by the client)
+	// to Companion buttons or direct OSC commands. See presets.go.
+	Presets PresetsConfig `toml:"presets"`
 }
 
 // ServerConfig holds settings for the WebSocket API the Flutter client
@@ -54,8 +58,8 @@ func Load(path string) (*Config, error) {
 	// surfaces instead of silently falling back to the default. We only warn
 	// for keys we'd expect to decode — top-level scalars and keys inside tables
 	// we actually map (see decodedTables). The example and deployment configs
-	// advertise forthcoming sections ([mixer], [obs], [presets.*], ...) that
-	// aren't wired into the struct yet; warning on those would flood a
+	// advertise forthcoming sections ([mixer], [cameras.*], [obs], [[audio.visible]])
+	// that aren't wired into the struct yet; warning on those would flood a
 	// docs-following operator with noise on every startup.
 	for _, key := range md.Undecoded() {
 		if !warnableKey(key) {
@@ -77,6 +81,7 @@ func Load(path string) (*Config, error) {
 var decodedTables = map[string]bool{
 	"server":    true,
 	"companion": true,
+	"presets":   true,
 }
 
 // warnableKey reports whether an undecoded TOML key is worth warning about:
@@ -103,6 +108,9 @@ func (c *Config) validate() error {
 	}
 	if c.Companion.BaseURL == "" {
 		return fmt.Errorf("companion.base_url is required")
+	}
+	if err := c.Presets.validate(); err != nil {
+		return err
 	}
 	return nil
 }

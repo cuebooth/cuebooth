@@ -1,8 +1,7 @@
 # CueBooth server configuration — example
 #
-# Copy to cuebooth.toml and adjust for your deployment.
-# This file documents the schema; later phases add sections for OSC, VISCA,
-# OBS WebSocket, HID, and preset mappings.
+# Copy to cuebooth.toml and adjust for your deployment. This file documents the
+# schema. For a fully worked, end-to-end deployment see docs/sample-deployment.md §6.
 
 [server]
 # Address the WebSocket API binds to. Use 0.0.0.0 to accept connections
@@ -15,7 +14,48 @@ listen = "0.0.0.0:7878"
 base_url = "http://localhost:8000"
 
 # ─────────────────────────────────────────────────────────────────────────
-# Future sections (sketched here, not yet wired):
+# Presets
+#
+# Map the logical names used in slide rules and by the client to a concrete
+# action: either a Companion button to press, or a direct OSC command. Set
+# exactly one routing per preset — companion_button OR (osc_command + osc_value).
+#
+# A companion_button is a "page/row/column" coordinate (page is 1-based; row and
+# column are 0-based), matching Companion's HTTP API location path.
+
+# ─── Camera presets (namespaced by camera id: [presets.camera.<id>.<name>]) ──
+[presets.camera.main.choir]
+companion_button = "1/3/2"
+
+[presets.camera.main.podium]
+companion_button = "1/1/1"
+
+# ─── OBS scene presets ──────────────────────────────────────────────────────
+[presets.scene.camera-only]
+companion_button = "7/0/1" # OBS scene: "Just Camera"
+
+[presets.scene.camera-with-slides]
+companion_button = "7/0/2" # OBS scene: "Camera + Slides"
+
+# ─── Audio mute / unmute presets ────────────────────────────────────────────
+# Discrete mute toggles can route through Companion (pre-wired buttons) or
+# direct OSC — both work; mix as convenient.
+[presets.audio.mute.non-choir]
+companion_button = "4/1/1"
+
+[presets.audio.unmute.non-choir]
+companion_button = "4/2/1"
+
+[presets.audio.mute.podium]
+osc_command = "/ch/04/mix/on"
+osc_value = 0
+
+[presets.audio.unmute.podium]
+osc_command = "/ch/04/mix/on"
+osc_value = 1
+
+# ─────────────────────────────────────────────────────────────────────────
+# Future sections (sketched here, not yet wired — see docs/sample-deployment.md):
 #
 # [mixer]
 #   host = "192.0.2.10"
@@ -30,14 +70,7 @@ base_url = "http://localhost:8000"
 #   port = 4455
 #   password = "..."  # consider env var override
 #
-# [presets.camera.main.choir]   # camera presets are namespaced by camera id
-#   companion_button = "1/3/2"
-#
-# [presets.scene.camera-with-slides]
-#   companion_button = "7/0/2"
-#
-# [presets.audio.mute.non-choir]
-#   companion_button = "4/1/1"
-#   # or, equivalently:
-#   # osc_command = "/dca/1/on"
-#   # osc_value   = 0
+# [[audio.visible]]   # which channels appear in the client mixer (CB-024)
+#   id = "podium"
+#   label = "Podium"
+#   osc_channel = "/ch/04"
