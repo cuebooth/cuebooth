@@ -75,7 +75,7 @@ The goal is to reduce operator complexity such that a non-technical person can r
 | Scene | OBS Name | Content | Typical Use |
 |-------|----------|---------|-------------|
 | Beginning | `Beginning` | Countdown timer + slideshow (Opening.png, Announcements.png) | Pre-service (10 min before) |
-| Camera + Slides | `Scripture/Announcments` | PTZ camera with slides overlay (upper-left, ~50% scale) | Hymns, readings, responsive readings |
+| Camera + Slides | `Scripture/Announcements` | PTZ camera with slides overlay (upper-left, ~50% scale) | Hymns, readings, responsive readings |
 | Camera Only | `Just Camera` | PTZ camera full frame | Sermon, announcements, prayers |
 | Slides Only | `PowerPoint` | Slides full frame (Monitor 3 capture) | Attributions, specific readings |
 
@@ -211,9 +211,16 @@ This means the existing Companion configuration continues to work and evolve ind
 #### PowerPoint Monitor (C# Sidecar)
 
 A small, focused process (~200 lines) that handles PowerPoint COM automation:
-- Connects to PowerPoint via COM events (not polling) to detect slide changes.
-- Reads slide metadata/comments (where CueBooth rules are defined).
+- Connects to PowerPoint via COM to detect slide changes — events in the target
+  design; CB-006 ships an initial polling implementation.
+  *(Phasing: polling is simpler and dependency-free, with no STA-thread/message-
+  pump machinery; CB-040 supersedes it with the event-based design to cut latency
+  and idle CPU. Polling vs. events is a latency/efficiency choice — the
+  slide-change payload and the IPC contract are identical either way.)*
+- Reads slide metadata/notes (where CueBooth rules are defined).
 - Forwards events to the Go server over a local named pipe or localhost WebSocket.
+  The pipe payload contract (distinct from the client↔server WebSocket protocol
+  in [protocol.md](protocol.md)) is formalized in CB-041.
 - If PowerPoint is ever replaced, only this sidecar changes.
 
 C# is used because COM interop in Go is painful, and .NET is already on every Windows machine.
@@ -260,19 +267,19 @@ Delivers OBS program and preview feeds to connected clients. Companion doesn't e
 
 The automation brain. When a slide change is detected:
 1. Receive slide change event + metadata from the C# sidecar.
-2. Parse the rule definitions from the slide's comments.
-3. Determine which actions to execute immediately vs. queue for operator confirmation.
+2. Parse the rule definitions from the slide's notes.
+3. Determine which actions to execute immediately vs. hold as the pending set for operator confirmation.
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
-5. Queue deferred actions and signal the client (and/or clicker).
+5. Hold the deferred actions as the slide's pending set (replacing any prior un-confirmed pending) and signal the client (and/or clicker).
 
-### 3.5 Slide Rule Format (Draft)
+### 3.4 Slide Rule Format
 
-Rules are embedded in PowerPoint slide comments (or notes). Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
+Rules are embedded in PowerPoint slide notes. Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
 
 ```
 @cuebooth
-camera: choir
-scene: camera+slides
+camera.main: choir
+scene: camera-with-slides
 audio.mute: non-choir
 audio.unmute: choir
 apply: immediate
@@ -280,10 +287,10 @@ apply: immediate
 
 ```
 @cuebooth
-camera: podium-slides
-scene: camera+slides
+camera.main: podium-with-slides
+scene: camera-with-slides
 audio.mute: choir
-audio.unmute: podium, pastor
+audio.unmute: podium, presenter
 apply: on-confirm
 ```
 
@@ -291,12 +298,12 @@ The server config maps these names to actual actions:
 
 ```toml
 # cuebooth.toml (excerpt)
-[presets.camera.choir]
+[presets.camera.main.choir]      # camera presets are namespaced by camera id
 companion_button = "1/0/2"     # page/row/column in Companion
 
-[presets.scene.camera+slides]
+[presets.scene.camera-with-slides]
 companion_button = "1/3/1"
-# Actual OBS scene: "Scripture/Announcments"
+# Actual OBS scene: "Scripture/Announcements"
 
 [presets.audio.mute.non-choir]
 companion_button = "1/1/0"     # OR direct OSC:
@@ -304,12 +311,15 @@ companion_button = "1/1/0"     # OR direct OSC:
 # osc_value = 0
 ```
 
-- `apply: immediate` — actions execute as soon as the slide changes.
-- `apply: on-confirm` — actions queue until the operator presses the confirm button on the clicker.
+- `apply: immediate` (the default when `apply` is omitted) — actions execute as soon as the slide changes.
+- `apply: on-confirm` — actions become the slide's pending set until the operator presses the confirm button on the clicker; advancing to another slide replaces the pending set without applying it.
+- Repeated `audio.mute`/`audio.unmute` lines accumulate: their targets union together, equivalent to a single comma-separated line.
+- Keys are case-insensitive; preset-name values are case-sensitive. The block begins at the `@cuebooth` line and ends at the next blank line or the end of the notes; surrounding note text is ignored.
+- Validation is non-fatal per action: if a rule references a preset name not in the config, the server logs a warning, skips just that action, and still fires the rest (the operator sees the warning in the client), so a single typo never breaks the whole transition. This is deliberately softer than interactive `/ws` commands, which reject an unknown preset outright with an `unknown_preset` nak (see [`protocol.md`](protocol.md) §8) — a slide rule fires automatically mid-event with no prompt to correct, so skip-and-continue beats failing the transition.
 - Slide authors use friendly preset names; the server config handles the routing details.
 - A service-level config file defines defaults, preset mappings, and override behavior.
 
-### 3.4 Client Application (Flutter)
+### 3.5 Client Application (Flutter)
 
 A single app that consolidates:
 - Companion-style button grid (camera presets, mute toggles, scene switches).
@@ -324,33 +334,34 @@ A single app that consolidates:
 
 **Framework:** Flutter (Dart). Compiles to native binaries on all targets — no bridge, no JS runtime. Desktop support (Windows, macOS, Linux) is first-party and stable. Web output uses WASM/Canvas (heavier than typical web apps, but fine for a control surface — not a public site). The widget composition model and reactive state management map well to a real-time control surface with meters, faders, and live video.
 
-### 3.5 Communication Protocol
+### 3.6 Communication Protocol
 
-Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates.
+Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates. The normative wire format — every message type, field, the per-target actions catalog, and the meter channel — is specified in [`protocol.md`](protocol.md); the example below is an abbreviated illustration and follows the v1 shapes defined there.
 
-```json
+```jsonc
 // Client → Server: command
 { "type": "cmd", "target": "camera", "action": "preset", "value": "choir" }
 
-// Server → Client: state update
+// Server → Client: state update (abbreviated — see protocol.md for the full shape)
 {
   "type": "state",
+  "rev": 142,
   "audio": {
     "channels": {
-      "pastor-lapel": { "mute": false, "fader": -6.2, "gain": 32, "meter": -18.4 },
-      "podium": { "mute": true, "fader": -8.0, "gain": 28, "meter": -60.0 }
+      "presenter-lapel": { "mute": false, "level_db": -6.2, "gain_db": 32.0 },
+      "podium": { "mute": true, "level_db": -8.0, "gain_db": 28.0 }
     }
   },
-  "camera": { "preset": "choir", "pan": 128, "tilt": 45, "zoom": 200 },
-  "obs": { "scene": "Scripture/Announcments", "streaming": true, "recording": true },
-  "slides": { "current": 5, "total": 24, "pendingActions": 2 },
-  "stream": { "platform": "restream", "viewers": 12, "uptime": "00:42:15" }
+  "camera": { "main": { "preset": "choir", "pan": -0.25, "tilt": 0.10, "zoom": 0.40 } },
+  "obs": { "scene": "camera-with-slides", "streaming": true, "recording": true, "uptime_seconds": 2535 },
+  "slides": { "current": 5, "total": 24, "pending_actions": [] },
+  "stream": { "platform": "restream", "viewers": 12 }
 }
 ```
 
-Audio meters are sent at a higher frequency (~10 Hz) on a separate WebSocket channel or as a distinct message type to avoid flooding the main state channel.
+Audio meters are sent at a higher frequency (~10 Hz, configurable) on a separate WebSocket endpoint (`/ws/meters`) to avoid flooding the main state channel; see [`protocol.md`](protocol.md) §6 (*Meter channel*).
 
-### 3.6 Remote Access
+### 3.7 Remote Access
 
 The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 - On the local network: direct connection.
@@ -372,7 +383,7 @@ The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 | Video Relay (Phase 1) | OBS WebSocket screenshots | Companion doesn't expose this; simple first implementation |
 | Video Relay (Phase 2) | SRT/RTMP → WebRTC | Low-latency live preview |
 | HID Input | Raw USB HID (Go) | Bypass Norwii app + AHK entirely |
-| Slide Rules | Custom DSL in slide comments | Human-readable, version-controlled with slides |
+| Slide Rules | Custom DSL in slide notes | Human-readable, version-controlled with slides |
 | Remote Access | Tailscale | Already deployed, zero additional config |
 | Project Management | GitHub Projects | Already in use for other projects |
 | Source Control | GitHub (monorepo) | Server + client + docs in one repo |
@@ -487,7 +498,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-003** `infra` — Create GitHub repo, project board, and CI scaffolding
 - **CB-004** `server` — Go project skeleton: module init, directory structure, config loading, Windows service wrapper
 - **CB-005** `client` — Flutter project skeleton: multi-platform setup, WebSocket connection scaffold, basic navigation
-- **CB-006** `sidecar` — C# project skeleton: .NET console app, PowerPoint COM interop proof-of-concept
+- **CB-006** `sidecar` — C# project skeleton: .NET worker service, PowerPoint COM interop proof-of-concept via an initial **polling** slide monitor (superseded by CB-040)
 
 ### Phase 1 — Server Core + Companion Integration
 - **CB-010** `server` — Companion HTTP API client: button press, button state read, variable read/write
@@ -519,8 +530,8 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-035** `server` — Multi-camera addressing for second camera
 
 ### Phase 4 — Slide Engine
-- **CB-040** `sidecar` — PowerPoint COM event-based slide change detection
-- **CB-041** `sidecar` — Slide metadata/comment extraction and IPC to Go server
+- **CB-040** `sidecar` — PowerPoint COM **event-based** slide change detection (supersedes CB-006's polling monitor; lower latency/idle CPU, needs an STA thread + message pump)
+- **CB-041** `sidecar` — Slide metadata/notes extraction and IPC to Go server
 - **CB-042** `server` — Slide rule DSL parser
 - **CB-043** `server` — Rule action executor: route to Companion HTTP or direct OSC, immediate vs. deferred
 - **CB-044** `server` — Service configuration file: preset names → Companion button IDs + OSC paths

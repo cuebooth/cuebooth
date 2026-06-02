@@ -14,7 +14,7 @@ A single app that consolidates everything an operator needs during a live event:
 - Stream chat (Restream or platform-direct) and stream/recording status.
 - Quick-access channel profiles (e.g., per-speaker EQ presets).
 
-See [`../docs/design.md`](../docs/design.md) §3.4 for details.
+See [`../docs/design.md`](../docs/design.md) §3.5 for details. The client ↔ server wire protocol is specified in [`../docs/protocol.md`](../docs/protocol.md).
 
 ## Platform Targets
 

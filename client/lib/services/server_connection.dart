@@ -1,0 +1,253 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+/// Connection state to the CueBooth server.
+///
+/// Named to avoid colliding with Flutter's built-in `ConnectionState`
+/// (from `AsyncSnapshot`/`StreamBuilder`), which screens consuming
+/// [ServerConnection.messages] will have in scope.
+enum ServerConnectionState {
+  disconnected,
+  connecting,
+  connected,
+  reconnecting,
+  // NOTE: observable now for invalid-input failures — connect() sets `error`
+  // on a bad server address and does not auto-reconnect. The connection-failure
+  // path (_onError and the _open() catch), however, sets `error` then
+  // immediately calls _scheduleReconnect(), which sets `reconnecting` in the
+  // same synchronous turn. notifyListeners() does fire on both calls, but a
+  // widget listener only schedules a rebuild for the next frame, which then
+  // reads the latest _state (reconnecting) — so the transient `error` isn't
+  // rendered for that path until connect-failure handling lands in CB-014.
+  // `lastError` is retained regardless.
+  error,
+}
+
+/// Manages the WebSocket connection to the CueBooth server.
+///
+/// Authority lies with the server: clients send commands and receive state
+/// broadcasts. The transport reconnects with exponential backoff on drops.
+/// See ../../../docs/design.md §3.6 (Communication Protocol) and
+/// ../../../docs/protocol.md for the wire spec.
+class ServerConnection extends ChangeNotifier {
+  ServerConnection();
+
+  static const Duration _initialBackoff = Duration(seconds: 1);
+  static const Duration _maxBackoff = Duration(seconds: 30);
+
+  Uri? _uri;
+  WebSocketChannel? _channel;
+  StreamSubscription<dynamic>? _subscription;
+  Duration _backoff = _initialBackoff;
+  Timer? _reconnectTimer;
+  bool _stopRequested = false;
+
+  // Bumped on every connect/disconnect/dispose to invalidate already-queued
+  // reconnect Timer callbacks (Timer.cancel() can't unschedule one that has
+  // already fired). _open() ignores callbacks whose captured generation is
+  // stale, preventing a duplicate socket from a connect()-during-reconnect.
+  int _generation = 0;
+
+  ServerConnectionState _state = ServerConnectionState.disconnected;
+  ServerConnectionState get state => _state;
+
+  String? _lastError;
+  String? get lastError => _lastError;
+
+  final _messages = StreamController<Map<String, dynamic>>.broadcast();
+  Stream<Map<String, dynamic>> get messages => _messages.stream;
+
+  /// Open a connection to the given host and port. Calling [connect] while a
+  /// connection is open closes the previous one first.
+  Future<void> connect(String host, int port) async {
+    await disconnect();
+    _stopRequested = false;
+    // Reject obviously-invalid input up front with an error state (no auto-
+    // reconnect) instead of letting it fail asynchronously into the reconnect
+    // loop. An empty host produces ws://:port, which doesn't throw but never
+    // connects; fuller validation/feedback is CB-014.
+    if (host.trim().isEmpty) {
+      _lastError = 'Server address is required.';
+      _setState(ServerConnectionState.error);
+      return;
+    }
+    // ws:// (cleartext) is the v1 scheme: the server is reached by LAN IP or
+    // Tailscale address with no public TLS cert, and Tailscale already encrypts
+    // in transit. wss:// — the TLS equivalent, needed for HTTPS-hosted web
+    // (mixed content) or TLS-fronted deployments — is future work. See
+    // docs/protocol.md §1 and design.md §3.5.
+    final Uri uri;
+    try {
+      uri = Uri(scheme: 'ws', host: host, port: port, path: '/ws');
+    } on FormatException catch (e) {
+      // Bad user input (a pasted "ws://host", a host with a slash, etc.) makes
+      // the Uri constructor throw. Surface it as an error state instead of
+      // letting it crash the caller, and don't auto-reconnect on input error.
+      _lastError = 'Invalid server address: ${e.message}';
+      _setState(ServerConnectionState.error);
+      return;
+    }
+    _uri = uri;
+    _backoff = _initialBackoff;
+    // Claim a fresh token for this attempt so a concurrent connect() (e.g. a
+    // Connect double-tap) or an already-queued stale timer is superseded.
+    _open(++_generation);
+  }
+
+  /// Cleanly close the connection and stop any reconnect attempts.
+  Future<void> disconnect() async {
+    _stopRequested = true;
+    _generation++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    await _subscription?.cancel();
+    _subscription = null;
+    await _channel?.sink.close();
+    _channel = null;
+    _setState(ServerConnectionState.disconnected);
+  }
+
+  /// Send a command to the server. Returns false if not currently connected.
+  bool send(Map<String, dynamic> message) {
+    if (_state != ServerConnectionState.connected || _channel == null) {
+      return false;
+    }
+    _channel!.sink.add(jsonEncode(message));
+    return true;
+  }
+
+  void _open(int gen) {
+    // A reconnect Timer that already fired can't be unscheduled by
+    // Timer.cancel() — its callback is enqueued — so _open may run after
+    // teardown or after a newer connect(). Bail if teardown has begun, or if a
+    // later connect/disconnect/dispose has superseded this attempt (stale
+    // generation); otherwise a stale callback would open a duplicate socket and
+    // orphan _channel/_subscription. Mirrors the _stopRequested guard in
+    // _onError/_onDone/_scheduleReconnect.
+    if (_stopRequested || gen != _generation) return;
+
+    final uri = _uri;
+    if (uri == null) return;
+
+    // Defensively drop any existing connection before opening a new one. The
+    // generation guard alone doesn't fully cover concurrent connect() calls
+    // (each increments _generation right before its own synchronous _open, so
+    // both can pass the guard); closing here ensures a second open can never
+    // orphan a live socket/subscription still feeding the messages stream.
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
+
+    _setState(ServerConnectionState.connecting);
+    try {
+      final channel = WebSocketChannel.connect(uri);
+      _channel = channel;
+      _subscription = channel.stream.listen(
+        _onMessage,
+        onError: _onError,
+        onDone: _onDone,
+        cancelOnError: true,
+      );
+      // Optimistically mark connected once the socket opens. If the handshake
+      // fails the error handler downgrades the state.
+      //
+      // NOTE (protocol.md §1): the server sends a `hello` frame first, and
+      // clients MUST NOT send any frame on /ws until they receive it. Gating
+      // `connected` on receipt of `hello` — and resetting the reconnect
+      // backoff there, on a *confirmed* connection — is wired in CB-014
+      // alongside the command UI. We deliberately do not reset _backoff here:
+      // WebSocketChannel.connect() returns without throwing even when the
+      // server is unreachable (failures arrive async via onError/onDone), so
+      // resetting on every attempt would pin the delay at the initial value
+      // and defeat escalation toward the cap. A fresh connect() still resets.
+      //
+      // UI-state caveat: because this transition is synchronous, against a down
+      // server the state cycles connecting -> connected -> reconnecting each
+      // retry, so a status indicator bound to `state` briefly flashes
+      // "connected" per cycle. Awaiting `channel.ready` (web_socket_channel
+      // 3.x) before this transition would fix both the false-connected flash
+      // and the pre-hello send window; deferred to CB-014.
+      _setState(ServerConnectionState.connected);
+    } catch (e) {
+      _lastError = e.toString();
+      _setState(ServerConnectionState.error);
+      _scheduleReconnect();
+    }
+  }
+
+  void _onMessage(dynamic data) {
+    // A frame can arrive after teardown has begun (subscription cancellation
+    // is async); never add to a closed controller.
+    if (_messages.isClosed) return;
+    // Protocol v1 frames are text JSON (docs/protocol.md §2). Ignore non-String
+    // frames rather than stringifying them: toString() on a binary List<int>
+    // never yields valid JSON and would only fall through to the catch below.
+    if (data is! String) return;
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is Map<String, dynamic>) {
+        _messages.add(decoded);
+      }
+    } catch (_) {
+      // Drop malformed frames silently; the server is the source of truth
+      // for message shape.
+    }
+  }
+
+  void _onError(Object error, StackTrace _) {
+    if (_stopRequested) return;
+    _lastError = error.toString();
+    _setState(ServerConnectionState.error);
+    _scheduleReconnect();
+  }
+
+  void _onDone() {
+    if (_stopRequested) return;
+    _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (_stopRequested) return;
+    _reconnectTimer?.cancel();
+    _setState(ServerConnectionState.reconnecting);
+    final delay = _backoff;
+    _backoff = Duration(
+      milliseconds: (_backoff.inMilliseconds * 2).clamp(
+        _initialBackoff.inMilliseconds,
+        _maxBackoff.inMilliseconds,
+      ),
+    );
+    // Bump the generation so an earlier reconnect Timer that already fired (its
+    // _open callback enqueued, immune to Timer.cancel()) goes stale and bails in
+    // _open instead of triggering an extra open cycle.
+    final gen = ++_generation;
+    _reconnectTimer = Timer(delay, () => _open(gen));
+  }
+
+  void _setState(ServerConnectionState s) {
+    if (_state == s) return;
+    _state = s;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    // Synchronous teardown only — do not delegate to the async disconnect(),
+    // which would let awaited work (and _setState -> notifyListeners) run
+    // after super.dispose(). Cancellations are fire-and-forget here.
+    _stopRequested = true;
+    _generation++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _subscription?.cancel();
+    _subscription = null;
+    _channel?.sink.close();
+    _channel = null;
+    _messages.close();
+    super.dispose();
+  }
+}
