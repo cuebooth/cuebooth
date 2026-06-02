@@ -11,6 +11,15 @@ on:
       - 'server/**'
       - '.github/workflows/server.yml'
 
+# Least privilege: these are pure build/test jobs.
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: server

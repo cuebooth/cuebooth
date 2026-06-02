@@ -11,6 +11,15 @@ on:
       - 'sidecar/**'
       - '.github/workflows/sidecar.yml'
 
+# Least privilege: this is a pure build job.
+permissions:
+  contents: read
+
+# Cancel superseded runs for the same ref to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: sidecar
