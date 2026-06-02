@@ -2,8 +2,6 @@ package api
 
 import (
 	"sync"
-
-	"github.com/coder/websocket"
 )
 
 // hub tracks connected /ws clients and fans out state deltas to them, filtered
@@ -53,9 +51,9 @@ func (h *hub) broadcastDelta(rev int, patch map[string]any) {
 	}
 }
 
-// closeAll closes every client connection with the given status. Used on
-// graceful shutdown.
-func (h *hub) closeAll(code websocket.StatusCode, reason string) {
+// closeAll requests teardown of every client connection with the given reason.
+// Used on graceful shutdown.
+func (h *hub) closeAll(reason string) {
 	h.mu.RLock()
 	clients := make([]*clientConn, 0, len(h.clients))
 	for c := range h.clients {
@@ -63,6 +61,6 @@ func (h *hub) closeAll(code websocket.StatusCode, reason string) {
 	}
 	h.mu.RUnlock()
 	for _, c := range clients {
-		c.close(code, reason)
+		c.close(reason)
 	}
 }

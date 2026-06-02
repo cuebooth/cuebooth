@@ -1,7 +1,9 @@
 package state
 
 import (
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -111,6 +113,42 @@ func TestDeletionBecomesNull(t *testing.T) {
 	}
 	if _, ok := patch["obs"]; !ok {
 		t.Errorf("deletion key must be present: %v", patch)
+	}
+}
+
+// TestConcurrentUpdatesObservedInRevOrder verifies the observer fires in strict
+// monotonic revision order even under concurrent writers — the property the
+// hub relies on to broadcast deltas without spurious rev gaps.
+func TestConcurrentUpdatesObservedInRevOrder(t *testing.T) {
+	s := NewStore()
+	var mu sync.Mutex
+	var revs []int
+	s.SetObserver(func(r Result) {
+		mu.Lock()
+		revs = append(revs, r.Rev)
+		mu.Unlock()
+	})
+
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = s.Update(func(st *State) { st.CameraOrNew("main").Preset = fmt.Sprintf("p%d", i) })
+		}(i)
+	}
+	wg.Wait()
+
+	// Some updates may be no-ops (same preset value already set), but every
+	// observed rev must be strictly increasing — never reordered.
+	for i := 1; i < len(revs); i++ {
+		if revs[i] <= revs[i-1] {
+			t.Fatalf("observed revs out of order at %d: %v", i, revs)
+		}
+	}
+	if len(revs) == 0 || revs[len(revs)-1] != s.Rev() {
+		t.Errorf("last observed rev %v != store rev %d", revs, s.Rev())
 	}
 }
 

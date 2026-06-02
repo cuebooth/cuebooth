@@ -9,10 +9,11 @@ import (
 // Store is the authoritative, concurrency-safe state container. It assigns a
 // monotonic revision on every change and produces sparse deltas for broadcast.
 type Store struct {
-	mu  sync.RWMutex
-	st  State
-	cur map[string]any // JSON-object form of st, kept in sync for diffing
-	rev int
+	mu       sync.RWMutex
+	st       State
+	cur      map[string]any // JSON-object form of st, kept in sync for diffing
+	rev      int
+	observer func(Result) // notified, under lock, on every change
 }
 
 // Result reports the outcome of an Update.
@@ -30,8 +31,26 @@ func NewStore() *Store {
 	return &Store{cur: map[string]any{}}
 }
 
+// SetObserver registers a function notified of every change. It is invoked from
+// Update while the Store lock is held (see Update), so it must not call back
+// into the Store. It exists so a delta can be broadcast atomically with its
+// revision assignment.
+func (s *Store) SetObserver(fn func(Result)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observer = fn
+}
+
 // Update applies mutate to the state under lock, then computes the delta. If the
-// mutation changed anything, the revision is bumped and a patch is returned.
+// mutation changed anything, the revision is bumped, the observer is notified,
+// and a patch is returned.
+//
+// The observer is called while the lock is still held so that revision
+// assignment and notification are atomic: two concurrent writers can never
+// broadcast their deltas out of revision order (which a client would misread as
+// a dropped frame and re-sync over). The observer must therefore not re-enter
+// the Store; the broadcast path only touches the hub and client send channels.
+// Lock order: Store.mu -> hub.mu -> client.mu.
 func (s *Store) Update(mutate func(*State)) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,7 +67,11 @@ func (s *Store) Update(mutate func(*State)) (Result, error) {
 	}
 	s.cur = next
 	s.rev++
-	return Result{Changed: true, Rev: s.rev, Patch: patch}, nil
+	res := Result{Changed: true, Rev: s.rev, Patch: patch}
+	if s.observer != nil {
+		s.observer(res)
+	}
+	return res, nil
 }
 
 // Snapshot returns the current revision and a full state object limited to the

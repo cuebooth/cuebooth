@@ -107,9 +107,14 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 		opt(s)
 	}
 
-	s.poller = state.NewPoller(s.store, s.pollInterval, func(r state.Result) {
+	// Broadcast every state change through the hub. The observer runs under the
+	// Store lock, so deltas are emitted in strict revision order regardless of
+	// which goroutine (command handler or poller) triggered the change.
+	s.store.SetObserver(func(r state.Result) {
 		s.hub.broadcastDelta(r.Rev, r.Patch)
-	}, s.logger, s.sources...)
+	})
+
+	s.poller = state.NewPoller(s.store, s.pollInterval, s.logger, s.sources...)
 
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
@@ -120,16 +125,12 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 // Handler exposes the HTTP handler for tests (httptest) and embedding.
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// applyState mutates the store and broadcasts the resulting delta, if any. It is
-// the single funnel for command-driven state changes.
+// applyState mutates the store; the Store observer (set in NewServer) broadcasts
+// the resulting delta in revision order. This is the single funnel for
+// command-driven state changes.
 func (s *Server) applyState(mutate func(*state.State)) {
-	res, err := s.store.Update(mutate)
-	if err != nil {
+	if _, err := s.store.Update(mutate); err != nil {
 		s.logger.Error("state update failed", "err", err)
-		return
-	}
-	if res.Changed {
-		s.hub.broadcastDelta(res.Rev, res.Patch)
 	}
 }
 
@@ -170,7 +171,7 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		// BaseContext. Finally wait for all handler goroutines to finish so
 		// close frames are actually flushed before Run returns.
 		err := s.httpServer.Shutdown(sctx)
-		s.hub.closeAll(websocket.StatusGoingAway, "server shutting down")
+		s.hub.closeAll("server shutting down")
 		s.waitConns(sctx)
 		return err
 	case err := <-errc:
@@ -206,9 +207,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.conns.Add(1)
 	defer s.conns.Done()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	newClientConn(s, conn, cancel).run(ctx)
+	newClientConn(s, conn).run(r.Context())
 }
 
 // serveMeters is the reserved high-frequency meter endpoint (protocol.md §6).

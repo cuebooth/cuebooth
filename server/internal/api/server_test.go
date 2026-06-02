@@ -261,6 +261,28 @@ func TestGetStateReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONClosesWithError(t *testing.T) {
+	conn, ctx := dialTestServer(t, &fakePresser{})
+	readFrame(t, ctx, conn) // hello
+	readFrame(t, ctx, conn) // initial state
+
+	// A malformed frame yields an `error` (code protocol) carrying the reason
+	// (protocol.md §2), flushed before the connection is torn down.
+	if err := conn.Write(ctx, websocket.MessageText, []byte("{not json")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	e := readFrame(t, ctx, conn)
+	if e["type"] != typeError || e["code"] != codeProtocol {
+		t.Errorf("expected protocol error frame, got %v", e)
+	}
+	// The connection is then closed; the next read errors.
+	rctx, rcancel := context.WithTimeout(ctx, 2*time.Second)
+	defer rcancel()
+	if _, _, err := conn.Read(rctx); err == nil {
+		t.Error("connection should be closed after a malformed frame")
+	}
+}
+
 func TestUnknownTypeIgnored(t *testing.T) {
 	conn, ctx := dialTestServer(t, &fakePresser{})
 	readFrame(t, ctx, conn)

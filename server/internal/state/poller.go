@@ -34,21 +34,20 @@ type Poller struct {
 	store    *Store
 	interval time.Duration
 	sources  []Source
-	onChange func(Result)
 	logger   *slog.Logger
 }
 
-// NewPoller builds a Poller. interval <= 0 uses DefaultPollInterval. onChange is
-// called (outside the Store lock) with the delta whenever a tick changes state;
-// it may be nil. logger defaults to slog.Default().
-func NewPoller(store *Store, interval time.Duration, onChange func(Result), logger *slog.Logger, sources ...Source) *Poller {
+// NewPoller builds a Poller. interval <= 0 uses DefaultPollInterval. logger
+// defaults to slog.Default(). Changes are broadcast through the Store's observer
+// (set by the server), so the poller just feeds the Store.
+func NewPoller(store *Store, interval time.Duration, logger *slog.Logger, sources ...Source) *Poller {
 	if interval <= 0 {
 		interval = DefaultPollInterval
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Poller{store: store, interval: interval, sources: sources, onChange: onChange, logger: logger}
+	return &Poller{store: store, interval: interval, sources: sources, logger: logger}
 }
 
 // Run polls until ctx is cancelled. It does an immediate first tick so initial
@@ -97,16 +96,13 @@ func (p *Poller) tick(ctx context.Context) {
 		return
 	}
 
-	res, err := p.store.Update(func(st *State) {
+	// The Store observer broadcasts any resulting delta (atomically with its
+	// revision), so the poller only needs to feed the Store.
+	if _, err := p.store.Update(func(st *State) {
 		for _, apply := range appliers {
 			apply(st)
 		}
-	})
-	if err != nil {
+	}); err != nil {
 		p.logger.Error("state poll update failed", "err", err)
-		return
-	}
-	if res.Changed && p.onChange != nil {
-		p.onChange(res)
 	}
 }

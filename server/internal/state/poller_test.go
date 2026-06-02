@@ -19,7 +19,9 @@ func TestPollerAppliesAndReportsChange(t *testing.T) {
 		return func(st *State) { st.OBSOrNew().Scene = v }, nil
 	})
 
-	p := NewPoller(store, 5*time.Millisecond, func(r Result) { changes.Add(1) }, nil, src)
+	// Changes are observed via the Store observer (how the server broadcasts).
+	store.SetObserver(func(r Result) { changes.Add(1) })
+	p := NewPoller(store, 5*time.Millisecond, nil, src)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.Run(ctx); close(done) }()
@@ -49,7 +51,7 @@ func TestPollerSourceErrorIsTolerated(t *testing.T) {
 		ticks.Add(1)
 		return nil, errors.New("companion unreachable")
 	})
-	p := NewPoller(store, 5*time.Millisecond, nil, nil, src)
+	p := NewPoller(store, 5*time.Millisecond, nil, src)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
 	p.Run(ctx) // must not panic or exit early on source errors
@@ -63,7 +65,7 @@ func TestPollerSourceErrorIsTolerated(t *testing.T) {
 
 func TestPollerNoSourcesWaitsForShutdown(t *testing.T) {
 	store := NewStore()
-	p := NewPoller(store, time.Millisecond, nil, nil)
+	p := NewPoller(store, time.Millisecond, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.Run(ctx); close(done) }()

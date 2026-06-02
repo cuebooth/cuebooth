@@ -71,7 +71,14 @@ func (d *companionDispatcher) Dispatch(ctx context.Context, c cmdFrame) (func(*s
 	case "slides":
 		return d.slides(ctx, c)
 	case "power", "automation":
-		// Valid v1 targets with no backend until Phase 7/8.
+		// Valid v1 targets, but their actions (power on/off/run_sequence,
+		// automation set_enabled) aren't in the v1 shipped set — they land with
+		// CB-080+/Phase 7. We nak rather than no-op-ack: protocol §3 describes
+		// these as "ack'd with no state frame" once a backend exists, but with no
+		// power/automation backend here, ack-ing would falsely signal that e.g.
+		// equipment powered on. (Contrast slides confirm/cancel below, which ARE
+		// no-op-acked — those are v1 actions whose "nothing pending" semantics
+		// are fully defined.)
 		return nil, nakErr(codeDeviceUnavailable, "target %q has no backend in this phase", c.Target)
 	default:
 		return nil, nakErr(codeUnknownTarget, "unknown target %q", c.Target)

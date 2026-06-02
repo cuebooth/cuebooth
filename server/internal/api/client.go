@@ -25,28 +25,39 @@ const (
 )
 
 // clientConn is one connected /ws client.
+//
+// Lifecycle: the write goroutine is the sole writer and tears the connection
+// down. A close is requested by calling close(), which records a reason (for
+// logging) and closes the done channel (once); the write loop then flushes any
+// queued frames and calls conn.CloseNow.
+//
+// Teardown uses CloseNow (abrupt) rather than the graceful close handshake:
+// coder/websocket's Close acquires the read mutex to await the peer's echo,
+// which the read goroutine holds while blocked in Read, so a graceful Close
+// would stall for the library's 5s read-lock timeout. The semantic reason for a
+// close is instead conveyed at the application layer (an `error` or `nak`
+// frame) before teardown. NOTE: this means the WebSocket close code in
+// protocol.md §2 (1007 for malformed) is not delivered as a close code — see
+// the package TODO. The `error` frame (code "protocol") still is.
 type clientConn struct {
 	server *Server
 	conn   *websocket.Conn
 	send   chan []byte
-	cancel context.CancelFunc
+	done   chan struct{}
 
 	mu          sync.Mutex
 	topics      map[string]bool
-	closeCode   websocket.StatusCode
-	closeReason string
 	closing     bool
+	closeReason string
 }
 
-func newClientConn(s *Server, conn *websocket.Conn, cancel context.CancelFunc) *clientConn {
+func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
 	return &clientConn{
-		server:      s,
-		conn:        conn,
-		send:        make(chan []byte, sendBuffer),
-		cancel:      cancel,
-		topics:      allTopicsSet(),
-		closeCode:   websocket.StatusNormalClosure,
-		closeReason: "",
+		server: s,
+		conn:   conn,
+		send:   make(chan []byte, sendBuffer),
+		done:   make(chan struct{}),
+		topics: allTopicsSet(),
 	}
 }
 
@@ -69,32 +80,32 @@ func (c *clientConn) enqueue(frame []byte) {
 	select {
 	case c.send <- frame:
 	default:
-		c.close(websocket.StatusPolicyViolation, "client too slow")
+		c.close("client send buffer full")
 	}
 }
 
-// close records the close status (once) and cancels the connection's context;
-// the write loop performs the actual close handshake.
+// close requests teardown with a reason (for logging). The first call wins and
+// closes done; the write loop performs the actual CloseNow. Safe to call
+// repeatedly and from any goroutine.
 //
 // Lock order: close acquires only c.mu and never hub.mu. This is required
 // because the hub calls enqueue (which can call close) while holding hub.mu;
 // taking hub.mu here would deadlock. Unregistration from the hub happens later,
 // in run's deferred hub.remove, not here.
-func (c *clientConn) close(code websocket.StatusCode, reason string) {
+func (c *clientConn) close(reason string) {
 	c.mu.Lock()
 	if !c.closing {
 		c.closing = true
-		c.closeCode = code
 		c.closeReason = reason
+		close(c.done)
 	}
 	c.mu.Unlock()
-	c.cancel()
 }
 
-func (c *clientConn) closeStatus() (websocket.StatusCode, string) {
+func (c *clientConn) reason() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.closeCode, c.closeReason
+	return c.closeReason
 }
 
 // topicsSnapshot returns a copy of the current subscription set.
@@ -119,19 +130,25 @@ func (c *clientConn) scopePatch(patch map[string]any) map[string]any {
 // run drives the connection: it sends hello and the initial snapshot directly
 // (the only writes before the write loop starts, so there's a single writer),
 // registers with the hub, then runs the read/write/ping loops until the
-// connection ends.
-func (c *clientConn) run(ctx context.Context) {
+// connection ends. parentCtx is the server/request context; its cancellation
+// (server shutdown) triggers a close.
+func (c *clientConn) run(parentCtx context.Context) {
+	// dispatchCtx bounds command-handler work (e.g. Companion calls) to the
+	// connection's and the server's lifetime.
+	dispatchCtx, cancelDispatch := context.WithCancel(parentCtx)
+	defer cancelDispatch()
+
 	hello := mustMarshal(helloFrame{
 		Type:          typeHello,
 		Proto:         ProtoVersion,
 		ServerVersion: c.server.version,
 		ServerID:      c.server.serverID,
 	})
-	if err := c.writeDirect(ctx, hello); err != nil {
+	if err := c.writeDirect(hello); err != nil {
 		c.conn.CloseNow()
 		return
 	}
-	if err := c.writeDirect(ctx, c.snapshotFrame()); err != nil {
+	if err := c.writeDirect(c.snapshotFrame()); err != nil {
 		c.conn.CloseNow()
 		return
 	}
@@ -139,59 +156,74 @@ func (c *clientConn) run(ctx context.Context) {
 	c.server.hub.add(c)
 	defer c.server.hub.remove(c)
 
+	// Bridge server shutdown to a close, and stop in-flight command work once
+	// the connection is closing.
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			c.close("server shutting down")
+		case <-c.done:
+		}
+		cancelDispatch()
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); c.writeLoop(ctx) }()
-	go func() { defer wg.Done(); c.pingLoop(ctx) }()
+	go func() { defer wg.Done(); c.writeLoop() }()
+	go func() { defer wg.Done(); c.pingLoop() }()
 
-	c.readLoop(ctx) // blocks until the peer or context ends the connection
-	c.cancel()
+	c.readLoop(dispatchCtx) // blocks until the connection is closed
+	c.close("connection closed")
 	wg.Wait()
-
-	code, reason := c.closeStatus()
-	_ = c.conn.Close(code, reason)
+	c.server.logger.Debug("client connection closed", "reason", c.reason())
 }
 
 // writeDirect writes a frame synchronously. Only used before the write loop
 // starts, so it never races another writer.
-func (c *clientConn) writeDirect(ctx context.Context, frame []byte) error {
-	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+func (c *clientConn) writeDirect(frame []byte) error {
+	wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	return c.conn.Write(wctx, websocket.MessageText, frame)
 }
 
-func (c *clientConn) writeLoop(ctx context.Context) {
+// writeLoop is the sole writer of data frames and tears the connection down. On
+// close it flushes anything still queued (so a final frame — e.g. a protocol
+// error — reaches the client) and then closes the socket.
+func (c *clientConn) writeLoop() {
+	defer c.conn.CloseNow()
 	for {
 		select {
-		case <-ctx.Done():
-			// Flush anything already queued (e.g. a protocol `error` frame
-			// enqueued just before close) before the connection is closed, so a
-			// final frame isn't lost to the race between enqueue and cancel.
-			c.flushRemaining()
-			return
 		case frame := <-c.send:
-			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
-			err := c.conn.Write(wctx, websocket.MessageText, frame)
-			cancel()
-			if err != nil {
-				c.cancel()
+			if !c.writeFrame(frame) {
 				return
 			}
+		case <-c.done:
+			c.flushRemaining()
+			return
 		}
 	}
 }
 
+// writeFrame writes one frame, returning false (and requesting close) on error.
+// It uses a standalone deadline rather than the connection context so a
+// shutdown never aborts a frame mid-write.
+func (c *clientConn) writeFrame(frame []byte) bool {
+	wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	if err := c.conn.Write(wctx, websocket.MessageText, frame); err != nil {
+		c.close("write failed")
+		return false
+	}
+	return true
+}
+
 // flushRemaining best-effort drains and writes any frames still queued at
-// shutdown. It uses a fresh context (ctx is already done here) bounded by
-// writeTimeout per frame, and stops at the first write error or empty queue.
+// close, stopping at the first write error or an empty queue.
 func (c *clientConn) flushRemaining() {
 	for {
 		select {
 		case frame := <-c.send:
-			wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-			err := c.conn.Write(wctx, websocket.MessageText, frame)
-			cancel()
-			if err != nil {
+			if !c.writeFrame(frame) {
 				return
 			}
 		default:
@@ -200,19 +232,19 @@ func (c *clientConn) flushRemaining() {
 	}
 }
 
-func (c *clientConn) pingLoop(ctx context.Context) {
+func (c *clientConn) pingLoop() {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-c.done:
 			return
 		case <-t.C:
-			pctx, cancel := context.WithTimeout(ctx, pingTimeout)
+			pctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 			err := c.conn.Ping(pctx)
 			cancel()
 			if err != nil {
-				c.cancel()
+				c.close("keepalive failed")
 				return
 			}
 		}
@@ -222,7 +254,10 @@ func (c *clientConn) pingLoop(ctx context.Context) {
 func (c *clientConn) readLoop(ctx context.Context) {
 	c.conn.SetReadLimit(readLimit)
 	for {
-		typ, data, err := c.conn.Read(ctx)
+		// Read with a background context: a cancelled Read context fails the
+		// connection in coder/websocket, which would race the write loop. The
+		// write loop's CloseNow is what unblocks this Read on teardown.
+		typ, data, err := c.conn.Read(context.Background())
 		if err != nil {
 			return
 		}
@@ -236,8 +271,10 @@ func (c *clientConn) readLoop(ctx context.Context) {
 func (c *clientConn) handle(ctx context.Context, data []byte) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
+		// protocol.md §2: malformed frame → error frame then close. The error
+		// frame is flushed by the write loop before teardown.
 		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "malformed JSON frame"}))
-		c.close(websocket.StatusInvalidFramePayloadData, "malformed frame")
+		c.close("malformed frame")
 		return
 	}
 
