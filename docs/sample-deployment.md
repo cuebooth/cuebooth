@@ -225,6 +225,29 @@ osc_value = 0
 osc_command = "/ch/10/mix/on"
 osc_value = 1
 
+# ─── Stream / recording / slide control ─────────────────────────────────
+# Verb-keyed presets mapping the start/stop and next/prev actions to the
+# Companion buttons that drive OBS and PowerPoint. Allowed verbs:
+# streaming/recording = start, stop; slides = next, prev.
+
+[presets.streaming.start]
+companion_button = "8/0/0"
+
+[presets.streaming.stop]
+companion_button = "8/0/1"
+
+[presets.recording.start]
+companion_button = "8/1/0"
+
+[presets.recording.stop]
+companion_button = "8/1/1"
+
+[presets.slides.next]
+companion_button = "7/3/6"
+
+[presets.slides.prev]
+companion_button = "7/3/5"
+
 # ─── Visible audio channels ─────────────────────────────────────────────
 # Which channels appear in the client mixer view, in what order, with
 # what labels. Hides the dozens of unused inputs.

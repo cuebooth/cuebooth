@@ -54,6 +54,27 @@ osc_value = 0
 osc_command = "/ch/04/mix/on"
 osc_value = 1
 
+# ─── Stream / recording / slide control ─────────────────────────────────────
+# Verb-keyed presets. Allowed verbs: streaming/recording = start, stop;
+# slides = next, prev.
+[presets.streaming.start]
+companion_button = "8/0/0"
+
+[presets.streaming.stop]
+companion_button = "8/0/1"
+
+[presets.recording.start]
+companion_button = "8/1/0"
+
+[presets.recording.stop]
+companion_button = "8/1/1"
+
+[presets.slides.next]
+companion_button = "7/3/6"
+
+[presets.slides.prev]
+companion_button = "7/3/5"
+
 # ─────────────────────────────────────────────────────────────────────────
 # Future sections (sketched here, not yet wired — see docs/sample-deployment.md):
 #

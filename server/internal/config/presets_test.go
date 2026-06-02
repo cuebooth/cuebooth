@@ -52,6 +52,21 @@ osc_value = 1
 osc_command = "/ch/04/mix/on"
 osc_value = 0
 
+[presets.streaming.start]
+companion_button = "8/0/0"
+
+[presets.streaming.stop]
+companion_button = "8/0/1"
+
+[presets.recording.start]
+companion_button = "8/1/0"
+
+[presets.slides.next]
+companion_button = "7/3/6"
+
+[presets.slides.prev]
+companion_button = "7/3/5"
+
 [[audio.visible]]
 id = "podium"
 label = "Podium"
@@ -120,6 +135,38 @@ func TestLoadSampleDeployment(t *testing.T) {
 	}
 	if act.OSCValue != 0 || act.OSCCommand != "/ch/04/mix/on" {
 		t.Errorf("mute podium = %+v, want /ch/04/mix/on = 0", act)
+	}
+
+	// Verb-keyed presets: streaming / recording / slides.
+	verbCases := []struct {
+		name   string
+		fn     func() (Action, error)
+		button string
+	}{
+		{"streaming start", func() (Action, error) { return cfg.ResolveStreaming("start") }, "8/0/0"},
+		{"streaming stop", func() (Action, error) { return cfg.ResolveStreaming("stop") }, "8/0/1"},
+		{"recording start", func() (Action, error) { return cfg.ResolveRecording("start") }, "8/1/0"},
+		{"slides next", func() (Action, error) { return cfg.ResolveSlides("next") }, "7/3/6"},
+		{"slides prev", func() (Action, error) { return cfg.ResolveSlides("prev") }, "7/3/5"},
+	}
+	for _, vc := range verbCases {
+		got, err := vc.fn()
+		if err != nil {
+			t.Errorf("%s: %v", vc.name, err)
+			continue
+		}
+		if !got.IsCompanion() || got.Button.String() != vc.button {
+			t.Errorf("%s = %+v, want button %s", vc.name, got, vc.button)
+		}
+	}
+}
+
+func TestInvalidVerbPreset(t *testing.T) {
+	base := "[server]\nlisten = \"x:1\"\n[companion]\nbase_url = \"http://localhost:8000\"\n"
+	// "pause" is not a valid streaming verb.
+	frag := "[presets.streaming.pause]\ncompanion_button = \"8/0/2\"\n"
+	if _, err := loadString(t, base+frag); err == nil {
+		t.Error("expected error for unknown streaming verb")
 	}
 }
 

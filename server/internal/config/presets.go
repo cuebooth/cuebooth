@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 )
@@ -24,6 +25,14 @@ type PresetsConfig struct {
 	// Audio holds mute/unmute presets, keyed by channel-or-DCA name. Matches
 	// [presets.audio.mute.<name>] and [presets.audio.unmute.<name>].
 	Audio AudioPresets `toml:"audio"`
+	// Streaming maps the OBS stream start/stop verbs to Companion buttons.
+	// Keys: "start", "stop". Matches [presets.streaming.start|stop].
+	Streaming map[string]ActionRef `toml:"streaming"`
+	// Recording maps the OBS recording start/stop verbs. Keys: "start", "stop".
+	Recording map[string]ActionRef `toml:"recording"`
+	// Slides maps slide advance/retreat verbs. Keys: "next", "prev". (Phase 1
+	// drives slides through Companion; Phase 4+ adds the sidecar + HID paths.)
+	Slides map[string]ActionRef `toml:"slides"`
 }
 
 // AudioPresets groups the mute and unmute preset tables.
@@ -103,6 +112,24 @@ func (p *PresetsConfig) validate() error {
 			return fmt.Errorf("[presets.audio.unmute.%s]: %w", name, err)
 		}
 	}
+	for _, vp := range []struct {
+		section string
+		m       map[string]ActionRef
+		allowed []string
+	}{
+		{"streaming", p.Streaming, []string{"start", "stop"}},
+		{"recording", p.Recording, []string{"start", "stop"}},
+		{"slides", p.Slides, []string{"next", "prev"}},
+	} {
+		for name, ref := range vp.m {
+			if !slices.Contains(vp.allowed, name) {
+				return fmt.Errorf("[presets.%s.%s]: unknown verb (allowed: %v)", vp.section, name, vp.allowed)
+			}
+			if err := ref.validate(); err != nil {
+				return fmt.Errorf("[presets.%s.%s]: %w", vp.section, name, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -153,27 +180,39 @@ func (c *Config) ResolveCameraPreset(cameraID, name string) (Action, error) {
 
 // ResolveScene resolves an OBS scene preset by name.
 func (c *Config) ResolveScene(name string) (Action, error) {
-	ref, ok := c.Presets.Scene[name]
-	if !ok {
-		return Action{}, fmt.Errorf("%w: scene %q", ErrUnknownPreset, name)
-	}
-	return ref.resolve()
+	return resolveNamed(c.Presets.Scene, "scene", name)
 }
 
 // ResolveAudioMute resolves a mute preset by channel-or-DCA name.
 func (c *Config) ResolveAudioMute(name string) (Action, error) {
-	ref, ok := c.Presets.Audio.Mute[name]
-	if !ok {
-		return Action{}, fmt.Errorf("%w: audio mute %q", ErrUnknownPreset, name)
-	}
-	return ref.resolve()
+	return resolveNamed(c.Presets.Audio.Mute, "audio mute", name)
 }
 
 // ResolveAudioUnmute resolves an unmute preset by channel-or-DCA name.
 func (c *Config) ResolveAudioUnmute(name string) (Action, error) {
-	ref, ok := c.Presets.Audio.Unmute[name]
+	return resolveNamed(c.Presets.Audio.Unmute, "audio unmute", name)
+}
+
+// ResolveStreaming resolves a stream verb ("start" or "stop").
+func (c *Config) ResolveStreaming(verb string) (Action, error) {
+	return resolveNamed(c.Presets.Streaming, "streaming", verb)
+}
+
+// ResolveRecording resolves a recording verb ("start" or "stop").
+func (c *Config) ResolveRecording(verb string) (Action, error) {
+	return resolveNamed(c.Presets.Recording, "recording", verb)
+}
+
+// ResolveSlides resolves a slide verb ("next" or "prev").
+func (c *Config) ResolveSlides(verb string) (Action, error) {
+	return resolveNamed(c.Presets.Slides, "slides", verb)
+}
+
+// resolveNamed looks up a preset by name in a flat preset map.
+func resolveNamed(m map[string]ActionRef, kind, name string) (Action, error) {
+	ref, ok := m[name]
 	if !ok {
-		return Action{}, fmt.Errorf("%w: audio unmute %q", ErrUnknownPreset, name)
+		return Action{}, fmt.Errorf("%w: %s %q", ErrUnknownPreset, kind, name)
 	}
 	return ref.resolve()
 }
