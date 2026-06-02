@@ -1,6 +1,6 @@
 # CueBooth CI/CD Workflows
 
-GitHub Actions workflows live here. The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml` — server and client run tests; the sidecar is build-only for now); the release/installer builds are still planned, tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71). This README captures the full intended set.
+GitHub Actions workflows live here. The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml` — server and client have a test step, though the server has no tests yet; the sidecar is build-only for now); the release/installer builds are still planned, tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71). This README captures the full intended set.
 
 ## Planned Workflows
 
@@ -11,6 +11,8 @@ GitHub Actions workflows live here. The per-PR/push CI workflows are implemented
 | `server/`  | `go vet`, `go build`, `go test ./...` (native) + `GOOS=windows` cross-build | Runs on a Linux runner. The production target is Windows, reached via a `windows/amd64` cross-build (cross-compilation is trivial) — not a Windows runner. |
 | `client/`  | `flutter analyze`, `flutter test` | Run on Linux for speed. |
 | `sidecar/` | `dotnet restore`, `dotnet build` (Release) | Runs on `windows-latest` — the Office COM interop types don't restore on Linux. No `dotnet test` step yet (no test project). |
+
+> **Branch-protection note:** these workflows are **path-filtered**, so a PR that doesn't touch a component skips that component's workflow — and a *skipped* check never reports a status. Do **not** mark the path-filtered jobs themselves as *required* status checks: a docs-only or single-component PR would then sit permanently in "Expected" and never become mergeable. If required checks are wanted, add an always-running aggregating gate job (one that runs unconditionally and `needs:` the others) and require that instead.
 
 ### Release builds (planned — [CB-087](https://github.com/cuebooth/cuebooth/issues/71))
 

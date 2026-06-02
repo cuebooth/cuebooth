@@ -15,10 +15,11 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs for the same ref to save CI minutes.
+# Cancel superseded runs on the same ref — but only for PRs, so back-to-back
+# pushes to main each keep their own CI record.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:

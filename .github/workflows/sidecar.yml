@@ -15,10 +15,11 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs for the same ref to save CI minutes.
+# Cancel superseded runs on the same ref — but only for PRs, so back-to-back
+# pushes to main each keep their own CI record.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -37,6 +38,6 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - name: dotnet restore
-        run: dotnet restore
+        run: dotnet restore PptMonitor.csproj
       - name: dotnet build
-        run: dotnet build --configuration Release --no-restore
+        run: dotnet build PptMonitor.csproj --configuration Release --no-restore
