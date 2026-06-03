@@ -248,8 +248,11 @@ func (c *Client) attempt(ctx context.Context, method, path, body, contentType st
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if !idempotent {
-			// Success. The response body is unused for actuation/writes, so a
-			// body-read error here is irrelevant and must not trigger a re-send.
+			// Success. The body is unused for actuation/writes, but drain it so
+			// net/http can reuse the keep-alive connection across rapid presses
+			// instead of opening a new socket each time. A read error here is
+			// irrelevant — the action already happened — and must not re-send.
+			_, _ = io.Copy(io.Discard, resp.Body)
 			return nil, false, nil
 		}
 		respBody, readErr := io.ReadAll(resp.Body)

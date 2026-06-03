@@ -61,6 +61,9 @@ companion_button = "8/0/1"
 [presets.recording.start]
 companion_button = "8/1/0"
 
+[presets.recording.stop]
+companion_button = "8/1/1"
+
 [presets.slides.next]
 companion_button = "7/3/6"
 
@@ -146,6 +149,7 @@ func TestLoadSampleDeployment(t *testing.T) {
 		{"streaming start", func() (Action, error) { return cfg.ResolveStreaming("start") }, "8/0/0"},
 		{"streaming stop", func() (Action, error) { return cfg.ResolveStreaming("stop") }, "8/0/1"},
 		{"recording start", func() (Action, error) { return cfg.ResolveRecording("start") }, "8/1/0"},
+		{"recording stop", func() (Action, error) { return cfg.ResolveRecording("stop") }, "8/1/1"},
 		{"slides next", func() (Action, error) { return cfg.ResolveSlides("next") }, "7/3/6"},
 		{"slides prev", func() (Action, error) { return cfg.ResolveSlides("prev") }, "7/3/5"},
 	}
