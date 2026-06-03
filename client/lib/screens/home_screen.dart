@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/server_connection.dart';
 import '../services/session.dart';
 import '../widgets/control_grid.dart';
+import '../widgets/stream_control_bar.dart';
 
 /// The operator's main control surface.
 ///
@@ -81,7 +82,12 @@ class _HomeScreenState extends State<HomeScreen> {
           if (!session.ready) {
             return _centered('Waiting for server…');
           }
-          return ControlGrid(session: session);
+          return Column(
+            children: [
+              StreamControlBar(session: session),
+              Expanded(child: ControlGrid(session: session)),
+            ],
+          );
         },
       ),
     );
