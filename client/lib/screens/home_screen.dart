@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/server_connection.dart';
 import '../services/session.dart';
+import '../widgets/control_grid.dart';
 
 /// The operator's main control surface.
 ///
@@ -34,6 +35,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _noticeSub?.cancel();
     super.dispose();
   }
+
+  Widget _centered(String text) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Text(text, style: const TextStyle(fontSize: 18)),
+    ),
+  );
 
   void _showNotice(SessionNotice notice) {
     if (!mounted) return;
@@ -67,22 +75,13 @@ class _HomeScreenState extends State<HomeScreen> {
         listenable: widget.session,
         builder: (context, _) {
           final session = widget.session;
-          final String status;
           if (session.protocolIncompatible) {
-            status = 'Incompatible server protocol.';
-          } else if (session.ready) {
-            status =
-                'Connected to ${session.serverId ?? 'server'} '
-                '(v${session.serverVersion ?? '?'}).';
-          } else {
-            status = 'Waiting for server…';
+            return _centered('Incompatible server protocol.');
           }
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(status, style: const TextStyle(fontSize: 18)),
-            ),
-          );
+          if (!session.ready) {
+            return _centered('Waiting for server…');
+          }
+          return ControlGrid(session: session);
         },
       ),
     );
