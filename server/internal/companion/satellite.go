@@ -81,7 +81,8 @@ type SatelliteConfig struct {
 	// Rows and Cols are the surface's key grid dimensions.
 	Rows, Cols int
 	// BitmapSize is the requested button bitmap edge length in pixels (square).
-	// 0 disables bitmaps (Companion then sends only COLOR/TEXT).
+	// 0 (or unset) selects DefaultSatBitmapSize; NewSatellite normalizes any
+	// non-positive value to the default.
 	BitmapSize int
 }
 
@@ -177,9 +178,7 @@ func NewSatellite(cfg SatelliteConfig, opts ...SatelliteOption) *Satellite {
 	if cfg.Cols <= 0 {
 		cfg.Cols = DefaultSatCols
 	}
-	if cfg.BitmapSize < 0 {
-		cfg.BitmapSize = 0
-	} else if cfg.BitmapSize == 0 {
+	if cfg.BitmapSize <= 0 {
 		cfg.BitmapSize = DefaultSatBitmapSize
 	}
 	s := &Satellite{
@@ -299,15 +298,12 @@ func (s *Satellite) setOut(out chan<- string) {
 // register sends the ADD-DEVICE that declares our surface to Companion. After
 // this, Companion streams KEY-STATE for the surface's keys.
 func (s *Satellite) register() error {
-	bitmaps := "false"
-	if s.cfg.BitmapSize > 0 {
-		bitmaps = strconv.Itoa(s.cfg.BitmapSize)
-	}
-	// COLORS=hex gives a usable background color for keys even when bitmaps are
-	// off; TEXT/TEXT_STYLE are left off since we render Companion's bitmaps.
+	// COLORS=hex gives a usable per-key background color alongside the bitmap;
+	// TEXT/TEXT_STYLE are left off since we render Companion's bitmaps. BitmapSize
+	// is always positive after NewSatellite normalizes it.
 	line := fmt.Sprintf(
-		"ADD-DEVICE DEVICEID=%s PRODUCT_NAME=%q KEYS_TOTAL=%d KEYS_PER_ROW=%d BITMAPS=%s COLORS=hex",
-		s.cfg.DeviceID, s.cfg.ProductName, s.cfg.keysTotal(), s.cfg.keysPerRow(), bitmaps,
+		"ADD-DEVICE DEVICEID=%s PRODUCT_NAME=%q KEYS_TOTAL=%d KEYS_PER_ROW=%d BITMAPS=%d COLORS=hex",
+		s.cfg.DeviceID, s.cfg.ProductName, s.cfg.keysTotal(), s.cfg.keysPerRow(), s.cfg.BitmapSize,
 	)
 	return s.enqueue(line)
 }
