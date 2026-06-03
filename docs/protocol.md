@@ -419,7 +419,7 @@ Announces the surface grid dimensions. Sent once after the initial `state` snaps
 | Field | Type | Notes |
 |---|---|---|
 | `rows` / `cols` | int | Grid dimensions. The flat key index is `row * cols + col`. |
-| `bitmap_size` | int | Button bitmap edge length in pixels (square). `0` if bitmaps are disabled. |
+| `bitmap_size` | int | Button bitmap edge length in pixels (square). Always positive (the server normalizes it to a default). |
 
 ### `surface-key` (server → client)
 
