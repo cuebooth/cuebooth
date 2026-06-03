@@ -143,6 +143,9 @@ func (r ActionRef) validate() error {
 	case !hasButton && !hasOSC:
 		return errors.New("must set companion_button or osc_command")
 	case hasButton:
+		if r.OSCValue.Set {
+			return errors.New("osc_value is only valid with osc_command, not companion_button")
+		}
 		if _, err := companion.ParseLocation(r.CompanionButton); err != nil {
 			return err
 		}

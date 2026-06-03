@@ -24,7 +24,7 @@ const (
 )
 
 // Client is a thin HTTP client for the Bitfocus Companion remote-control API
-// (https://companion.free user guide → "HTTP Remote Control").
+// (the "HTTP Remote Control" page of the Bitfocus Companion user guide).
 //
 // It is safe for concurrent use by multiple goroutines.
 //
@@ -59,6 +59,12 @@ func WithHTTPClient(hc *http.Client) Option {
 // to the initial attempt) and the base backoff between attempts. The backoff
 // grows linearly with the attempt number. A maxRetries of 0 disables retrying;
 // negative values are clamped to 0.
+//
+// Not every failure is retried: a transport-level error (lost/refused
+// connection) is retried only for idempotent reads (GET), since re-sending a
+// button press or variable write could double-actuate. A 5xx/429 response —
+// which means Companion received the request but did not perform the action —
+// is retried for any method.
 func WithRetries(maxRetries int, backoff time.Duration) Option {
 	return func(c *Client) {
 		if maxRetries < 0 {
