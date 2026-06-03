@@ -382,7 +382,7 @@ func (c *clientConn) handleCmd(ctx context.Context, data []byte) {
 // satellite isn't connected) surfaces as a warn event so the operator sees it.
 func (c *clientConn) handleSurfacePress(data []byte) {
 	var f surfacePressFrame
-	if err := json.Unmarshal(data, &f); err != nil || f.Pressed == nil {
+	if err := json.Unmarshal(data, &f); err != nil || f.Key == nil || f.Pressed == nil {
 		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "surface-press requires key and pressed"}))
 		return
 	}
@@ -390,7 +390,7 @@ func (c *clientConn) handleSurfacePress(data []byte) {
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "no Companion surface configured"}))
 		return
 	}
-	if err := c.server.surface.press(f.Key, *f.Pressed); err != nil {
+	if err := c.server.surface.press(*f.Key, *f.Pressed); err != nil {
 		c.server.logger.Warn("surface press failed", "key", f.Key, "err", err)
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "Companion surface unavailable"}))
 	}

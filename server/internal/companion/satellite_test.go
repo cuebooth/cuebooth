@@ -174,6 +174,51 @@ func TestSatellitePressNotConnected(t *testing.T) {
 	}
 }
 
+// TestSatelliteConcurrentPressDuringTeardown guards the send-on-closed-channel
+// race: many presses fire while the session tears down (ctx cancel). enqueue's
+// send and teardown's close share the lock, so this must not panic. Run under
+// -race in CI to catch a regression.
+func TestSatelliteConcurrentPressDuringTeardown(t *testing.T) {
+	srvEnd, devEnd := net.Pipe()
+	var once sync.Once
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var c net.Conn
+		err := errors.New("no more connections")
+		once.Do(func() { c, err = devEnd, nil })
+		return c, err
+	}
+	sat := NewSatellite(SatelliteConfig{DeviceID: "x"}, WithSatelliteDialer(dial))
+	// Drain the Companion end so the writer never blocks on the pipe.
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			if _, err := srvEnd.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go sat.Run(ctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_ = sat.Press(j%32, j%2 == 0)
+			}
+		}()
+	}
+	time.Sleep(10 * time.Millisecond) // let the session connect, then tear down mid-press
+	cancel()
+	wg.Wait()
+	srvEnd.Close()
+	devEnd.Close()
+	// Reaching here without a panic is the assertion.
+}
+
 func TestNewSatelliteDefaults(t *testing.T) {
 	sat := NewSatellite(SatelliteConfig{})
 	rows, cols, bm := sat.Layout()

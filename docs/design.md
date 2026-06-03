@@ -367,7 +367,7 @@ The operator's button grid is **not** re-implemented in the client. Instead the 
 
 This means the button grid is exactly whatever Companion is configured with — labels, icons, colors, page navigation, and live feedback are all rendered by Companion — with **nothing defined or maintained client-side and no way for the grid to drift out of sync** with the Companion configuration. It directly realizes the original intent (running the Companion emulator alongside the operator) while keeping everything in one native app, leaving room for the higher-value native controls Companion handles poorly (velocity PTZ joystick, faders) to sit alongside the grid. The surface frames are specified in [`protocol.md`](protocol.md) §10; they deliberately bypass the revisioned `state`/`state-delta` machinery because button bitmaps are large and change often (clocks, feedback).
 
-The default surface is a Stream Deck XL layout (8 columns × 4 rows, 72px bitmaps), matching the operator's primary Companion page; it is configurable per deployment and disabled when no satellite endpoint is set.
+The default surface is a Stream Deck XL layout (8 columns × 4 rows, 72px bitmaps), matching the operator's primary Companion page; it is configurable per deployment and disabled when no satellite endpoint is set. The server connects over TCP (16622); Companion 3.5+ also offers the same protocol over WebSocket (16623), and the transport is isolated so it can move there later if it proves advantageous.
 
 ### 3.7 Remote Access
 

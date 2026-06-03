@@ -31,8 +31,14 @@ import (
 // `KEY-STATE` for every key and on every feedback change. We reply to `PING`
 // with `PONG` and send `KEY-PRESS` when the operator taps a key.
 //
-// We use TCP (16622) rather than the newer WebSocket transport (16623, added in
-// Companion 3.5) for compatibility with the widest range of Companion versions.
+// Transport: we speak the protocol over TCP (Companion's default port 16622).
+// Companion 3.5+ also exposes the same protocol over WebSocket (port 16623) —
+// the message set is identical, so the transport is isolated here (a single
+// net.Conn obtained via dial) and moving to WebSocket later is cheap if it earns
+// its keep (e.g. per-message framing without manual line buffering, or TLS). TCP
+// is the v1 choice because its line framing is fully specified and verified
+// against the documented protocol; we're otherwise happy to assume modern (3.x)
+// Companion.
 
 // SatelliteDefaults are the out-of-the-box surface dimensions: a 32-key,
 // 8-per-row grid (a Stream Deck XL layout) with 72px button bitmaps. This
@@ -51,7 +57,8 @@ const (
 	satReconnectBackoff = 2 * time.Second
 	// satPingInterval drives our keepalive PING to Companion; a failed write
 	// (or any read error) drops the connection and triggers a reconnect.
-	satPingInterval = 5 * time.Second
+	// ~2s matches the cadence Companion's own Satellite surface uses.
+	satPingInterval = 2 * time.Second
 	// satDialTimeout bounds a single dial attempt.
 	satDialTimeout = 5 * time.Second
 )
@@ -233,12 +240,15 @@ func (s *Satellite) session(ctx context.Context) error {
 	go s.writer(conn, out, writerDone)
 	s.setOut(out)
 	// Teardown order matters: close the socket first to unblock any in-progress
-	// read or write, then stop the writer and wait for it, then clear the
-	// outbound handle so Press reports not-connected.
+	// read or write, then clear the outbound handle and close the queue under the
+	// lock (atomic with enqueue's send, so a racing Press/ping can't send on a
+	// closed channel), then wait for the writer to drain and exit.
 	defer func() {
 		conn.Close()
-		s.setOut(nil)
+		s.mu.Lock()
+		s.out = nil
 		close(out)
+		s.mu.Unlock()
 		<-writerDone
 	}()
 
@@ -325,15 +335,20 @@ func (s *Satellite) Press(key int, pressed bool) error {
 // connection), it reports ErrSatelliteNotConnected rather than stalling the
 // caller. The writer appends the newline terminator and is the sole conn.Write
 // caller, so concurrent presses/pings/registration can't interleave bytes.
+//
+// The send happens under s.mu, paired with session teardown which clears s.out
+// and closes the channel under the same lock: that makes "is the channel still
+// open?" and "send on it" atomic, so a press/ping racing a disconnect can never
+// send on a closed channel (which would panic the process). The send is
+// non-blocking, so the lock is held only momentarily.
 func (s *Satellite) enqueue(line string) error {
 	s.mu.Lock()
-	out := s.out
-	s.mu.Unlock()
-	if out == nil {
+	defer s.mu.Unlock()
+	if s.out == nil {
 		return ErrSatelliteNotConnected
 	}
 	select {
-	case out <- line:
+	case s.out <- line:
 		return nil
 	default:
 		return ErrSatelliteNotConnected

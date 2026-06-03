@@ -76,12 +76,12 @@ type pingFrame struct {
 	ID   string `json:"id"`
 }
 
-// surfacePressFrame is a client tapping a surface key (protocol.md §10). pressed
-// is a pointer so an omitted field is rejected rather than silently treated as a
-// key-up.
+// surfacePressFrame is a client tapping a surface key (protocol.md §10). key and
+// pressed are pointers so an omitted field is rejected, rather than a missing
+// key silently pressing key 0 or a missing pressed being treated as a key-up.
 type surfacePressFrame struct {
 	Type    string `json:"type"`
-	Key     int    `json:"key"`
+	Key     *int   `json:"key"`
 	Pressed *bool  `json:"pressed"`
 }
 
