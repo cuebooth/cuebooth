@@ -81,22 +81,70 @@ The server binds the client WebSocket on `[server] listen` at path `/ws` (`/ws/m
 
 ## 4. Flutter client (`client/`)
 
-**Prerequisites:** Flutter SDK (Dart **3.12+**), plus the desktop/mobile toolchain for your target platform.
-
-| Target | Toolchain to install | Run |
-|---|---|---|
-| macOS | Xcode + CocoaPods | `flutter run -d macos` |
-| Windows | Visual Studio + "Desktop development with C++" | `flutter run -d windows` |
-| Linux | `ninja-build cmake clang libgtk-3-dev pkg-config` | `flutter run -d linux` |
-| Web | Chrome / Chromium | `flutter run -d chrome` |
-| iPad / iPhone / Android | platform store or sideload | `flutter run -d <device>` |
-
-From `client/`:
+**Prerequisites (all platforms):** the Flutter SDK (Dart **3.12+**), then the platform-specific toolchain below. After installing the toolchain, fetch dependencies once:
 
 ```sh
+cd client
 flutter pub get
-flutter run -d <target>
 ```
+
+Run `flutter doctor` to confirm your target platform shows no outstanding issues. Then follow the section for your platform.
+
+### macOS
+
+1. Install Xcode (from the App Store) and its command-line tools: `xcode-select --install`.
+2. Install CocoaPods: `sudo gem install cocoapods`.
+3. Run:
+
+   ```sh
+   flutter run -d macos
+   ```
+
+### Windows
+
+1. Install Visual Studio (Community is fine) with the **"Desktop development with C++"** workload.
+2. Run:
+
+   ```sh
+   flutter run -d windows
+   ```
+
+### Linux
+
+1. Install the GTK build toolchain (Debian/Ubuntu):
+
+   ```sh
+   sudo apt-get install ninja-build cmake clang libgtk-3-dev pkg-config
+   ```
+
+2. Run:
+
+   ```sh
+   flutter run -d linux
+   ```
+
+### Web (any OS)
+
+1. Install Chrome or Chromium.
+2. Run:
+
+   ```sh
+   flutter run -d chrome        # or: -d web-server, then open the printed URL
+   ```
+
+### iPad / iPhone / Android
+
+1. Connect the device (or start a simulator/emulator) and trust the host if prompted; iOS additionally needs Xcode set up as for macOS.
+2. List devices, then run on one:
+
+   ```sh
+   flutter devices
+   flutter run -d <device-id>
+   ```
+
+   Distribution is via the App Store / Play Store or a development sideload.
+
+### Connecting to the server
 
 On the **Connect** screen, enter the server's `host:port`:
 
