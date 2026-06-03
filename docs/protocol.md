@@ -397,3 +397,66 @@ Strings used in `nak.error.code` and `error.code`. Open-ended — implementation
 - Compression for `meters` frames at high client counts
 - Binary frames for screenshot/video preview (currently planned over the main `/ws` channel using base64 JSON — see CB-061)
 - Observable state for the `power` / `automation` targets — e.g. reading back `automation set_enabled` toggles so multi-client UIs can reconcile them. These targets are advisory in v1 with no state key.
+
+---
+
+## 10. Companion surface channel
+
+The primary operator control surface is the **Companion Satellite surface**: the server registers itself with Bitfocus Companion's Satellite API as a remote surface (the same mechanism a Stream Deck Satellite or Companion's web emulator uses), and Companion renders each configured button to a bitmap and streams it to the server. The server forwards those bitmaps to clients, which display them natively, and routes presses back to Companion.
+
+The design intent: the button grid is **whatever Companion is configured with** — labels, icons, colors, page navigation, and live feedback are all rendered by Companion. There is nothing to define or maintain client-side, and the grid can never drift out of sync with the Companion configuration. This replaces any client-defined button vocabulary.
+
+Surface frames travel on the main `/ws` channel but are **not** part of the `state`/`state-delta` machinery and are **not** a subscription topic: button bitmaps are large and change frequently (clocks, feedback), so routing them through revisioned state deltas would be wasteful. Every client receives the surface unconditionally, after the initial `state` snapshot.
+
+### `surface-layout` (server → client)
+
+Announces the surface grid dimensions. Sent once after the initial `state` snapshot, and again whenever the server's surface (re)registers with Companion (e.g. after a reconnect). A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops all previously received keys, since the server re-sends every key afterward.
+
+```json
+{ "type": "surface-layout", "rows": 4, "cols": 8, "bitmap_size": 72 }
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `rows` / `cols` | int | Grid dimensions. The flat key index is `row * cols + col`. |
+| `bitmap_size` | int | Button bitmap edge length in pixels (square). `0` if bitmaps are disabled. |
+
+### `surface-key` (server → client)
+
+One key's current rendered state. Sent for every cached key right after `surface-layout` on connect, and on every change Companion pushes.
+
+```json
+{
+  "type": "surface-key",
+  "key": 9,
+  "seq": 142,
+  "row": 1,
+  "col": 1,
+  "key_type": "BUTTON",
+  "pressed": false,
+  "color": "#1b3a5c",
+  "bitmap": "<base64 RGB>"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | int | Flat key index (`row * cols + col`). |
+| `seq` | int | Monotonically increasing surface-update sequence. See ordering below. |
+| `row` / `col` | int | Grid position (derived from `key`, included for convenience). |
+| `key_type` | string | `BUTTON`, `PAGEUP`, `PAGEDOWN`, or `PAGENUM`. Navigation types may carry no bitmap; the client renders an affordance. |
+| `pressed` | bool | Current pressed state from Companion feedback. |
+| `color` | string | Background color `#rrggbb` — a fallback shown until/unless a bitmap is available. Omitted if none. |
+| `bitmap` | string | Companion's rendered button image: base64-encoded 8-bit RGB pixel data, `bitmap_size`×`bitmap_size`, forwarded verbatim. Omitted if none. |
+
+**Ordering.** The cached `surface-key` frames sent on connect can race a concurrent live update for the same key. Clients MUST apply updates per key in `seq` order — last-write-wins — and ignore any frame whose `seq` is not newer than the last applied for that key. `seq` is a single surface-wide counter, not per-key.
+
+### `surface-press` (client → server)
+
+Presses (or releases) a surface key. A normal tap is a press (`true`) immediately followed by a release (`false`), mirroring a physical button. Like `cmd`, clients MUST NOT send it before `hello`. It is not `ack`'d; a failure (e.g. the server's Companion connection is down) surfaces as a warn `event`.
+
+```json
+{ "type": "surface-press", "key": 9, "pressed": true }
+```
+
+> **Implementation note.** The server speaks the Satellite protocol over TCP (Companion's default port 16622). The surface grid defaults to a Stream Deck XL layout (8 columns × 4 rows, 72px bitmaps), configurable per deployment, and is disabled if no satellite endpoint is configured.

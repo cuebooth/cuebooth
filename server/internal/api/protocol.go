@@ -25,6 +25,15 @@ const (
 	typeUnsubscribe = "unsubscribe"
 	typeGetState    = "get_state"
 	typePing        = "ping"
+
+	// Surface frames carry the Companion Satellite surface (protocol.md §10): a
+	// live, server-rendered button grid the client displays natively. They sit
+	// outside the state/delta machinery because button bitmaps are large and
+	// change frequently (clocks, feedback) — diffing them through the state
+	// store would be wasteful.
+	typeSurfaceLayout = "surface-layout" // server → client
+	typeSurfaceKey    = "surface-key"    // server → client
+	typeSurfacePress  = "surface-press"  // client → server
 )
 
 // Error codes used in nak.error.code and error.code (protocol.md §8).
@@ -65,6 +74,15 @@ type subscribeFrame struct {
 type pingFrame struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
+}
+
+// surfacePressFrame is a client tapping a surface key (protocol.md §10). pressed
+// is a pointer so an omitted field is rejected rather than silently treated as a
+// key-up.
+type surfacePressFrame struct {
+	Type    string `json:"type"`
+	Key     int    `json:"key"`
+	Pressed *bool  `json:"pressed"`
 }
 
 // --- server → client ---
@@ -123,4 +141,41 @@ type errorFrame struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// eventFrame is an out-of-band advisory notification (protocol.md §4 `event`).
+type eventFrame struct {
+	Type     string `json:"type"`
+	Severity string `json:"severity"`
+	Source   string `json:"source,omitempty"`
+	Message  string `json:"message"`
+}
+
+// surfaceLayoutFrame announces the surface grid dimensions (protocol.md §10).
+// Sent on connect and whenever the surface re-registers with Companion.
+type surfaceLayoutFrame struct {
+	Type       string `json:"type"`
+	Rows       int    `json:"rows"`
+	Cols       int    `json:"cols"`
+	BitmapSize int    `json:"bitmap_size"`
+}
+
+// surfaceKeyFrame is one key's current rendered state (protocol.md §10). It is
+// sent for each cached key on connect and on every Companion KEY-STATE update.
+// Bitmap is base64-encoded 8-bit RGB pixel data (BitmapSize²), forwarded
+// verbatim from Companion; Color is "#rrggbb". Either may be empty.
+type surfaceKeyFrame struct {
+	Type string `json:"type"`
+	Key  int    `json:"key"`
+	// Seq is a monotonically increasing surface-update sequence number. A client
+	// applies updates last-write-wins per key and ignores any frame whose seq is
+	// not newer than the last it applied for that key, so the initial cached
+	// frame and a concurrent live update can arrive in any order safely.
+	Seq     int    `json:"seq"`
+	Row     int    `json:"row"`
+	Col     int    `json:"col"`
+	KeyType string `json:"key_type"`
+	Pressed bool   `json:"pressed"`
+	Color   string `json:"color,omitempty"`
+	Bitmap  string `json:"bitmap,omitempty"`
 }

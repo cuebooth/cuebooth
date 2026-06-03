@@ -4,14 +4,14 @@ import 'package:flutter/material.dart';
 
 import '../services/server_connection.dart';
 import '../services/session.dart';
-import '../widgets/control_grid.dart';
 import '../widgets/stream_control_bar.dart';
+import '../widgets/surface_grid.dart';
 
 /// The operator's main control surface.
 ///
 /// CB-014 wires the connection/session status and surfaces session notices.
-/// The button grid (CB-015) and stream/recording controls (CB-016) fill the
-/// body in subsequent commits.
+/// The body shows the Companion Satellite button grid (CB-015, [SurfaceGrid])
+/// with the stream/recording status bar (CB-016, [StreamControlBar]) above it.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.connection, required this.session});
 
@@ -93,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return Column(
             children: [
               StreamControlBar(session: session),
-              Expanded(child: ControlGrid(session: session)),
+              Expanded(child: SurfaceGrid(session: session)),
             ],
           );
         },

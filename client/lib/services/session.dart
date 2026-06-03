@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'app_state.dart';
 import 'protocol.dart';
 import 'server_connection.dart';
+import 'surface_state.dart';
 
 /// A user-facing notification surfaced by the session (a command rejection, an
 /// out-of-band event, or a protocol error) for the UI to show transiently.
@@ -30,7 +31,8 @@ class Session extends ChangeNotifier {
     // parameters can't be private.
     // ignore: prefer_initializing_formals
   }) : _outbound = outbound,
-       state = AppState() {
+       state = AppState(),
+       surface = SurfaceState() {
     _sub = inbound.listen(_onFrame);
   }
 
@@ -43,6 +45,9 @@ class Session extends ChangeNotifier {
 
   /// The mirrored server state.
   final AppState state;
+
+  /// The mirrored Companion Satellite button surface (protocol.md §10).
+  final SurfaceState surface;
 
   // hello handshake (protocol.md §1)
   bool _ready = false;
@@ -79,6 +84,10 @@ class Session extends ChangeNotifier {
         _onState(frame);
       case FrameType.stateDelta:
         _onDelta(frame);
+      case FrameType.surfaceLayout:
+        _onSurfaceLayout(frame);
+      case FrameType.surfaceKey:
+        _onSurfaceKey(frame);
       case FrameType.nak:
         _emit(NoticeSeverity.error, _errorText(frame['error'], 'command rejected'));
       case FrameType.event:
@@ -142,6 +151,29 @@ class Session extends ChangeNotifier {
     }
   }
 
+  void _onSurfaceLayout(Map<String, dynamic> frame) {
+    surface.applyLayout(
+      (frame['rows'] as num?)?.toInt() ?? 0,
+      (frame['cols'] as num?)?.toInt() ?? 0,
+      (frame['bitmap_size'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  void _onSurfaceKey(Map<String, dynamic> frame) {
+    final key = (frame['key'] as num?)?.toInt();
+    if (key == null) return;
+    surface.applyKey(
+      key: key,
+      seq: (frame['seq'] as num?)?.toInt() ?? 0,
+      row: (frame['row'] as num?)?.toInt() ?? 0,
+      col: (frame['col'] as num?)?.toInt() ?? 0,
+      keyType: frame['key_type'] as String? ?? 'BUTTON',
+      pressed: frame['pressed'] as bool? ?? false,
+      color: frame['color'] as String?,
+      bitmapBase64: frame['bitmap'] as String?,
+    );
+  }
+
   void _onEvent(Map<String, dynamic> frame) {
     final sev = switch (frame['severity']) {
       'error' => NoticeSeverity.error,
@@ -182,6 +214,20 @@ class Session extends ChangeNotifier {
     return id;
   }
 
+  /// Presses (or releases) a Companion surface key (protocol.md §10). A normal
+  /// tap is a press (true) followed by a release (false). Gated on `ready` like
+  /// [sendCommand]; returns false if the press could not be sent. Unlike
+  /// `sendCommand`, a dropped press emits no notice — presses are high-frequency
+  /// and the surface visibly stops updating when the connection is gone.
+  bool sendSurfacePress(int key, bool pressed) {
+    if (!_ready || _protoIncompatible) return false;
+    return _outbound({
+      'type': FrameType.surfacePress,
+      'key': key,
+      'pressed': pressed,
+    });
+  }
+
   /// Marks the session not-ready (e.g. on transport drop), so the UI gates
   /// command sends until the next `hello` and stale state isn't treated as live.
   void handleDisconnected() {
@@ -190,6 +236,7 @@ class Session extends ChangeNotifier {
     _protoIncompatible = false;
     _awaitingResync = false;
     state.reset();
+    surface.reset();
     notifyListeners();
   }
 
@@ -209,6 +256,7 @@ class Session extends ChangeNotifier {
     _sub.cancel();
     _notices.close();
     state.dispose();
+    surface.dispose();
     super.dispose();
   }
 }

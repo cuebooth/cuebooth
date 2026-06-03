@@ -6,7 +6,7 @@ The Flutter cross-platform control surface.
 
 A single app that consolidates everything an operator needs during a live event:
 
-- Button grid for scene switching, camera presets, and mute toggles (mapped to Companion actions via the server).
+- Companion button grid, rendered natively from Companion's own Satellite surface via the server — auto-discovered with nothing defined client-side (see [`../docs/protocol.md`](../docs/protocol.md) §10).
 - Real-time audio meters and fader strips for configured mixer channels.
 - Virtual PTZ joystick and zoom slider for cameras (velocity-based, direct via the server).
 - Slide status indicator: current slide, pending automation actions, confirm/cancel controls.
@@ -22,16 +22,16 @@ iPad is the primary target. iPhone, Android, Windows, macOS, Linux, and Web are 
 
 ## Status
 
-Not yet scaffolded. The Flutter project will be created in Phase 1 via `flutter create` on a machine with the Flutter SDK installed, then populated with the planned `lib/` structure:
+Scaffolded in Phase 1. The Phase-1 control surface is in place: server connection, the client↔server session/state layer, the Companion Satellite button grid, and the stream/recording status bar. The `lib/` structure:
 
 ```
 client/
 ├── pubspec.yaml
 ├── lib/
 │   ├── main.dart
-│   ├── services/   WebSocket transport, state management
-│   ├── screens/    Main control surface, settings
-│   └── widgets/    Faders, meters, PTZ joystick, scene buttons
+│   ├── services/   WebSocket transport, session, state, surface
+│   ├── screens/    Connect screen, main control surface
+│   └── widgets/    Surface grid, stream control bar (faders, meters, PTZ joystick in later phases)
 ├── android/  ios/  macos/  windows/  linux/  web/
 ```
 

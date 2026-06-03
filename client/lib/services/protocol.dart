@@ -22,6 +22,12 @@ class FrameType {
   static const getState = 'get_state';
   static const ping = 'ping';
   static const pong = 'pong';
+
+  // Companion Satellite surface frames (protocol.md §10): a live, server-
+  // rendered button grid the client displays natively.
+  static const surfaceLayout = 'surface-layout'; // server → client
+  static const surfaceKey = 'surface-key'; // server → client
+  static const surfacePress = 'surface-press'; // client → server
 }
 
 /// Command targets (protocol.md §3/§5).

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -39,6 +40,40 @@ type CompanionConfig struct {
 	// BaseURL is the root URL of the Companion HTTP API, typically
 	// http://localhost:8000 when Companion runs on the same PC.
 	BaseURL string `toml:"base_url"`
+	// Satellite configures the surface CueBooth registers with Companion's
+	// Satellite API so clients render Companion's own buttons. See SatelliteConfig.
+	Satellite SatelliteConfig `toml:"satellite"`
+}
+
+// SatelliteConfig configures the Companion Satellite surface the server
+// registers and relays to clients. Companion renders each button to a bitmap
+// and pushes it over this connection; the client displays it natively, so the
+// operator's button grid is whatever Companion is configured with — no
+// client-side button definitions to maintain. The defaults match a Stream Deck
+// XL layout (8 columns × 4 rows), which mirrors the operator's primary
+// Companion page.
+type SatelliteConfig struct {
+	// Addr is the Companion satellite endpoint (host:port). Defaults to
+	// localhost:16622. Set to "off" (or "disabled") to disable the surface.
+	Addr string `toml:"addr"`
+	// DeviceID is the stable surface identifier Companion keys per-surface
+	// settings (assigned page, etc.) by. Defaults to "cuebooth".
+	DeviceID string `toml:"device_id"`
+	// Rows and Cols are the surface key grid dimensions (default 4 × 8).
+	Rows int `toml:"rows"`
+	Cols int `toml:"cols"`
+	// BitmapSize is the button bitmap edge length in pixels, square (default 72).
+	BitmapSize int `toml:"bitmap_size"`
+}
+
+// Disabled reports whether the satellite surface is turned off by config.
+func (s SatelliteConfig) Disabled() bool {
+	switch strings.ToLower(strings.TrimSpace(s.Addr)) {
+	case "off", "disabled", "none":
+		return true
+	default:
+		return false
+	}
 }
 
 // Load reads, parses, and validates the configuration file at path.
@@ -97,8 +132,17 @@ func warnableKey(key toml.Key) bool {
 
 func defaults() *Config {
 	return &Config{
-		Server:    ServerConfig{Listen: "0.0.0.0:7878"},
-		Companion: CompanionConfig{BaseURL: "http://localhost:8000"},
+		Server: ServerConfig{Listen: "0.0.0.0:7878"},
+		Companion: CompanionConfig{
+			BaseURL: "http://localhost:8000",
+			Satellite: SatelliteConfig{
+				Addr:       "localhost:16622",
+				DeviceID:   "cuebooth",
+				Rows:       4,
+				Cols:       8,
+				BitmapSize: 72,
+			},
+		},
 	}
 }
 
@@ -109,8 +153,24 @@ func (c *Config) validate() error {
 	if c.Companion.BaseURL == "" {
 		return fmt.Errorf("companion.base_url is required")
 	}
+	if err := c.Companion.Satellite.validate(); err != nil {
+		return err
+	}
 	if err := c.Presets.validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s SatelliteConfig) validate() error {
+	if s.Disabled() {
+		return nil
+	}
+	if s.Rows < 0 || s.Cols < 0 {
+		return fmt.Errorf("companion.satellite rows/cols must not be negative")
+	}
+	if s.BitmapSize < 0 {
+		return fmt.Errorf("companion.satellite bitmap_size must not be negative")
 	}
 	return nil
 }

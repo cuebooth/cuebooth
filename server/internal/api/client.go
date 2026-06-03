@@ -176,6 +176,14 @@ func (c *clientConn) run(parentCtx context.Context) {
 	c.sendSnapshot(func() { c.server.hub.add(c) })
 	defer c.server.hub.remove(c)
 
+	// After the client has joined the hub (so no surface update is missed), send
+	// the current surface. Each surface-key carries a monotonic seq, so the
+	// client safely reconciles these cached frames with any live updates that
+	// raced the join (protocol.md §10).
+	if c.server.surface != nil {
+		c.server.surface.sendInitial(c)
+	}
+
 	// Bridge server shutdown to a close, and stop in-flight command work once
 	// the connection is closing.
 	go func() {
@@ -333,6 +341,8 @@ func (c *clientConn) handle(ctx context.Context, data []byte) {
 		c.handleSubscription(data, false)
 	case typeGetState:
 		c.sendSnapshot(nil)
+	case typeSurfacePress:
+		c.handleSurfacePress(data)
 	case typePing:
 		var f pingFrame
 		if err := json.Unmarshal(data, &f); err != nil || f.ID == "" {
@@ -364,6 +374,25 @@ func (c *clientConn) handleCmd(ctx context.Context, data []byte) {
 	c.enqueue(mustMarshal(ackFrame{Type: typeAck, ID: f.ID}))
 	if mutate != nil {
 		c.server.applyState(mutate)
+	}
+}
+
+// handleSurfacePress routes a surface key press to Companion via the satellite.
+// A surface press has no id and is not ack'd/nak'd; a failure (e.g. the
+// satellite isn't connected) surfaces as a warn event so the operator sees it.
+func (c *clientConn) handleSurfacePress(data []byte) {
+	var f surfacePressFrame
+	if err := json.Unmarshal(data, &f); err != nil || f.Pressed == nil {
+		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "surface-press requires key and pressed"}))
+		return
+	}
+	if c.server.surface == nil {
+		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "no Companion surface configured"}))
+		return
+	}
+	if err := c.server.surface.press(f.Key, *f.Pressed); err != nil {
+		c.server.logger.Warn("surface press failed", "key", f.Key, "err", err)
+		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "Companion surface unavailable"}))
 	}
 }
 

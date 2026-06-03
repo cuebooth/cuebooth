@@ -213,6 +213,36 @@ void main() {
     expect(notices.any((n) => n.severity == NoticeSeverity.warn), isTrue);
   });
 
+  test('surface-layout and surface-key update the surface', () async {
+    await feed(hello());
+    await feed({'type': 'surface-layout', 'rows': 2, 'cols': 4, 'bitmap_size': 72});
+    expect(session.surface.hasLayout, isTrue);
+    expect(session.surface.cols, 4);
+    await feed({
+      'type': 'surface-key',
+      'key': 5,
+      'seq': 1,
+      'row': 1,
+      'col': 1,
+      'key_type': 'BUTTON',
+      'pressed': true,
+      'color': '#abcdef',
+    });
+    final k = session.surface.keyAt(5)!;
+    expect(k.pressed, isTrue);
+    expect(k.color, 0xFFabcdef);
+  });
+
+  test('sendSurfacePress is gated until hello, then emits a surface-press', () async {
+    expect(session.sendSurfacePress(3, true), isFalse);
+    expect(sent.any((m) => m['type'] == FrameType.surfacePress), isFalse);
+    await feed(hello());
+    expect(session.sendSurfacePress(3, true), isTrue);
+    final f = sent.firstWhere((m) => m['type'] == FrameType.surfacePress);
+    expect(f['key'], 3);
+    expect(f['pressed'], true);
+  });
+
   test('handleDisconnected drops ready and resets state', () async {
     await feed(hello());
     await feed({
@@ -220,8 +250,10 @@ void main() {
       'rev': 1,
       'obs': {'scene': 'a'},
     });
+    await feed({'type': 'surface-layout', 'rows': 2, 'cols': 4, 'bitmap_size': 72});
     session.handleDisconnected();
     expect(session.ready, isFalse);
     expect(session.state.hasBaseline, isFalse);
+    expect(session.surface.hasLayout, isFalse);
   });
 }
