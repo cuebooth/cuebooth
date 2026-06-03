@@ -335,7 +335,12 @@ func (c *clientConn) handle(ctx context.Context, data []byte) {
 		c.sendSnapshot(nil)
 	case typePing:
 		var f pingFrame
-		_ = json.Unmarshal(data, &f)
+		if err := json.Unmarshal(data, &f); err != nil || f.ID == "" {
+			// protocol.md §3: ping carries a required id. Without it we can't
+			// produce a correlatable pong, so it's a protocol error.
+			c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "ping requires id"}))
+			return
+		}
 		c.enqueue(mustMarshal(pongFrame{Type: typePong, ID: f.ID}))
 	default:
 		// Unknown type MUST be ignored (protocol.md §2/§7).

@@ -195,6 +195,62 @@ func TestUnknownTargetNak(t *testing.T) {
 	}
 }
 
+func nakCode(t *testing.T, ctx context.Context, conn *websocket.Conn) string {
+	t.Helper()
+	nak := readFrame(t, ctx, conn)
+	if nak["type"] != typeNak {
+		t.Fatalf("expected nak, got %v", nak)
+	}
+	return nak["error"].(map[string]any)["code"].(string)
+}
+
+func TestSetMuteRequiresMute(t *testing.T) {
+	conn, ctx := dialTestServer(t, &fakePresser{})
+	readFrame(t, ctx, conn)
+	readFrame(t, ctx, conn)
+	// Missing `mute` must be rejected, not silently treated as unmute.
+	writeFrame(t, ctx, conn, map[string]any{
+		"type": "cmd", "id": "m1", "target": "audio", "action": "set_mute", "value": map[string]any{"id": "podium"},
+	})
+	if code := nakCode(t, ctx, conn); code != codeProtocol {
+		t.Errorf("set_mute without mute: code = %q, want %q", code, codeProtocol)
+	}
+}
+
+func TestCameraActionSemantics(t *testing.T) {
+	conn, ctx := dialTestServer(t, &fakePresser{})
+	readFrame(t, ctx, conn)
+	readFrame(t, ctx, conn)
+
+	// A known-but-unimplemented action (needs VISCA) → device_unavailable.
+	writeFrame(t, ctx, conn, map[string]any{
+		"type": "cmd", "id": "p1", "target": "camera", "action": "position", "value": map[string]any{"pan": 0.1},
+	})
+	if code := nakCode(t, ctx, conn); code != codeDeviceUnavailable {
+		t.Errorf("camera position: code = %q, want %q", code, codeDeviceUnavailable)
+	}
+
+	// An unrecognized action → unknown_action (not device_unavailable).
+	writeFrame(t, ctx, conn, map[string]any{
+		"type": "cmd", "id": "p2", "target": "camera", "action": "wiggle", "value": "x",
+	})
+	if code := nakCode(t, ctx, conn); code != codeUnknownAction {
+		t.Errorf("camera wiggle: code = %q, want %q", code, codeUnknownAction)
+	}
+}
+
+func TestPingRequiresID(t *testing.T) {
+	conn, ctx := dialTestServer(t, &fakePresser{})
+	readFrame(t, ctx, conn)
+	readFrame(t, ctx, conn)
+	// A ping without an id is a protocol error, not an empty-id pong.
+	writeFrame(t, ctx, conn, map[string]any{"type": "ping"})
+	e := readFrame(t, ctx, conn)
+	if e["type"] != typeError || e["code"] != codeProtocol {
+		t.Errorf("expected protocol error for id-less ping, got %v", e)
+	}
+}
+
 func TestSubscribeUnknownTopic(t *testing.T) {
 	conn, ctx := dialTestServer(t, &fakePresser{})
 	readFrame(t, ctx, conn)

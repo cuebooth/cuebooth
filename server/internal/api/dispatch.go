@@ -86,9 +86,15 @@ func (d *companionDispatcher) Dispatch(ctx context.Context, c cmdFrame) (func(*s
 }
 
 func (d *companionDispatcher) camera(ctx context.Context, c cmdFrame) (func(*state.State), *cmdError) {
-	if c.Action != "preset" {
-		// position/pan_tilt/zoom need direct VISCA (Phase 3).
-		return nil, nakErr(codeDeviceUnavailable, "camera action %q lands in a later phase", c.Action)
+	switch c.Action {
+	case "preset":
+		// Handled below.
+	case "position", "pan_tilt", "zoom":
+		// Known protocol actions, but absolute/velocity moves need direct VISCA,
+		// which lands in Phase 3 — distinct from an unrecognized action.
+		return nil, nakErr(codeDeviceUnavailable, "camera action %q needs direct VISCA (Phase 3)", c.Action)
+	default:
+		return nil, nakErr(codeUnknownAction, "unknown camera action %q", c.Action)
 	}
 	name, err := valueString(c.Value)
 	if err != nil {
@@ -127,22 +133,29 @@ func (d *companionDispatcher) scene(ctx context.Context, c cmdFrame) (func(*stat
 }
 
 func (d *companionDispatcher) audio(ctx context.Context, c cmdFrame) (func(*state.State), *cmdError) {
-	if c.Action != "set_mute" {
-		// set_fader/set_gain/apply_profile/dca_member are direct-OSC, Phase 2.
+	switch c.Action {
+	case "set_mute":
+		// Handled below.
+	case "set_fader", "set_gain", "apply_profile", "dca_member":
+		// Known protocol actions, but they need direct OSC (Phase 2).
 		return nil, nakErr(codeDeviceUnavailable, "audio action %q lands with direct OSC in Phase 2", c.Action)
+	default:
+		return nil, nakErr(codeUnknownAction, "unknown audio action %q", c.Action)
 	}
+	// mute is a pointer so an omitted field is rejected rather than defaulting to
+	// false (which would silently unmute) — protocol §5 requires both id and mute.
 	var v struct {
 		ID   string `json:"id"`
-		Mute bool   `json:"mute"`
+		Mute *bool  `json:"mute"`
 	}
-	if err := json.Unmarshal(c.Value, &v); err != nil || v.ID == "" {
+	if err := json.Unmarshal(c.Value, &v); err != nil || v.ID == "" || v.Mute == nil {
 		return nil, nakErr(codeProtocol, "set_mute value must be {id, mute}")
 	}
 	var (
 		act  config.Action
 		rerr error
 	)
-	if v.Mute {
+	if *v.Mute {
 		act, rerr = d.cfg.ResolveAudioMute(v.ID)
 	} else {
 		act, rerr = d.cfg.ResolveAudioUnmute(v.ID)
