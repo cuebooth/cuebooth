@@ -397,6 +397,12 @@ func (c *clientConn) handleSurfacePress(data []byte) {
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "no Companion surface configured"}))
 		return
 	}
+	// Drop an out-of-range key before recording or forwarding it, so a client
+	// can't grow heldSurfaceKeys unbounded by spamming large indices (the held
+	// set is then bounded by the grid size).
+	if !c.server.surface.inBounds(*f.Key) {
+		return
+	}
 	// Record the hold first (on the client's intent), so a release is sent on
 	// disconnect even if this press's delivery is uncertain.
 	c.trackSurfaceHold(*f.Key, *f.Pressed)

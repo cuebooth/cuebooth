@@ -15,6 +15,10 @@ func TestSatelliteConfigValidate(t *testing.T) {
 		{"negative bitmap", SatelliteConfig{BitmapSize: -1}, false},
 		{"negative rows", SatelliteConfig{Rows: -1}, false},
 		{"disabled skips checks", SatelliteConfig{Addr: "off", BitmapSize: 3}, true},
+		{"device_id with space", SatelliteConfig{DeviceID: "cue booth"}, false},
+		{"device_id with equals", SatelliteConfig{DeviceID: "cue=booth"}, false},
+		{"empty device_id is ok (defaulted)", SatelliteConfig{DeviceID: ""}, true},
+		{"simple device_id", SatelliteConfig{DeviceID: "cuebooth-1"}, true},
 	}
 	for _, tc := range cases {
 		err := tc.cfg.validate()

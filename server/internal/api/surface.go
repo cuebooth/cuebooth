@@ -126,14 +126,20 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 	}
 }
 
-// press routes a client's key press to Companion, ignoring an index outside the
-// current surface grid (a client should only press keys it was shown, but the
-// index is client-supplied, so guard the boundary).
-func (m *surfaceManager) press(key int, pressed bool) error {
+// inBounds reports whether key is a valid index for the current surface grid.
+// Before any keys arrive (grid 0×0) nothing is in bounds.
+func (m *surfaceManager) inBounds(key int) bool {
 	m.mu.Lock()
 	max := m.rows * m.cols
 	m.mu.Unlock()
-	if key < 0 || (max > 0 && key >= max) {
+	return key >= 0 && key < max
+}
+
+// press routes a client's key press to Companion. The boundary is also guarded
+// here (defense in depth) since press is reachable from the held-key release
+// path; callers should prefer gating on inBounds first.
+func (m *surfaceManager) press(key int, pressed bool) error {
+	if !m.inBounds(key) {
 		return nil
 	}
 	return m.sat.Press(key, pressed)

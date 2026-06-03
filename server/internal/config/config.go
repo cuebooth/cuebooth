@@ -166,6 +166,12 @@ func (s SatelliteConfig) validate() error {
 	if s.Disabled() {
 		return nil
 	}
+	// device_id is emitted as an unquoted token in the satellite line protocol
+	// (DEVICEID=<id>), so whitespace or '='/'"' would produce a malformed line
+	// and Companion would silently not register the surface.
+	if strings.ContainsAny(s.DeviceID, " \t\r\n\"=") {
+		return fmt.Errorf("companion.satellite.device_id must not contain whitespace, '=', or '\"'")
+	}
 	if s.Rows < 0 || s.Cols < 0 {
 		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must not be negative")
 	}

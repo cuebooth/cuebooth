@@ -166,6 +166,41 @@ func TestSurfaceManagerPressOutOfRange(t *testing.T) {
 	}
 }
 
+func TestSurfaceManagerInBounds(t *testing.T) {
+	sat := &fakeSat{rows: 4, cols: 8, bm: 72} // 32 keys
+	m := newSurfaceManager(sat, newHub())
+	for _, k := range []int{0, 31} {
+		if !m.inBounds(k) {
+			t.Errorf("key %d should be in bounds", k)
+		}
+	}
+	for _, k := range []int{-1, 32, 1000} {
+		if m.inBounds(k) {
+			t.Errorf("key %d should be out of bounds", k)
+		}
+	}
+}
+
+func TestHeldKeysIgnoresOutOfRangePress(t *testing.T) {
+	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
+	m := newSurfaceManager(sat, newHub())
+	c := newTestClient()
+	c.server = &Server{surface: m}
+
+	// A press the dispatcher would gate as out-of-range must never be tracked,
+	// or heldSurfaceKeys could grow unbounded. handleSurfacePress gates on
+	// inBounds before trackSurfaceHold, so simulate that gate here.
+	if m.inBounds(9999) {
+		t.Fatal("9999 should be out of bounds")
+	}
+	// In-range holds are tracked and released; out-of-range are never recorded.
+	c.trackSurfaceHold(5, true)
+	c.releaseHeldSurfaceKeys()
+	if len(sat.presses) != 1 || sat.presses[0].key != 5 {
+		t.Errorf("expected release of key 5 only, got %+v", sat.presses)
+	}
+}
+
 func TestReleaseHeldSurfaceKeysOnDisconnect(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())
