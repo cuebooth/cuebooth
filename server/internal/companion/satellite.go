@@ -458,8 +458,9 @@ func parseSatelliteLine(line string) (cmd string, args map[string]string) {
 }
 
 // tokenizeSatellite splits on spaces, treating a double-quoted run as a single
-// token (quotes are stripped). Companion's protocol uses quotes only to allow
-// spaces within a value.
+// token (quotes are stripped) and a backslash as escaping the next character —
+// matching Companion's line parser, which uses quotes to allow spaces in a value
+// and backslashes to embed quotes/backslashes within one.
 func tokenizeSatellite(s string) []string {
 	var toks []string
 	var b strings.Builder
@@ -472,6 +473,9 @@ func tokenizeSatellite(s string) []string {
 	}
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
+		case c == '\\' && i+1 < len(s):
+			i++
+			b.WriteByte(s[i]) // emit the escaped character literally
 		case c == '"':
 			inQuote = !inQuote
 		case c == ' ' && !inQuote:

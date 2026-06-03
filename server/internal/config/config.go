@@ -169,8 +169,11 @@ func (s SatelliteConfig) validate() error {
 	if s.Rows < 0 || s.Cols < 0 {
 		return fmt.Errorf("companion.satellite rows/cols must not be negative")
 	}
-	if s.BitmapSize < 0 {
-		return fmt.Errorf("companion.satellite bitmap_size must not be negative")
+	// Companion silently coerces a BITMAPS size below 5 to its 72px default, so a
+	// 1–4 value would make us advertise the wrong dimensions to clients (corrupt
+	// renders). Reject it; 0 selects the default.
+	if s.BitmapSize < 0 || (s.BitmapSize > 0 && s.BitmapSize < 5) {
+		return fmt.Errorf("companion.satellite bitmap_size must be 0 (default) or >= 5")
 	}
 	return nil
 }

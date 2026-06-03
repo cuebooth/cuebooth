@@ -24,6 +24,20 @@ func TestTokenizeSatellite(t *testing.T) {
 	}
 }
 
+func TestTokenizeSatelliteEscaping(t *testing.T) {
+	// A backslash escapes the next char, including a quote inside a quoted value.
+	got := tokenizeSatellite(`CMD A="x \"q\" y" B=c\\d`)
+	want := []string{"CMD", `A=x "q" y`, `B=c\d`}
+	if len(got) != len(want) {
+		t.Fatalf("token count: got %d (%q), want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("token %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestParseSatelliteLine(t *testing.T) {
 	cmd, args := parseSatelliteLine(`KEY-STATE DEVICEID=cuebooth KEY=5 TYPE=BUTTON PRESSED=1 COLOR=#00ff00 BITMAP=AAEC`)
 	if cmd != "KEY-STATE" {
