@@ -25,7 +25,6 @@ type fakeSat struct {
 func (f *fakeSat) Layout() (int, int, int)               { return f.rows, f.cols, f.bm }
 func (f *fakeSat) OnKey(fn func(companion.SatelliteKey)) { f.onKey = fn }
 func (f *fakeSat) OnLayout(fn func(int, int, int))       { f.onLayout = fn }
-func (f *fakeSat) OnConnect(fn func())                   {}
 func (f *fakeSat) OnClear(fn func())                     { f.onClear = fn }
 func (f *fakeSat) Run(context.Context)                   {}
 func (f *fakeSat) Press(key int, pressed bool) error {
@@ -154,5 +153,37 @@ func TestSurfaceManagerPress(t *testing.T) {
 	}
 	if len(sat.presses) != 1 || sat.presses[0].key != 7 || !sat.presses[0].pressed {
 		t.Errorf("press not routed: %+v", sat.presses)
+	}
+}
+
+func TestSurfaceManagerPressOutOfRange(t *testing.T) {
+	sat := &fakeSat{rows: 4, cols: 8, bm: 72} // 32 keys
+	m := newSurfaceManager(sat, newHub())
+	_ = m.press(32, true) // first invalid index
+	_ = m.press(-1, true)
+	if len(sat.presses) != 0 {
+		t.Errorf("out-of-range presses should be dropped, got %+v", sat.presses)
+	}
+}
+
+func TestReleaseHeldSurfaceKeysOnDisconnect(t *testing.T) {
+	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
+	m := newSurfaceManager(sat, newHub())
+	c := newTestClient()
+	c.server = &Server{surface: m}
+
+	c.trackSurfaceHold(3, true)
+	c.trackSurfaceHold(5, true)
+	c.trackSurfaceHold(3, false) // 3 released normally; only 5 remains held
+
+	c.releaseHeldSurfaceKeys()
+
+	if len(sat.presses) != 1 || sat.presses[0].key != 5 || sat.presses[0].pressed {
+		t.Errorf("expected a single release of key 5, got %+v", sat.presses)
+	}
+	// Idempotent: nothing left to release on a second call.
+	c.releaseHeldSurfaceKeys()
+	if len(sat.presses) != 1 {
+		t.Errorf("second release should be a no-op, got %+v", sat.presses)
 	}
 }

@@ -112,10 +112,9 @@ type Satellite struct {
 	dial   func(ctx context.Context) (net.Conn, error)
 	logger *slog.Logger
 
-	onKey     func(SatelliteKey)
-	onLayout  func(rows, cols, bitmapSize int)
-	onConnect func()
-	onClear   func()
+	onKey    func(SatelliteKey)
+	onLayout func(rows, cols, bitmapSize int)
+	onClear  func()
 
 	mu  sync.Mutex
 	out chan<- string // current session's outbound queue; nil when disconnected
@@ -155,9 +154,6 @@ func (s *Satellite) OnKey(fn func(SatelliteKey)) { s.onKey = fn }
 // OnLayout registers the callback invoked once per (re)connection with the
 // surface dimensions, so a consumer can (re)baseline its grid.
 func (s *Satellite) OnLayout(fn func(rows, cols, bitmapSize int)) { s.onLayout = fn }
-
-// OnConnect registers a callback invoked after each successful registration.
-func (s *Satellite) OnConnect(fn func()) { s.onConnect = fn }
 
 // OnClear registers the callback invoked on a KEYS-CLEAR (Companion asking the
 // surface to blank all keys, e.g. on page change before new bitmaps arrive).
@@ -257,9 +253,6 @@ func (s *Satellite) session(ctx context.Context) error {
 	}
 	if s.onLayout != nil {
 		s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
-	}
-	if s.onConnect != nil {
-		s.onConnect()
 	}
 	s.logger.Info("companion satellite connected", "addr", s.cfg.Addr, "device_id", s.cfg.DeviceID)
 

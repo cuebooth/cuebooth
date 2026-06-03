@@ -14,7 +14,6 @@ type satelliteSurface interface {
 	Press(key int, pressed bool) error
 	OnKey(func(companion.SatelliteKey))
 	OnLayout(func(rows, cols, bitmapSize int))
-	OnConnect(func())
 	OnClear(func())
 	Run(context.Context)
 }
@@ -127,7 +126,15 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 	}
 }
 
-// press routes a client's key press to Companion.
+// press routes a client's key press to Companion, ignoring an index outside the
+// current surface grid (a client should only press keys it was shown, but the
+// index is client-supplied, so guard the boundary).
 func (m *surfaceManager) press(key int, pressed bool) error {
+	m.mu.Lock()
+	max := m.rows * m.cols
+	m.mu.Unlock()
+	if key < 0 || (max > 0 && key >= max) {
+		return nil
+	}
 	return m.sat.Press(key, pressed)
 }

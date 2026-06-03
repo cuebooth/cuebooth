@@ -59,6 +59,9 @@ type clientConn struct {
 	closeCode   websocket.StatusCode
 	closeReason string
 	graceful    bool
+	// heldSurfaceKeys are surface keys this client has pressed-down but not yet
+	// released, so they can be released on disconnect (see releaseHeldSurfaceKeys).
+	heldSurfaceKeys map[int]bool
 }
 
 func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
@@ -183,6 +186,10 @@ func (c *clientConn) run(parentCtx context.Context) {
 	if c.server.surface != nil {
 		c.server.surface.sendInitial(c)
 	}
+	// Release any keys still held when the client goes away, so a press whose
+	// release never arrived (connection dropped mid-press) doesn't leave
+	// Companion latched with the button down.
+	defer c.releaseHeldSurfaceKeys()
 
 	// Bridge server shutdown to a close, and stop in-flight command work once
 	// the connection is closing.
@@ -390,9 +397,42 @@ func (c *clientConn) handleSurfacePress(data []byte) {
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "no Companion surface configured"}))
 		return
 	}
+	// Record the hold first (on the client's intent), so a release is sent on
+	// disconnect even if this press's delivery is uncertain.
+	c.trackSurfaceHold(*f.Key, *f.Pressed)
 	if err := c.server.surface.press(*f.Key, *f.Pressed); err != nil {
-		c.server.logger.Warn("surface press failed", "key", f.Key, "err", err)
+		c.server.logger.Warn("surface press failed", "key", *f.Key, "err", err)
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "Companion surface unavailable"}))
+	}
+}
+
+// trackSurfaceHold records (pressed) or clears (released) a surface key the
+// client is holding, for release on disconnect.
+func (c *clientConn) trackSurfaceHold(key int, pressed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pressed {
+		if c.heldSurfaceKeys == nil {
+			c.heldSurfaceKeys = make(map[int]bool)
+		}
+		c.heldSurfaceKeys[key] = true
+	} else {
+		delete(c.heldSurfaceKeys, key)
+	}
+}
+
+// releaseHeldSurfaceKeys releases any surface keys still held at disconnect, so a
+// press whose release never arrived doesn't leave Companion latched down.
+func (c *clientConn) releaseHeldSurfaceKeys() {
+	if c.server.surface == nil {
+		return
+	}
+	c.mu.Lock()
+	held := c.heldSurfaceKeys
+	c.heldSurfaceKeys = nil
+	c.mu.Unlock()
+	for key := range held {
+		_ = c.server.surface.press(key, false)
 	}
 }
 

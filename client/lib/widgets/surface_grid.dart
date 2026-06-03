@@ -76,6 +76,14 @@ class _SurfaceCellState extends State<_SurfaceCell> {
   }
 
   @override
+  void dispose() {
+    // If the cell is torn down while held (e.g. a surface re-baseline rebuilds
+    // the grid), release so Companion isn't left holding the button down.
+    if (_down) widget.onPress(false);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final ks = widget.keyState;
     // An empty cell (no button configured at this position) is a dark, inert
