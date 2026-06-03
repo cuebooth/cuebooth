@@ -384,6 +384,13 @@ func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
 		}
 	}
 
+	// Re-baseline atomically, the same way the connect path does: leave the hub
+	// so no delta is broadcast to this client mid-change, apply the subscription
+	// mutation, then snapshot and re-add under the store lock. That way deltas
+	// resume exactly from the snapshot's revision and none is queued ahead of it
+	// — the snapshot is the client's new baseline (protocol.md §4). hub.remove
+	// and hub.add are idempotent, so run's deferred hub.remove still applies.
+	c.server.hub.remove(c)
 	c.mu.Lock()
 	for _, t := range f.Topics {
 		if subscribe {
@@ -393,9 +400,7 @@ func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
 		}
 	}
 	c.mu.Unlock()
-
-	// A subscription change is followed by a fresh state snapshot (protocol.md §4).
-	c.sendSnapshot(nil)
+	c.sendSnapshot(func() { c.server.hub.add(c) })
 }
 
 // sendSnapshot enqueues a `state` frame scoped to the client's current
