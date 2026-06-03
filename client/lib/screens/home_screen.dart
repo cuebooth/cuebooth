@@ -65,10 +65,18 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           ListenableBuilder(
             listenable: widget.connection,
-            builder: (_, _) => Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Center(child: Text(widget.connection.state.name)),
-            ),
+            builder: (_, _) =>
+                Center(child: Text(widget.connection.state.name)),
+          ),
+          // A way back to the connect screen — otherwise a connection that never
+          // recovers strands the operator here with no route to change servers.
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Disconnect',
+            onPressed: () {
+              widget.connection.disconnect();
+              Navigator.of(context).pop();
+            },
           ),
         ],
       ),

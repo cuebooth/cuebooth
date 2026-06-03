@@ -128,7 +128,12 @@ class Session extends ChangeNotifier {
     final rev = (frame['rev'] as num?)?.toInt() ?? 0;
     final patch = frame['patch'];
     if (patch is! Map<String, dynamic>) return;
-    if (state.applyDelta(rev, patch) == DeltaOutcome.gap && !_awaitingResync) {
+    // Only request a resync once ready: clients MUST NOT send before `hello`
+    // (protocol.md §1). A delta can't legitimately precede hello+state, but this
+    // keeps us from emitting get_state if frames ever arrive out of order.
+    if (_ready &&
+        state.applyDelta(rev, patch) == DeltaOutcome.gap &&
+        !_awaitingResync) {
       // A dropped frame: re-sync with a fresh snapshot (protocol.md §4). Latch so
       // a burst of further gapped deltas before the snapshot lands doesn't fire
       // a get_state per frame; cleared when the snapshot arrives (_onState).
@@ -169,7 +174,11 @@ class Session extends ChangeNotifier {
     };
     if (value != null) frame['value'] = value;
     if (cameraId != null) frame['camera_id'] = cameraId;
-    _outbound(frame);
+    if (!_outbound(frame)) {
+      // ready but the socket dropped in the gap before handleDisconnected fired.
+      _emit(NoticeSeverity.warn, 'Command not sent — connection lost.');
+      return null;
+    }
     return id;
   }
 

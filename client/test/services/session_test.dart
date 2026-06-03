@@ -184,6 +184,35 @@ void main() {
     expect(cmd['camera_id'], 'main');
   });
 
+  test('a delta arriving before hello does not trigger get_state', () async {
+    await feed({
+      'type': 'state-delta',
+      'rev': 1,
+      'patch': {
+        'obs': {'scene': 'a'},
+      },
+    });
+    expect(sent.where((m) => m['type'] == FrameType.getState), isEmpty);
+  });
+
+  test('sendCommand returns null and warns when the transport rejects it', () async {
+    final ctrl = StreamController<Map<String, dynamic>>();
+    final s = Session(inbound: ctrl.stream, outbound: (_) => false);
+    addTearDown(() async {
+      s.dispose();
+      await ctrl.close();
+    });
+    final notices = <SessionNotice>[];
+    s.notices.listen(notices.add);
+    ctrl.add(hello());
+    await Future<void>.delayed(Duration.zero);
+
+    expect(s.ready, isTrue);
+    expect(s.sendCommand(Target.scene, 'set', value: 'x'), isNull);
+    await Future<void>.delayed(Duration.zero);
+    expect(notices.any((n) => n.severity == NoticeSeverity.warn), isTrue);
+  });
+
   test('handleDisconnected drops ready and resets state', () async {
     await feed(hello());
     await feed({
