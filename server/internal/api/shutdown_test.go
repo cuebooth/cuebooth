@@ -41,8 +41,10 @@ func TestGracefulShutdownClosesConnections(t *testing.T) {
 		t.Fatalf("dial /ws/meters: %v", err)
 	}
 
-	// Drain the /ws hello+state so the connection is fully established.
-	_, _, _ = wsConn.Read(dialCtx)
+	// Drain the /ws hello and initial state frames so the connection is fully
+	// established before triggering shutdown.
+	_, _, _ = wsConn.Read(dialCtx) // hello
+	_, _, _ = wsConn.Read(dialCtx) // state
 
 	// Trigger shutdown.
 	cancel()

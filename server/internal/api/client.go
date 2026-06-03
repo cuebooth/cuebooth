@@ -368,9 +368,13 @@ func (c *clientConn) handleCmd(ctx context.Context, data []byte) {
 }
 
 func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
+	verb := "unsubscribe"
+	if subscribe {
+		verb = "subscribe"
+	}
 	var f subscribeFrame
 	if err := json.Unmarshal(data, &f); err != nil {
-		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "malformed subscribe frame"}))
+		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "malformed " + verb + " frame"}))
 		return
 	}
 	for _, t := range f.Topics {

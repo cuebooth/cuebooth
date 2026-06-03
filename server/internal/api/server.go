@@ -165,11 +165,12 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		// Stop accepting new connections first (Shutdown closes the listener but
-		// does NOT wait for hijacked WebSocket handlers), then close the live
-		// clients gracefully. Meter connections unblock on their own because
-		// their request context descends from this (cancelled) ctx via
-		// BaseContext. Finally wait for all handler goroutines to finish so
-		// close frames are actually flushed before Run returns.
+		// does NOT wait for hijacked WebSocket handlers), then tear down the live
+		// clients. closeAll triggers CloseNow on each — an abrupt close, since the
+		// reader is parked in Read and going-away carries no protocol-mandated
+		// close code. Meter connections unblock on their own because their request
+		// context descends from this (cancelled) ctx via BaseContext. waitConns
+		// then waits (bounded) for all handler goroutines to return.
 		err := s.httpServer.Shutdown(sctx)
 		s.hub.closeAll("server shutting down")
 		s.waitConns(sctx)
@@ -194,13 +195,20 @@ func (s *Server) waitConns(ctx context.Context) {
 	}
 }
 
+// acceptWS upgrades an HTTP request to a WebSocket using coder/websocket's
+// default origin policy: a request with no Origin header (the native Flutter
+// client, including remote over Tailscale — design.md §3.7) and same-host
+// browser requests are allowed, while cross-origin browser requests are
+// rejected. That rejection is the cross-site-WebSocket-hijacking defense for an
+// API with no in-protocol auth in v1 (protocol.md §1). A cross-origin web client
+// is intentionally unsupported in v1; if a web build is ever added it gets a
+// configurable origin allowlist or the future token handshake.
+func acceptWS(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	return websocket.Accept(w, r, nil)
+}
+
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// v1 has no in-protocol auth and relies on network isolation (LAN +
-		// Tailscale, design.md §3.7), and the client may connect from any origin
-		// (native app, or web served elsewhere). Accept all origins.
-		OriginPatterns: []string{"*"},
-	})
+	conn, err := acceptWS(w, r)
 	if err != nil {
 		s.logger.Warn("websocket accept failed", "err", err)
 		return
@@ -215,7 +223,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 // open so clients can establish it now. Phase 2 (CB-021) pushes `meters` frames
 // here at ~10 Hz.
 func (s *Server) serveMeters(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	conn, err := acceptWS(w, r)
 	if err != nil {
 		s.logger.Warn("meters websocket accept failed", "err", err)
 		return
