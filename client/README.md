@@ -35,6 +35,10 @@ client/
 ├── android/  ios/  macos/  windows/  linux/  web/
 ```
 
+## Building & running
+
+`flutter pub get` then `flutter run -d <target>` (`macos`, `windows`, `linux`, `chrome`, or a connected device); enter the server's `host:port` on the Connect screen. See [`../docs/development.md`](../docs/development.md) for per-platform toolchain prerequisites and running the full stack.
+
 ## Distribution
 
 Mobile builds will be distributed via the App Store and Play Store (or as side-loaded builds during development). Desktop builds — particularly Windows — will be packaged as installers built by GitHub Actions (see [`../.github/workflows/README.md`](../.github/workflows/README.md)).
