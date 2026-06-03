@@ -105,10 +105,61 @@ void main() {
     // Both controls now read "Stop"; the stream control is first in the bar.
     expect(find.widgetWithText(FilledButton, 'Stop'), findsNWidgets(2));
 
+    // Stopping the stream requires confirmation; tapping Stop opens a dialog.
     await tester.tap(find.widgetWithText(FilledButton, 'Stop').first);
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Stop the live stream?'), findsOneWidget);
     expect(
       sent.any((m) => m['target'] == 'streaming' && m['action'] == 'stop'),
+      isFalse,
+      reason: 'no stop sent until confirmed',
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Stop stream'));
+    await tester.pumpAndSettle();
+    expect(
+      sent.any((m) => m['target'] == 'streaming' && m['action'] == 'stop'),
+      isTrue,
+    );
+  });
+
+  testWidgets('cancelling the stop-stream dialog sends nothing', (tester) async {
+    final (session, sent) = await readySession(
+      tester,
+      streaming: true,
+      recording: false,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: StreamControlBar(session: session))),
+    );
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Stop').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(
+      sent.any((m) => m['target'] == 'streaming' && m['action'] == 'stop'),
+      isFalse,
+    );
+  });
+
+  testWidgets('recording stop is immediate (no confirmation)', (tester) async {
+    final (session, sent) = await readySession(
+      tester,
+      streaming: false,
+      recording: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: StreamControlBar(session: session))),
+    );
+    await tester.pump();
+
+    // Only the recording control is active here, so its "Stop" is the one shown.
+    await tester.tap(find.widgetWithText(FilledButton, 'Stop'));
+    await tester.pump();
+    expect(
+      sent.any((m) => m['target'] == 'recording' && m['action'] == 'stop'),
       isTrue,
     );
   });

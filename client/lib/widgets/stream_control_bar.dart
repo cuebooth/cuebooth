@@ -13,6 +13,31 @@ class StreamControlBar extends StatelessWidget {
 
   final Session session;
 
+  // Confirms before stopping the live stream, then sends the stop. Recording
+  // stop stays immediate — it's a local backup, not the audience-facing feed.
+  Future<void> _confirmStopStream(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Stop the live stream?'),
+        content: const Text('This ends the broadcast for everyone watching.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Stop stream'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      session.sendCommand(Target.streaming, 'stop');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -39,10 +64,12 @@ class StreamControlBar extends StatelessWidget {
                   inactiveLabel: 'Offline',
                   buttonLabel: streaming ? 'Stop' : 'Go Live',
                   icon: streaming ? Icons.stop : Icons.sensors,
-                  onPressed: () => session.sendCommand(
-                    Target.streaming,
-                    streaming ? 'stop' : 'start',
-                  ),
+                  // Stopping the live stream ends the broadcast for everyone, so
+                  // confirm first to prevent a fat-finger interruption mid-event.
+                  // Going live needs no confirmation.
+                  onPressed: () => streaming
+                      ? _confirmStopStream(context)
+                      : session.sendCommand(Target.streaming, 'start'),
                 ),
                 _StatusControl(
                   title: 'Recording',

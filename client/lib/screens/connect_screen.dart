@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/server_connection.dart';
 import '../services/session.dart';
@@ -25,10 +26,45 @@ class ConnectScreen extends StatefulWidget {
 }
 
 class _ConnectScreenState extends State<ConnectScreen> {
+  // Keys for the persisted last-good server address (CB-014 / #11).
+  static const _hostPrefKey = 'server_host';
+  static const _portPrefKey = 'server_port';
+
+  // Seeded with sensible defaults; overwritten by any persisted last-good value.
   final _hostCtrl = TextEditingController(text: '127.0.0.1');
   final _portCtrl = TextEditingController(text: '7878');
   String? _portError;
   bool _connecting = false;
+  // The address of the in-flight connect attempt, persisted once it succeeds.
+  String? _pendingHost;
+  int? _pendingPort;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLastGood();
+  }
+
+  // Prefill the last server we successfully connected to, so reconnecting
+  // (especially to a Tailscale IP) doesn't mean re-typing it each launch.
+  Future<void> _loadLastGood() async {
+    final prefs = await SharedPreferences.getInstance();
+    final host = prefs.getString(_hostPrefKey);
+    final port = prefs.getInt(_portPrefKey);
+    if (!mounted) return;
+    setState(() {
+      if (host != null && host.isNotEmpty) _hostCtrl.text = host;
+      if (port != null) _portCtrl.text = port.toString();
+    });
+  }
+
+  // Persist the address only after a connection actually succeeds, so a bad
+  // entry isn't remembered as the new default.
+  Future<void> _saveLastGood(String host, int port) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_hostPrefKey, host);
+    await prefs.setInt(_portPrefKey, port);
+  }
 
   @override
   void dispose() {
@@ -52,6 +88,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
       _portError = null;
       _connecting = true;
     });
+    _pendingHost = host;
+    _pendingPort = port;
     widget.connection.addListener(_onConnectionChanged);
     await widget.connection.connect(host, port);
     // Outcome (connected / error) is handled by _onConnectionChanged.
@@ -61,6 +99,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
     switch (widget.connection.state) {
       case ServerConnectionState.connected:
         widget.connection.removeListener(_onConnectionChanged);
+        if (_pendingHost != null && _pendingPort != null) {
+          _saveLastGood(_pendingHost!, _pendingPort!); // fire-and-forget
+        }
         if (!mounted) return;
         setState(() => _connecting = false);
         Navigator.of(context).push(

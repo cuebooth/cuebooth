@@ -35,6 +35,9 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   web_socket_channel: ^3.0.3
+  # Persists the last-good server host/port so reconnecting (esp. to a Tailscale
+  # address) doesn't require re-typing it each launch.
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
