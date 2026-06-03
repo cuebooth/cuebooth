@@ -2,6 +2,8 @@ package api
 
 import (
 	"sync"
+
+	"github.com/coder/websocket"
 )
 
 // hub tracks connected /ws clients and fans out state deltas to them, filtered
@@ -55,6 +57,8 @@ func (h *hub) closeAll(reason string) {
 	}
 	h.mu.RUnlock()
 	for _, c := range clients {
-		c.close(reason)
+		// Shutdown closes while the reader is parked in Read → abrupt (no
+		// protocol-mandated close code for going-away).
+		c.close(websocket.StatusGoingAway, reason, false)
 	}
 }

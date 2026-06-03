@@ -56,6 +56,7 @@ func (s *Store) Update(mutate func(*State)) (Result, error) {
 	defer s.mu.Unlock()
 
 	mutate(&s.st)
+	s.st.normalize()
 
 	next, err := toMap(&s.st)
 	if err != nil {

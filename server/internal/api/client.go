@@ -22,23 +22,31 @@ const (
 	pingTimeout  = 10 * time.Second
 	// readLimit caps an inbound frame; client frames are tiny.
 	readLimit = 1 << 20
+	// closeGrace bounds a graceful close handshake so a peer that never echoes
+	// can't stall a connection's teardown.
+	closeGrace = 2 * time.Second
 )
 
 // clientConn is one connected /ws client.
 //
-// Lifecycle: the write goroutine is the sole writer and tears the connection
-// down. A close is requested by calling close(), which records a reason (for
-// logging) and closes the done channel (once); the write loop then flushes any
-// queued frames and calls conn.CloseNow.
+// Lifecycle and close model. The connection ends when close() is called (from
+// any goroutine); it records the close code/reason once and closes the done
+// channel. The actual socket close happens in run(), after the read, write, and
+// ping goroutines have all exited — so it is the sole accessor and there is no
+// concurrent reader/writer to fight.
 //
-// Teardown uses CloseNow (abrupt) rather than the graceful close handshake:
-// coder/websocket's Close acquires the read mutex to await the peer's echo,
-// which the read goroutine holds while blocked in Read, so a graceful Close
-// would stall for the library's 5s read-lock timeout. The semantic reason for a
-// close is instead conveyed at the application layer (an `error` or `nak`
-// frame) before teardown. NOTE: this means the WebSocket close code in
-// protocol.md §2 (1007 for malformed) is not delivered as a close code — see
-// the package TODO. The `error` frame (code "protocol") still is.
+// Two close paths, because coder/websocket's graceful Close acquires the read
+// mutex to await the peer's echo:
+//
+//   - Graceful (delivers the WebSocket close code): used for closes detected by
+//     the read goroutine itself — a fatal protocol error in handle (malformed
+//     frame → code 1007, protocol.md §2). The read mutex is free at that point
+//     (the reader is in handle, not Read), and the read loop then stops, so
+//     run() can complete a graceful Close that transmits the code.
+//   - Abrupt (CloseNow, no code): used for closes initiated while the reader is
+//     parked in Read — server shutdown, slow-consumer drop, ping timeout. These
+//     CloseNow immediately to unblock the blocked Read; none has a protocol-
+//     mandated close code (going-away is advisory).
 type clientConn struct {
 	server *Server
 	conn   *websocket.Conn
@@ -48,7 +56,9 @@ type clientConn struct {
 	mu          sync.Mutex
 	topics      map[string]bool
 	closing     bool
+	closeCode   websocket.StatusCode
 	closeReason string
+	graceful    bool
 }
 
 func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
@@ -80,32 +90,46 @@ func (c *clientConn) enqueue(frame []byte) {
 	select {
 	case c.send <- frame:
 	default:
-		c.close("client send buffer full")
+		c.close(websocket.StatusPolicyViolation, "client send buffer full", false)
 	}
 }
 
-// close requests teardown with a reason (for logging). The first call wins and
-// closes done; the write loop performs the actual CloseNow. Safe to call
-// repeatedly and from any goroutine.
+// close requests teardown with a close code and reason. The first call wins and
+// closes done; run() performs the actual socket close once the loops exit. When
+// graceful is false (the reader may be parked in Read) it also calls CloseNow
+// immediately to unblock that Read. Safe to call repeatedly and from any
+// goroutine.
+//
+// graceful must only be true when the caller knows the read goroutine is not
+// parked in Read (i.e. it's called from within handle), so the eventual
+// graceful Close can acquire the read mutex.
 //
 // Lock order: close acquires only c.mu and never hub.mu. This is required
 // because the hub calls enqueue (which can call close) while holding hub.mu;
-// taking hub.mu here would deadlock. Unregistration from the hub happens later,
-// in run's deferred hub.remove, not here.
-func (c *clientConn) close(reason string) {
+// taking hub.mu here would deadlock. CloseNow touches only the socket, not the
+// hub. Unregistration from the hub happens later, in run's deferred hub.remove.
+func (c *clientConn) close(code websocket.StatusCode, reason string, graceful bool) {
 	c.mu.Lock()
-	if !c.closing {
+	first := !c.closing
+	if first {
 		c.closing = true
+		c.closeCode = code
 		c.closeReason = reason
+		c.graceful = graceful
 		close(c.done)
 	}
 	c.mu.Unlock()
+	if first && !graceful {
+		// Unblock a reader parked in Read; the graceful path leaves the socket
+		// open for run() to close with a code.
+		c.conn.CloseNow()
+	}
 }
 
-func (c *clientConn) reason() string {
+func (c *clientConn) closeInfo() (websocket.StatusCode, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.closeReason
+	return c.closeCode, c.closeReason, c.graceful
 }
 
 // topicsSnapshot returns a copy of the current subscription set.
@@ -157,7 +181,7 @@ func (c *clientConn) run(parentCtx context.Context) {
 	go func() {
 		select {
 		case <-parentCtx.Done():
-			c.close("server shutting down")
+			c.close(websocket.StatusGoingAway, "server shutting down", false)
 		case <-c.done:
 		}
 		cancelDispatch()
@@ -169,16 +193,40 @@ func (c *clientConn) run(parentCtx context.Context) {
 	go func() { defer wg.Done(); c.pingLoop() }()
 
 	c.readLoop(dispatchCtx) // blocks until the connection is closed
-	c.close("connection closed")
+	c.close(websocket.StatusNormalClosure, "connection closed", false)
 	wg.Wait()
-	c.server.logger.Debug("client connection closed", "reason", c.reason())
+
+	// The read, write, and ping loops have all exited, so this goroutine is the
+	// sole accessor of the socket. A graceful Close can now acquire the read
+	// mutex; an abrupt close just tears down.
+	code, reason, graceful := c.closeInfo()
+	if graceful {
+		c.gracefulClose(code, reason)
+	} else {
+		_ = c.conn.CloseNow()
+	}
+	c.server.logger.Debug("client connection closed", "reason", reason)
 }
 
-// writeLoop is the sole writer of data frames and tears the connection down. On
-// close it flushes anything still queued (so a final frame — e.g. a protocol
-// error — reaches the client) and then closes the socket.
+// gracefulClose performs the WebSocket close handshake (which transmits the
+// close code), bounded by closeGrace. Only called from run() after every loop
+// has exited, so the handshake's internal read can acquire the now-free read
+// mutex; if the peer never echoes, CloseNow forces teardown.
+func (c *clientConn) gracefulClose(code websocket.StatusCode, reason string) {
+	done := make(chan struct{})
+	go func() { _ = c.conn.Close(code, reason); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(closeGrace):
+		_ = c.conn.CloseNow()
+		<-done
+	}
+}
+
+// writeLoop is the sole writer of data frames. On close it flushes anything
+// still queued (so a final frame — e.g. a protocol error — reaches the client
+// before the close handshake) and returns; run() closes the socket.
 func (c *clientConn) writeLoop() {
-	defer c.conn.CloseNow()
 	for {
 		select {
 		case frame := <-c.send:
@@ -199,7 +247,7 @@ func (c *clientConn) writeFrame(frame []byte) bool {
 	wctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
 	if err := c.conn.Write(wctx, websocket.MessageText, frame); err != nil {
-		c.close("write failed")
+		c.close(websocket.StatusAbnormalClosure, "write failed", false)
 		return false
 	}
 	return true
@@ -232,7 +280,7 @@ func (c *clientConn) pingLoop() {
 			err := c.conn.Ping(pctx)
 			cancel()
 			if err != nil {
-				c.close("keepalive failed")
+				c.close(websocket.StatusGoingAway, "keepalive failed", false)
 				return
 			}
 		}
@@ -253,16 +301,26 @@ func (c *clientConn) readLoop(ctx context.Context) {
 			continue // v1 has no binary frames
 		}
 		c.handle(ctx, data)
+		// If handle requested a graceful close (e.g. a malformed frame), stop
+		// reading so the read mutex is free for run()'s close handshake — and so
+		// we don't call Read again on a connection that's being torn down.
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 	}
 }
 
 func (c *clientConn) handle(ctx context.Context, data []byte) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		// protocol.md §2: malformed frame → error frame then close. The error
-		// frame is flushed by the write loop before teardown.
+		// protocol.md §2: malformed frame → error frame, then close with code
+		// 1007. This runs on the read goroutine (not parked in Read), so a
+		// graceful close can transmit the code; the error frame is flushed by the
+		// write loop before the close handshake.
 		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "malformed JSON frame"}))
-		c.close("malformed frame")
+		c.close(websocket.StatusInvalidFramePayloadData, "malformed frame", true)
 		return
 	}
 

@@ -82,6 +82,17 @@ type AudioDCA struct {
 // the top-level JSON keys of State.
 var Topics = []string{"audio", "camera", "obs", "slides", "stream"}
 
+// normalize enforces wire invariants on the state before it is serialized for a
+// snapshot or delta. Currently it guarantees slides.pending_actions is always an
+// array, never null (protocol.md §4) — a nil slice would otherwise marshal to
+// `null`, which the delta rules reserve for deletion. Called by Store.Update
+// after every mutation, so the invariant holds regardless of how Slides is built.
+func (s *State) normalize() {
+	if s.Slides != nil && s.Slides.PendingActions == nil {
+		s.Slides.PendingActions = []string{}
+	}
+}
+
 // CameraOrNew returns the named camera, creating a zero entry (and the map) if
 // it doesn't exist yet. Intended for use inside an Update mutator.
 func (s *State) CameraOrNew(id string) *Camera {

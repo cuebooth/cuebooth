@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http/httptest"
 	"strings"
@@ -95,12 +96,13 @@ func TestMetersEndpointAccepts(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// No frame should arrive (Phase 1 has no meter source); a short read times
-	// out rather than erroring with a close.
+	// No frame should arrive (Phase 1 has no meter source) and the server must
+	// hold the socket open — so the read should hit our deadline, not return
+	// early with a frame or a server-side close.
 	rctx, rcancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer rcancel()
 	_, _, err = conn.Read(rctx)
-	if err == nil {
-		t.Error("unexpected frame on /ws/meters")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the meter read to time out (socket held open), got %v", err)
 	}
 }

@@ -152,6 +152,31 @@ func TestConcurrentUpdatesObservedInRevOrder(t *testing.T) {
 	}
 }
 
+// TestSlidesPendingActionsNeverNull guards the protocol invariant that
+// slides.pending_actions is always an array, never null — even when a caller
+// sets SlidesState with a nil PendingActions slice.
+func TestSlidesPendingActionsNeverNull(t *testing.T) {
+	s := NewStore()
+	res, err := s.Update(func(st *State) {
+		st.Slides = &SlidesState{Current: 1, Total: 3} // PendingActions left nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	slides, ok := res.Patch["slides"].(map[string]any)
+	if !ok {
+		t.Fatalf("slides missing from patch: %v", res.Patch)
+	}
+	pa, ok := slides["pending_actions"]
+	if !ok {
+		t.Fatal("pending_actions absent")
+	}
+	arr, ok := pa.([]any)
+	if !ok || len(arr) != 0 {
+		t.Errorf("pending_actions = %#v, want empty array (not null)", pa)
+	}
+}
+
 func TestFilterTopics(t *testing.T) {
 	patch := map[string]any{"obs": map[string]any{"scene": "a"}, "camera": map[string]any{}}
 	got := FilterTopics(patch, map[string]bool{"camera": true})

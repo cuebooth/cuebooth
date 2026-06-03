@@ -28,8 +28,9 @@ type SourceFunc func(ctx context.Context) (func(*State), error)
 // Fetch implements Source.
 func (f SourceFunc) Fetch(ctx context.Context) (func(*State), error) { return f(ctx) }
 
-// Poller periodically refreshes a set of Sources into a Store and invokes
-// onChange whenever the resulting state actually changes.
+// Poller periodically refreshes a set of Sources into a Store. Any resulting
+// state change is broadcast through the Store's observer (set by the server),
+// so the Poller only needs to feed the Store.
 type Poller struct {
 	store    *Store
 	interval time.Duration

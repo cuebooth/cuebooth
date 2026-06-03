@@ -266,8 +266,8 @@ func TestMalformedJSONClosesWithError(t *testing.T) {
 	readFrame(t, ctx, conn) // hello
 	readFrame(t, ctx, conn) // initial state
 
-	// A malformed frame yields an `error` (code protocol) carrying the reason
-	// (protocol.md §2), flushed before the connection is torn down.
+	// A malformed frame yields an `error` (code protocol), flushed before the
+	// close, then a WebSocket close with code 1007 (protocol.md §2).
 	if err := conn.Write(ctx, websocket.MessageText, []byte("{not json")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -275,11 +275,11 @@ func TestMalformedJSONClosesWithError(t *testing.T) {
 	if e["type"] != typeError || e["code"] != codeProtocol {
 		t.Errorf("expected protocol error frame, got %v", e)
 	}
-	// The connection is then closed; the next read errors.
 	rctx, rcancel := context.WithTimeout(ctx, 2*time.Second)
 	defer rcancel()
-	if _, _, err := conn.Read(rctx); err == nil {
-		t.Error("connection should be closed after a malformed frame")
+	_, _, err := conn.Read(rctx)
+	if status := websocket.CloseStatus(err); status != websocket.StatusInvalidFramePayloadData {
+		t.Errorf("close status = %v, want 1007 (err %v)", status, err)
 	}
 }
 
