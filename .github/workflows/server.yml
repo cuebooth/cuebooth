@@ -40,7 +40,10 @@ jobs:
       - name: go build (native)
         run: go build ./...
       - name: go test
-        run: go test ./...
+        # -race guards the concurrent server (WebSocket hub, state store, poller).
+        # The Linux runner has a C toolchain, so the race detector's cgo
+        # requirement is satisfied.
+        run: go test -race ./...
 
   cross-build-windows:
     name: cross-build (windows/amd64)
