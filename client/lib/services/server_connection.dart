@@ -14,15 +14,11 @@ enum ServerConnectionState {
   connecting,
   connected,
   reconnecting,
-  // NOTE: observable now for invalid-input failures — connect() sets `error`
-  // on a bad server address and does not auto-reconnect. The connection-failure
-  // path (_onError and the _open() catch), however, sets `error` then
-  // immediately calls _scheduleReconnect(), which sets `reconnecting` in the
-  // same synchronous turn. notifyListeners() does fire on both calls, but a
-  // widget listener only schedules a rebuild for the next frame, which then
-  // reads the latest _state (reconnecting) — so the transient `error` isn't
-  // rendered for that path until connect-failure handling lands in CB-014.
-  // `lastError` is retained regardless.
+  // `connect()` sets `error` (no auto-reconnect) on a bad server address. The
+  // connection-failure path (channel.ready failing, or _onError) also passes
+  // through `error` before `_scheduleReconnect()` moves it to `reconnecting`.
+  // The connect screen listens for `error` to surface the failure and stop the
+  // retry loop; `lastError` carries the detail.
   error,
 }
 

@@ -67,6 +67,10 @@ class Session extends ChangeNotifier {
 
   int _cmdSeq = 0;
 
+  // True between detecting a delta gap and applying the resync snapshot, so only
+  // one get_state is sent per gap episode.
+  bool _awaitingResync = false;
+
   void _onFrame(Map<String, dynamic> frame) {
     switch (frame['type']) {
       case FrameType.hello:
@@ -117,14 +121,18 @@ class Session extends ChangeNotifier {
       }
     }
     state.applySnapshot(rev, topicsData);
+    _awaitingResync = false; // the snapshot is the resync; resume gap detection
   }
 
   void _onDelta(Map<String, dynamic> frame) {
     final rev = (frame['rev'] as num?)?.toInt() ?? 0;
     final patch = frame['patch'];
     if (patch is! Map<String, dynamic>) return;
-    if (state.applyDelta(rev, patch) == DeltaOutcome.gap) {
-      // A dropped frame: re-sync with a fresh snapshot (protocol.md §4).
+    if (state.applyDelta(rev, patch) == DeltaOutcome.gap && !_awaitingResync) {
+      // A dropped frame: re-sync with a fresh snapshot (protocol.md §4). Latch so
+      // a burst of further gapped deltas before the snapshot lands doesn't fire
+      // a get_state per frame; cleared when the snapshot arrives (_onState).
+      _awaitingResync = true;
       _outbound({'type': FrameType.getState});
     }
   }
@@ -171,6 +179,7 @@ class Session extends ChangeNotifier {
     if (!_ready && !_protoIncompatible) return;
     _ready = false;
     _protoIncompatible = false;
+    _awaitingResync = false;
     state.reset();
     notifyListeners();
   }

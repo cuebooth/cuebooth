@@ -23,6 +23,22 @@ void main() {
       expect(s.streamViewers, 12);
     });
 
+    test('applySnapshot replaces wholesale — a topic absent later is removed', () {
+      final s = AppState();
+      s.applySnapshot(1, {
+        'obs': {'scene': 'a'},
+        'camera': {
+          'main': {'preset': 'choir'},
+        },
+      });
+      expect(s.cameraPreset('main'), 'choir');
+      s.applySnapshot(2, {
+        'obs': {'scene': 'b'},
+      }); // camera absent
+      expect(s.obsScene, 'b');
+      expect(s.cameraPreset('main'), isNull);
+    });
+
     test('accessors are null before a baseline', () {
       final s = AppState();
       expect(s.streaming, isNull);

@@ -93,6 +93,46 @@ void main() {
     expect(session.state.obsScene, 'a');
   });
 
+  test('a gap episode sends exactly one get_state until the snapshot lands', () async {
+    await feed(hello());
+    await feed({
+      'type': 'state',
+      'rev': 1,
+      'obs': {'scene': 'a'},
+    });
+    // Two gapped deltas (both skip rev 2): both gap, but only one get_state.
+    await feed({
+      'type': 'state-delta',
+      'rev': 3,
+      'patch': {
+        'obs': {'scene': 'b'},
+      },
+    });
+    await feed({
+      'type': 'state-delta',
+      'rev': 4,
+      'patch': {
+        'obs': {'scene': 'c'},
+      },
+    });
+    expect(sent.where((m) => m['type'] == FrameType.getState).length, 1);
+
+    // The resync snapshot clears the latch; a later gap triggers a new get_state.
+    await feed({
+      'type': 'state',
+      'rev': 10,
+      'obs': {'scene': 'x'},
+    });
+    await feed({
+      'type': 'state-delta',
+      'rev': 12, // gap again
+      'patch': {
+        'obs': {'scene': 'y'},
+      },
+    });
+    expect(sent.where((m) => m['type'] == FrameType.getState).length, 2);
+  });
+
   test('nak surfaces an error notice', () async {
     final notices = <SessionNotice>[];
     session.notices.listen(notices.add);

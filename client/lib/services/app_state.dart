@@ -22,13 +22,12 @@ class AppState extends ChangeNotifier {
   /// Read-only view of the raw state map (for tests/diagnostics).
   Map<String, dynamic> get raw => Map.unmodifiable(_data);
 
-  /// Applies a full `state` snapshot scoped to its carried topics. Each carried
-  /// top-level topic is replaced wholesale (the snapshot is authoritative for
-  /// what it contains); this becomes the new baseline revision.
+  /// Applies a full `state` snapshot. A snapshot is the authoritative, complete
+  /// state for the client's subscription, so it replaces the state wholesale: a
+  /// topic absent from the snapshot is no longer present, not retained stale.
+  /// This becomes the new baseline revision.
   void applySnapshot(int rev, Map<String, dynamic> topicsData) {
-    topicsData.forEach((topic, value) {
-      _data[topic] = value;
-    });
+    _data = Map<String, dynamic>.of(topicsData);
     _rev = rev;
     _haveBaseline = true;
     notifyListeners();

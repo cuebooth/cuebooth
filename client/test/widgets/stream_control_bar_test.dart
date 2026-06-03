@@ -75,6 +75,20 @@ void main() {
     );
   });
 
+  testWidgets('viewer count is singular for one viewer', (tester) async {
+    final (session, _) = await readySession(
+      tester,
+      streaming: true,
+      recording: false,
+      viewers: 1,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: StreamControlBar(session: session))),
+    );
+    await tester.pump();
+    expect(find.text('1 viewer'), findsOneWidget);
+  });
+
   testWidgets('live/recording: shows LIVE/REC and stop sends stop', (tester) async {
     final (session, sent) = await readySession(
       tester,
