@@ -278,6 +278,8 @@ Where a row lists `value: none`, the `value` field MUST be omitted from the `cmd
 
 During a continuous move the server MUST NOT emit a `state-delta` per velocity-input frame. It coalesces camera position updates and reports `camera.<id>` `pan`/`tilt`/`zoom` at a bounded rate (≤10 Hz suggested) plus a final delta once motion settles. Position state is therefore eventually-consistent while a move is in progress and authoritative once it settles — `/ws` is never driven at the 30–60 Hz velocity-input rate (the same flooding concern that puts meters on their own `/ws/meters` endpoint, see §6).
 
+> **Implementation phasing.** `(v1)` marks an action as part of the v1.0 *protocol* — it does not mean every server implements it from day one. `preset` routes through Bitfocus Companion and ships in the server's Phase 1. `position`, `pan_tilt`, and `zoom` require direct VISCA control and land in Phase 3 (CB-030+). A server that has not yet implemented a recognized camera action rejects it with a `device_unavailable` nak (distinct from `unknown_action`, which is for an unrecognized action name).
+
 ### `target: audio`
 
 | `action` | `value` | Notes |
