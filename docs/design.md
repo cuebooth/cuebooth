@@ -559,6 +559,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-062** `client` — Program/preview video display (screenshot mode)
 - **CB-063** `server` — RTMP/SRT ingest from OBS, WebRTC relay to clients
 - **CB-064** `client` — Live video preview via WebRTC
+- **CB-065** `server`+`client` — OBS stream status metrics (uptime, bitrate, dropped frames) in the client status bar, via OBS WebSocket `GetStreamStatus` (depends on CB-060); split out of CB-016
 
 ### Phase 7 — Audio Automation
 - **CB-070** `server` — Feedback detection algorithm: meter analysis, frequency identification
