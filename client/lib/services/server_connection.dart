@@ -14,17 +14,17 @@ enum ServerConnectionState {
   connecting,
   connected,
   reconnecting,
-  // NOTE: observable now for invalid-input failures — connect() sets `error`
-  // on a bad server address and does not auto-reconnect. The connection-failure
-  // path (_onError and the _open() catch), however, sets `error` then
-  // immediately calls _scheduleReconnect(), which sets `reconnecting` in the
-  // same synchronous turn. notifyListeners() does fire on both calls, but a
-  // widget listener only schedules a rebuild for the next frame, which then
-  // reads the latest _state (reconnecting) — so the transient `error` isn't
-  // rendered for that path until connect-failure handling lands in CB-014.
-  // `lastError` is retained regardless.
+  // `connect()` sets `error` (no auto-reconnect) on a bad server address. The
+  // connection-failure path (channel.ready failing, or _onError) also passes
+  // through `error` before `_scheduleReconnect()` moves it to `reconnecting`.
+  // The connect screen listens for `error` to surface the failure and stop the
+  // retry loop; `lastError` carries the detail.
   error,
 }
+
+/// Creates a [WebSocketChannel] for [uri]. Injectable so tests can drive the
+/// connect/reconnect logic deterministically without a real socket.
+typedef ChannelFactory = WebSocketChannel Function(Uri uri);
 
 /// Manages the WebSocket connection to the CueBooth server.
 ///
@@ -33,7 +33,11 @@ enum ServerConnectionState {
 /// See ../../../docs/design.md §3.6 (Communication Protocol) and
 /// ../../../docs/protocol.md for the wire spec.
 class ServerConnection extends ChangeNotifier {
-  ServerConnection();
+  ServerConnection({ChannelFactory? connectChannel})
+    : _connectChannel = connectChannel ?? WebSocketChannel.connect;
+
+  /// How a [WebSocketChannel] is created (injectable for tests).
+  final ChannelFactory _connectChannel;
 
   static const Duration _initialBackoff = Duration(seconds: 1);
   static const Duration _maxBackoff = Duration(seconds: 30);
@@ -119,7 +123,7 @@ class ServerConnection extends ChangeNotifier {
     return true;
   }
 
-  void _open(int gen) {
+  Future<void> _open(int gen) async {
     // A reconnect Timer that already fired can't be unscheduled by
     // Timer.cancel() — its callback is enqueued — so _open may run after
     // teardown or after a newer connect(). Bail if teardown has begun, or if a
@@ -143,40 +147,65 @@ class ServerConnection extends ChangeNotifier {
     _channel = null;
 
     _setState(ServerConnectionState.connecting);
+
+    final WebSocketChannel channel;
     try {
-      final channel = WebSocketChannel.connect(uri);
-      _channel = channel;
-      _subscription = channel.stream.listen(
-        _onMessage,
-        onError: _onError,
-        onDone: _onDone,
-        cancelOnError: true,
-      );
-      // Optimistically mark connected once the socket opens. If the handshake
-      // fails the error handler downgrades the state.
-      //
-      // NOTE (protocol.md §1): the server sends a `hello` frame first, and
-      // clients MUST NOT send any frame on /ws until they receive it. Gating
-      // `connected` on receipt of `hello` — and resetting the reconnect
-      // backoff there, on a *confirmed* connection — is wired in CB-014
-      // alongside the command UI. We deliberately do not reset _backoff here:
-      // WebSocketChannel.connect() returns without throwing even when the
-      // server is unreachable (failures arrive async via onError/onDone), so
-      // resetting on every attempt would pin the delay at the initial value
-      // and defeat escalation toward the cap. A fresh connect() still resets.
-      //
-      // UI-state caveat: because this transition is synchronous, against a down
-      // server the state cycles connecting -> connected -> reconnecting each
-      // retry, so a status indicator bound to `state` briefly flashes
-      // "connected" per cycle. Awaiting `channel.ready` (web_socket_channel
-      // 3.x) before this transition would fix both the false-connected flash
-      // and the pre-hello send window; deferred to CB-014.
-      _setState(ServerConnectionState.connected);
+      channel = _connectChannel(uri);
     } catch (e) {
+      // Synchronous construction failure (e.g. a bad URI that slipped past
+      // validation). Async connect failures surface via channel.ready below.
       _lastError = e.toString();
       _setState(ServerConnectionState.error);
       _scheduleReconnect();
+      return;
     }
+    _channel = channel;
+
+    // Gate `connected` on the socket actually opening (channel.ready, available
+    // in web_socket_channel 3.x). WebSocketChannel.connect() returns without
+    // throwing even when the server is unreachable, so without this the status
+    // would flash "connected" against a down server every retry. ready throwing
+    // is the connect failure; we reconnect from here. (A fresh connect() resets
+    // the backoff; an automatic retry must not, so the delay can escalate.)
+    try {
+      await channel.ready;
+    } catch (e) {
+      // The connect attempt failed. Close the dead channel and drop our
+      // reference either way — otherwise it lingers (open, still in _channel)
+      // through the reconnect backoff, which can grow. In the superseded case a
+      // newer attempt owns _channel, so don't null it out from under them.
+      if (_stopRequested || gen != _generation) {
+        await channel.sink.close();
+        return;
+      }
+      _channel = null;
+      await channel.sink.close();
+      _lastError = e.toString();
+      _setState(ServerConnectionState.error);
+      _scheduleReconnect();
+      return;
+    }
+
+    // A newer connect()/disconnect()/dispose() may have superseded this attempt
+    // while we awaited readiness; if so, drop this socket without wiring it up.
+    if (_stopRequested || gen != _generation) {
+      await channel.sink.close();
+      return;
+    }
+
+    // Confirmed reachable: reset the backoff and start consuming frames. The
+    // server sends `hello` first and clients MUST NOT send before receiving it
+    // (protocol.md §1); the Session enforces that send-gating. The single-
+    // subscription stream buffers any frame that arrived during the ready await,
+    // so listening now doesn't lose the immediate `hello`.
+    _backoff = _initialBackoff;
+    _subscription = channel.stream.listen(
+      _onMessage,
+      onError: _onError,
+      onDone: _onDone,
+      cancelOnError: true,
+    );
+    _setState(ServerConnectionState.connected);
   }
 
   void _onMessage(dynamic data) {

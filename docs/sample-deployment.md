@@ -360,7 +360,7 @@ The operator runs the event from an iPad in the audience, connected to the serve
 - Center-left: camera joystick + zoom slider for the active camera.
 - Center: live OBS preview (low-res screenshot in Phase 6a, live WebRTC in Phase 6b).
 - Center-right: fader strips for the channels declared visible in §6.
-- Bottom: button grid mirroring the Companion macros (combined presets, OBS scenes, stream/record).
+- Bottom: the Companion button grid itself, rendered natively from Companion's Satellite surface — the same combined presets, OBS scenes, and stream/record buttons the operator's Companion page is configured with, with no separate client-side definition (see [protocol.md](protocol.md) §10).
 - Side panel: pending actions queue with confirm/cancel buttons.
 
 A typical event run:

@@ -37,6 +37,7 @@ Every CueBooth component that runs on Windows is intended to ship as a real Wind
 
 ## Documentation
 
+- [Building & running](docs/development.md) — build from source and run the full stack locally
 - [Design](docs/design.md) — architecture, technology choices, phased plan
 - [Operator runbook](docs/runbook.md) — pre-event setup → going live → teardown, as a template
 - [Slide Rules](docs/slide-rules.md) — authoring `@cuebooth` rules in slide notes

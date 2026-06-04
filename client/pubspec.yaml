@@ -19,7 +19,12 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.12.0
+  # Floor set to Dart 3.11 (Flutter ~3.43), not the scaffold's bleeding-edge
+  # 3.12 default: nothing here uses post-3.0 language features, and the only
+  # 3.12-pinned dependency (shared_preferences_android) resolves to an older,
+  # API-compatible version on 3.11. Keeps the project buildable on SDK versions
+  # already packaged by distros (e.g. nixpkgs) rather than a days-old release.
+  sdk: ^3.11.0
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -35,10 +40,18 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   web_socket_channel: ^3.0.3
+  # Persists the last-good server host/port so reconnecting (esp. to a Tailscale
+  # address) doesn't require re-typing it each launch.
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  # Provides StreamChannelMixin so tests can implement a fake WebSocketChannel
+  # without stubbing its transform/pipe helpers. Transitive via
+  # web_socket_channel; named here so the test import isn't flagged.
+  stream_channel: ^2.1.0
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

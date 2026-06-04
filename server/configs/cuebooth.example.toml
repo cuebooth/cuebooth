@@ -13,6 +13,18 @@ listen = "0.0.0.0:7878"
 # runs on the same production PC.
 base_url = "http://localhost:8000"
 
+# The Companion Satellite surface the server registers so clients render
+# Companion's own buttons natively (auto-discovered — no client-side button
+# definitions). The server connects to Companion's Satellite API (TCP) and
+# relays each button's rendered bitmap to clients; presses route back.
+# See docs/protocol.md §10. Defaults shown; omit the section to accept them.
+[companion.satellite]
+addr = "localhost:16622" # Companion satellite endpoint; "off" to disable the surface
+device_id = "cuebooth"   # stable surface id (Companion keys per-surface settings by it)
+rows = 4                 # grid dimensions (default 4×8 — a Stream Deck XL layout)
+cols = 8
+bitmap_size = 72         # button bitmap edge length in pixels (square)
+
 # ─────────────────────────────────────────────────────────────────────────
 # Presets
 #
