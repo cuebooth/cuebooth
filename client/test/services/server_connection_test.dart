@@ -127,6 +127,20 @@ void main() {
       expect(conn.lastError, isNotNull);
     });
 
+    test('ready failure closes the failed channel (no leak across backoff)', () async {
+      final fake = FakeWebSocketChannel();
+      final conn = ServerConnection(connectChannel: (_) => fake);
+      addTearDown(conn.dispose);
+
+      await conn.connect('host', 7878);
+      fake.failReady(Exception('connection refused'));
+      await pump();
+
+      // The dead channel must be closed immediately rather than left open and
+      // referenced until the next reconnect fires.
+      expect((fake.sink as _FakeSink).closed, isTrue);
+    });
+
     test('send only succeeds once connected', () async {
       final fake = FakeWebSocketChannel();
       final conn = ServerConnection(connectChannel: (_) => fake);

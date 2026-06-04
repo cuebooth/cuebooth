@@ -140,4 +140,36 @@ void main() {
     expect(presses.where((m) => m['pressed'] == true).length, 1);
     expect(presses.where((m) => m['pressed'] == false).length, 1);
   });
+
+  const oneKey = {
+    'type': 'surface-key',
+    'key': 0,
+    'seq': 1,
+    'row': 0,
+    'col': 0,
+    'key_type': 'BUTTON',
+    'pressed': false,
+    'color': '#336699',
+  };
+
+  testWidgets('a button cell is discoverable and activatable by assistive tech', (tester) async {
+    final handle = tester.ensureSemantics();
+    final (session, sent) = await surfaceSession(tester, rows: 1, cols: 1, keys: [oneKey]);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: SurfaceGrid(session: session))),
+    );
+    await tester.pump();
+
+    // The cell exposes a positional semantics label (Companion bakes the real
+    // label into the bitmap, so position is the best accessible name)...
+    final labeled = find.bySemanticsLabel('Button row 1, column 1');
+    expect(labeled, findsOneWidget);
+    // ...and activating it drives a press then release.
+    await tester.tap(labeled);
+    await tester.pump();
+    final presses = sent.where((m) => m['type'] == 'surface-press').toList();
+    expect(presses.where((m) => m['pressed'] == true).length, 1);
+    expect(presses.where((m) => m['pressed'] == false).length, 1);
+    handle.dispose();
+  });
 }

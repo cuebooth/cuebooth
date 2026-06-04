@@ -103,24 +103,41 @@ class _SurfaceCellState extends State<_SurfaceCell> {
 
     final pressed = _down || ks.pressed;
     final radius = BorderRadius.circular(6);
-    return GestureDetector(
-      onTapDown: (_) => _setDown(true),
-      onTapUp: (_) => _setDown(false),
-      onTapCancel: () => _setDown(false),
-      child: AnimatedScale(
-        scale: pressed ? 0.92 : 1.0,
-        duration: const Duration(milliseconds: 60),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: ks.color != null ? Color(ks.color!) : Colors.black,
-            borderRadius: radius,
-            border: pressed ? Border.all(color: Colors.white, width: 2) : null,
-          ),
-          child: ClipRRect(
-            borderRadius: radius,
-            child: ks.image != null
-                ? RawImage(image: ks.image, fit: BoxFit.contain)
-                : _Fallback(keyType: ks.keyType),
+    // The pointer handlers use down/up (not onTap), so GestureDetector exposes
+    // no activatable semantics on its own. Wrap a button node around it so
+    // screen readers / switch control can discover and trigger the cell.
+    // Companion bakes each button's label into the bitmap, so the best
+    // accessible name we can give is its grid position; an assistive-tech
+    // activation maps to a momentary press (down then up), matching Companion's
+    // typical trigger buttons.
+    return Semantics(
+      button: true,
+      label: 'Button row ${ks.row + 1}, column ${ks.col + 1}',
+      onTap: () {
+        _setDown(true);
+        _setDown(false);
+      },
+      child: GestureDetector(
+        onTapDown: (_) => _setDown(true),
+        onTapUp: (_) => _setDown(false),
+        onTapCancel: () => _setDown(false),
+        child: AnimatedScale(
+          scale: pressed ? 0.92 : 1.0,
+          duration: const Duration(milliseconds: 60),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: ks.color != null ? Color(ks.color!) : Colors.black,
+              borderRadius: radius,
+              border: pressed
+                  ? Border.all(color: Colors.white, width: 2)
+                  : null,
+            ),
+            child: ClipRRect(
+              borderRadius: radius,
+              child: ks.image != null
+                  ? RawImage(image: ks.image, fit: BoxFit.contain)
+                  : _Fallback(keyType: ks.keyType),
+            ),
           ),
         ),
       ),
@@ -145,7 +162,10 @@ class _Fallback extends StatelessWidget {
     };
     if (label.isEmpty) return const SizedBox.expand();
     return Center(
-      child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 18)),
+      child: Text(
+        label,
+        style: const TextStyle(color: Colors.white70, fontSize: 18),
+      ),
     );
   }
 }

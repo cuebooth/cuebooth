@@ -170,10 +170,16 @@ class ServerConnection extends ChangeNotifier {
     try {
       await channel.ready;
     } catch (e) {
+      // The connect attempt failed. Close the dead channel and drop our
+      // reference either way — otherwise it lingers (open, still in _channel)
+      // through the reconnect backoff, which can grow. In the superseded case a
+      // newer attempt owns _channel, so don't null it out from under them.
       if (_stopRequested || gen != _generation) {
         await channel.sink.close();
         return;
       }
+      _channel = null;
+      await channel.sink.close();
       _lastError = e.toString();
       _setState(ServerConnectionState.error);
       _scheduleReconnect();
