@@ -103,9 +103,13 @@ func (m *surfaceManager) onClear() {
 	m.mu.Unlock()
 }
 
-// sendInitial enqueues the current surface (layout + every cached key) to a
-// single just-connected client. Called from the connection's run() so the
-// client renders the surface as soon as it connects.
+// sendInitial replays the current surface (layout + every cached key) to a
+// single just-connected client. Called from the connection's run() once its
+// write loop is draining, so it uses the blocking enqueue: a full surface is
+// rows*cols key frames (unbounded by config), which would overflow the per-client
+// send buffer and drop a healthy client on a large grid if pushed through the
+// non-blocking path. Backpressure here only stalls this one connection, and it
+// stops early if the connection is torn down mid-replay.
 func (m *surfaceManager) sendInitial(c *clientConn) {
 	m.mu.Lock()
 	layout := surfaceLayoutFrame{
@@ -120,9 +124,13 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 	}
 	m.mu.Unlock()
 
-	c.enqueue(mustMarshal(layout))
+	if !c.enqueueBlocking(mustMarshal(layout)) {
+		return
+	}
 	for _, f := range frames {
-		c.enqueue(mustMarshal(f))
+		if !c.enqueueBlocking(mustMarshal(f)) {
+			return
+		}
 	}
 }
 

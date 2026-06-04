@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 )
@@ -198,6 +199,77 @@ func TestHeldKeysIgnoresOutOfRangePress(t *testing.T) {
 	c.releaseHeldSurfaceKeys()
 	if len(sat.presses) != 1 || sat.presses[0].key != 5 {
 		t.Errorf("expected release of key 5 only, got %+v", sat.presses)
+	}
+}
+
+func TestEnqueueBlockingAppliesBackpressure(t *testing.T) {
+	c := &clientConn{send: make(chan []byte, 1), done: make(chan struct{})}
+	if !c.enqueueBlocking([]byte("a")) {
+		t.Fatal("first enqueueBlocking should succeed into an empty buffer")
+	}
+	// Buffer is full; the next send must block until a reader makes room.
+	done := make(chan bool, 1)
+	go func() { done <- c.enqueueBlocking([]byte("b")) }()
+	select {
+	case <-done:
+		t.Fatal("enqueueBlocking returned while the buffer was full")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-c.send // drain "a"
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("enqueueBlocking should report true once room frees")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("enqueueBlocking did not unblock after the buffer drained")
+	}
+}
+
+func TestEnqueueBlockingAbortsOnTeardown(t *testing.T) {
+	c := &clientConn{send: make(chan []byte, 1), done: make(chan struct{})}
+	_ = c.enqueueBlocking([]byte("a")) // fill the buffer
+	done := make(chan bool, 1)
+	go func() { done <- c.enqueueBlocking([]byte("b")) }()
+	close(c.done) // connection torn down before room frees
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("enqueueBlocking should report false when the connection is torn down")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("enqueueBlocking did not abort on done")
+	}
+}
+
+func TestSurfaceManagerSendInitialLargeGridDoesNotDrop(t *testing.T) {
+	// A surface larger than the send buffer must replay fully under backpressure
+	// rather than overflowing and dropping the client (the bug that made grids
+	// beyond ~61 keys unusable). 8x8 = 64 keys → 65 frames into a 4-slot buffer.
+	sat := &fakeSat{rows: 8, cols: 8, bm: 72}
+	m := newSurfaceManager(sat, newHub())
+	for i := 0; i < 64; i++ {
+		sat.onKey(companion.SatelliteKey{Key: i, Type: "BUTTON", BitmapBase64: "AA=="})
+	}
+
+	c := &clientConn{send: make(chan []byte, 4), done: make(chan struct{})}
+	go m.sendInitial(c)
+
+	const want = 65 // 1 layout + 64 keys
+	layout := 0
+	for got := 0; got < want; got++ {
+		select {
+		case raw := <-c.send:
+			var f map[string]any
+			if json.Unmarshal(raw, &f) == nil && f["type"] == typeSurfaceLayout {
+				layout++
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("replay stalled or dropped: got %d of %d frames", got, want)
+		}
+	}
+	if layout != 1 {
+		t.Errorf("expected exactly 1 layout frame, got %d", layout)
 	}
 }
 

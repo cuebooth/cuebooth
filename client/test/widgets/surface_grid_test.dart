@@ -106,4 +106,38 @@ void main() {
     expect(presses.any((m) => m['key'] == 0 && m['pressed'] == true), isTrue);
     expect(presses.any((m) => m['key'] == 0 && m['pressed'] == false), isTrue);
   });
+
+  testWidgets('a tap emits exactly one press and one release (no duplicates)', (tester) async {
+    // _setDown only emits on an actual state transition, so a single tap yields
+    // exactly one down and one up — gesture callbacks that repeat a state (e.g.
+    // up then cancel) must not produce duplicate surface-press frames.
+    final (session, sent) = await surfaceSession(
+      tester,
+      rows: 1,
+      cols: 1,
+      keys: [
+        {
+          'type': 'surface-key',
+          'key': 0,
+          'seq': 1,
+          'row': 0,
+          'col': 0,
+          'key_type': 'BUTTON',
+          'pressed': false,
+          'color': '#336699',
+        },
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: SurfaceGrid(session: session))),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byType(GestureDetector));
+    await tester.pump();
+
+    final presses = sent.where((m) => m['type'] == 'surface-press').toList();
+    expect(presses.where((m) => m['pressed'] == true).length, 1);
+    expect(presses.where((m) => m['pressed'] == false).length, 1);
+  });
 }

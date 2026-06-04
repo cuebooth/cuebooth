@@ -71,7 +71,11 @@ class _SurfaceCellState extends State<_SurfaceCell> {
   bool _down = false;
 
   void _setDown(bool down) {
-    if (_down != down) setState(() => _down = down);
+    // Only emit on an actual transition: gesture callbacks can repeat a state
+    // (e.g. onTapUp then onTapCancel both release), and a duplicate frame would
+    // be needless surface-press traffic to the server/Companion.
+    if (_down == down) return;
+    setState(() => _down = down);
     widget.onPress(down);
   }
 
