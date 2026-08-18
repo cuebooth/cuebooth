@@ -69,13 +69,14 @@ type clientConn struct {
 }
 
 func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
-	// A page change makes Companion re-render the whole surface, so one burst is
-	// rows*cols frames through the non-blocking broadcast path. Reserving room
-	// for a full surface on top of sendBuffer keeps an ordinary page change from
-	// spending most of the queue and dropping a client that is merely slow.
+	// Two full surfaces of headroom on top of sendBuffer: the connect replay can
+	// still be queued when a page change arrives, and that page change is another
+	// rows*cols frames through the non-blocking broadcast path. One surface of
+	// headroom would let the replay consume it and leave an ordinary page change
+	// to drop a client that is merely slow.
 	depth := sendBuffer
 	if s.surface != nil {
-		depth += s.surface.keyCount()
+		depth += 2 * s.surface.keyCount()
 	}
 	return &clientConn{
 		server: s,

@@ -61,8 +61,12 @@ const (
 	satPingInterval = 2 * time.Second
 	// satDialTimeout bounds a single dial attempt.
 	satDialTimeout = 5 * time.Second
-	// satRegisterTimeout bounds the wait for Companion's ADD-DEVICE reply.
-	satRegisterTimeout = 10 * time.Second
+	// satRegisterTimeout bounds the wait for Companion's ADD-DEVICE reply. It
+	// sits below satReadTimeout deliberately: nothing feeds the read side while
+	// the verdict is outstanding (the keepalive starts after it), so a longer
+	// value would let the read deadline fire first and report a bare i/o timeout
+	// instead of naming the registration as the thing that never completed.
+	satRegisterTimeout = 4 * time.Second
 )
 
 // satReadTimeout bounds how long the read loop waits for any line before
@@ -76,6 +80,12 @@ const satReadTimeout = 3 * satPingInterval
 // connection is currently established. The caller surfaces it as a
 // device_unavailable nak.
 var ErrSatelliteNotConnected = errors.New("companion: satellite not connected")
+
+// ErrSatelliteQueueFull is returned when the session is up but its outbound
+// queue has not drained. It is distinct from ErrSatelliteNotConnected because a
+// backed-up writer is transient: the keepalive skips a tick rather than giving
+// up on the connection.
+var ErrSatelliteQueueFull = errors.New("companion: satellite send queue full")
 
 // SatelliteConfig configures the surface a Satellite registers with Companion.
 type SatelliteConfig struct {
@@ -430,7 +440,7 @@ func (s *Satellite) enqueue(line string) error {
 	case s.out <- line:
 		return nil
 	default:
-		return ErrSatelliteNotConnected
+		return ErrSatelliteQueueFull
 	}
 }
 
@@ -561,7 +571,11 @@ func (s *Satellite) pingLoop(ctx context.Context, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-t.C:
-			if err := s.enqueue("PING cuebooth"); err != nil {
+			// A full queue means the writer is behind, not that the peer is
+			// gone; skipping the tick keeps the keepalive alive across a burst,
+			// and a genuinely dead connection ends the session via the read
+			// deadline anyway.
+			if err := s.enqueue("PING cuebooth"); err != nil && !errors.Is(err, ErrSatelliteQueueFull) {
 				return
 			}
 		}

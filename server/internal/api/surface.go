@@ -109,7 +109,19 @@ func (m *surfaceManager) onKey(k companion.SatelliteKey) {
 func (m *surfaceManager) onClear() {
 	m.mu.Lock()
 	m.keys = make(map[int]surfaceKeyFrame)
+	layout := surfaceLayoutFrame{
+		Type:       typeSurfaceLayout,
+		Rows:       m.rows,
+		Cols:       m.cols,
+		Seq:        m.seq,
+		BitmapSize: m.bitmapSize,
+	}
 	m.mu.Unlock()
+	// Tell the clients too. Clearing only the cache would leave whoever is
+	// already connected showing buttons Companion has blanked, while a client
+	// connecting a moment later saw an empty grid — and a tap on one of those
+	// stale buttons still reaches Companion, which now has something else there.
+	m.hub.broadcast(mustMarshal(layout))
 }
 
 // sendInitial replays the current surface (layout + every cached key) to a

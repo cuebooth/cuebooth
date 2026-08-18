@@ -146,6 +146,44 @@ func TestSurfaceManagerOnLayoutClearsCache(t *testing.T) {
 	}
 }
 
+// KEYS-CLEAR blanks the surface, so connected clients have to be told: leaving
+// them on the last render diverges from a client that connects afterwards, and a
+// tap on a stale button still reaches Companion.
+func TestSurfaceManagerClearRebaselinesClients(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	m := newSurfaceManager(sat, hub)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+
+	c := newTestClient()
+	hub.add(c)
+	drainFrames(c)
+
+	sat.onClear()
+
+	var layouts int
+	for _, f := range drainFrames(c) {
+		if f["type"] == typeSurfaceLayout {
+			layouts++
+			if got := f["seq"].(float64); got != 1 {
+				t.Errorf("clear layout seq = %v, want 1", got)
+			}
+		}
+	}
+	if layouts != 1 {
+		t.Errorf("KEYS-CLEAR broadcast %d layout frames, want 1", layouts)
+	}
+
+	// The cache is emptied too, so a later client isn't replayed blanked keys.
+	c2 := newTestClient()
+	m.sendInitial(c2)
+	for _, f := range drainFrames(c2) {
+		if f["type"] == typeSurfaceKey {
+			t.Errorf("a cleared key was replayed: %+v", f)
+		}
+	}
+}
+
 func TestSurfaceManagerPress(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())

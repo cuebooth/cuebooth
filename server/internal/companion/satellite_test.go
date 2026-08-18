@@ -405,8 +405,13 @@ func TestSatelliteConcurrentPressDuringTeardown(t *testing.T) {
 		return c, err
 	}
 	sat := NewSatellite(SatelliteConfig{DeviceID: "x"}, WithSatelliteDialer(dial))
-	// Drain the Companion end so the writer never blocks on the pipe.
+	// Accept the surface, then drain so the writer never blocks on the pipe.
+	// Without the acknowledgement Press stops at the registration gate and no
+	// press reaches enqueue, which is the whole point of the test.
 	go func() {
+		if _, err := srvEnd.Write([]byte(`ADD-DEVICE OK DEVICEID="x"` + "\n")); err != nil {
+			return
+		}
 		b := make([]byte, 4096)
 		for {
 			if _, err := srvEnd.Read(b); err != nil {
@@ -417,6 +422,17 @@ func TestSatelliteConcurrentPressDuringTeardown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go sat.Run(ctx)
+
+	// Presses only reach enqueue once the surface is registered.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(0, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("surface never registered, so no press would reach enqueue: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
