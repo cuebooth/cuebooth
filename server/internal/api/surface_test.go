@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -220,26 +223,6 @@ func TestSurfaceManagerInBounds(t *testing.T) {
 	}
 }
 
-func TestHeldKeysIgnoresOutOfRangePress(t *testing.T) {
-	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
-	m := newSurfaceManager(sat, newHub())
-	c := newTestClient()
-	c.server = &Server{surface: m}
-
-	// A press the dispatcher would gate as out-of-range must never be tracked,
-	// or heldSurfaceKeys could grow unbounded. handleSurfacePress gates on
-	// inBounds before trackSurfaceHold, so simulate that gate here.
-	if m.inBounds(9999) {
-		t.Fatal("9999 should be out of bounds")
-	}
-	// In-range holds are tracked and released; out-of-range are never recorded.
-	c.trackSurfaceHold(5, true)
-	c.releaseHeldSurfaceKeys()
-	if len(sat.presses) != 1 || sat.presses[0].key != 5 {
-		t.Errorf("expected release of key 5 only, got %+v", sat.presses)
-	}
-}
-
 func TestEnqueueBlockingAppliesBackpressure(t *testing.T) {
 	c := &clientConn{send: make(chan []byte, 1), done: make(chan struct{})}
 	if !c.enqueueBlocking([]byte("a")) {
@@ -374,6 +357,109 @@ func TestSurfaceLayoutCarriesSeq(t *testing.T) {
 	if !sawLayout {
 		t.Error("re-registration broadcast no layout frame")
 	}
+}
+
+// handleSurfacePress is the whole client-facing entry point for a tap, so it is
+// driven here with real frames rather than by calling the pieces it delegates to.
+func TestHandleSurfacePress(t *testing.T) {
+	newConn := func(m *surfaceManager) *clientConn {
+		c := newTestClient()
+		c.server = &Server{surface: m, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		return c
+	}
+	press := func(c *clientConn, body string) {
+		c.handleSurfacePress([]byte(body))
+	}
+
+	t.Run("a frame missing key or pressed is an error, not a press", func(t *testing.T) {
+		sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+		m := newSurfaceManager(sat, newHub())
+		c := newConn(m)
+		press(c, `{"type":"surface-press","pressed":true}`)
+		press(c, `{"type":"surface-press","key":1}`)
+		press(c, `{"type":"surface-press"`)
+		if len(sat.presses) != 0 {
+			t.Errorf("malformed frames reached Companion: %+v", sat.presses)
+		}
+		var errors int
+		for _, f := range drainFrames(c) {
+			if f["type"] == typeError {
+				errors++
+			}
+		}
+		if errors != 3 {
+			t.Errorf("got %d error frames, want 3", errors)
+		}
+	})
+
+	t.Run("an out-of-grid key is dropped and not tracked", func(t *testing.T) {
+		sat := &fakeSat{rows: 2, cols: 2, bm: 72} // keys 0..3
+		m := newSurfaceManager(sat, newHub())
+		c := newConn(m)
+		press(c, `{"type":"surface-press","key":99,"pressed":true}`)
+		if len(sat.presses) != 0 {
+			t.Errorf("out-of-grid press forwarded: %+v", sat.presses)
+		}
+		c.releaseHeldSurfaceKeys()
+		if len(sat.presses) != 0 {
+			t.Errorf("out-of-grid key was tracked as held: %+v", sat.presses)
+		}
+	})
+
+	t.Run("an in-grid press is forwarded and held until released", func(t *testing.T) {
+		sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+		m := newSurfaceManager(sat, newHub())
+		c := newConn(m)
+		press(c, `{"type":"surface-press","key":2,"pressed":true}`)
+		if len(sat.presses) != 1 || sat.presses[0].key != 2 || !sat.presses[0].pressed {
+			t.Fatalf("press not forwarded: %+v", sat.presses)
+		}
+		press(c, `{"type":"surface-press","key":2,"pressed":false}`)
+		c.releaseHeldSurfaceKeys()
+		if len(sat.presses) != 2 {
+			t.Errorf("a delivered release should clear the hold, got %+v", sat.presses)
+		}
+	})
+
+	t.Run("a release that fails to reach Companion stays held", func(t *testing.T) {
+		sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+		m := newSurfaceManager(sat, newHub())
+		c := newConn(m)
+		press(c, `{"type":"surface-press","key":1,"pressed":true}`)
+
+		// The satellite drops between the press and the release.
+		sat.pressErr = errors.New("satellite not connected")
+		press(c, `{"type":"surface-press","key":1,"pressed":false}`)
+		sat.pressErr = nil
+
+		// The disconnect fallback must still release it, or Companion is left
+		// holding a button whose release never arrived.
+		c.releaseHeldSurfaceKeys()
+		var released bool
+		for _, p := range sat.presses {
+			if p.key == 1 && !p.pressed {
+				released = true
+			}
+		}
+		if !released {
+			t.Errorf("an undelivered release left the key untracked: %+v", sat.presses)
+		}
+	})
+
+	t.Run("no surface configured warns instead of pressing", func(t *testing.T) {
+		c := newTestClient()
+		c.server = &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		press(c, `{"type":"surface-press","key":0,"pressed":true}`)
+		var warned bool
+		for _, f := range drainFrames(c) {
+			if f["type"] == typeEvent && f["severity"] == "warn" {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Error("pressing with no surface configured produced no warning")
+		}
+	})
 }
 
 func TestReleaseHeldSurfaceKeysOnDisconnect(t *testing.T) {

@@ -46,6 +46,7 @@ void main() {
         'type': 'surface-layout',
         'rows': rows,
         'cols': cols,
+        'seq': 0,
         'bitmap_size': 72,
       });
       for (final k in keys) {
@@ -174,6 +175,58 @@ void main() {
     final presses = sent.where((m) => m['type'] == 'surface-press').toList();
     expect(presses.where((m) => m['pressed'] == true).length, 1);
     expect(presses.where((m) => m['pressed'] == false).length, 1);
+  });
+
+  testWidgets('dragging across the grid does not fire a button', (
+    tester,
+  ) async {
+    // Dragging must never run a cue. A tap recognizer that reported its press
+    // before winning the arena would deliver a complete press and release to
+    // Companion when the scrollable took over; the recognizer defers the press
+    // until it wins, so a drag yields a cancel with no press behind it.
+    final keys = [
+      for (var i = 0; i < 80; i++)
+        {
+          'type': 'surface-key',
+          'key': i,
+          'seq': i + 1,
+          'row': i ~/ 4,
+          'col': i % 4,
+          'key_type': 'BUTTON',
+          'pressed': false,
+          'color': '#336699',
+        },
+    ];
+    final (session, sent) = await surfaceSession(
+      tester,
+      rows: 20,
+      cols: 4,
+      keys: keys,
+    );
+    tester.view.physicalSize = const Size(400, 700);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SurfaceGrid(session: session)),
+      ),
+    );
+    await tester.pump();
+
+    final gesture = await tester.startGesture(const Offset(100, 200));
+    await tester.pump(
+      const Duration(milliseconds: 150),
+    ); // past the tap deadline
+    await gesture.moveBy(const Offset(0, -160));
+    await tester.pump();
+    await gesture.up();
+    await tester.pump();
+
+    expect(
+      sent.where((m) => m['type'] == 'surface-press').toList(),
+      isEmpty,
+      reason: 'a drag must not press a button',
+    );
   });
 
   testWidgets('a held key is released when the surface re-baselines under it', (

@@ -81,7 +81,7 @@ The server binds the client WebSocket on `[server] listen` at path `/ws` (`/ws/m
 
 ## 4. Flutter client (`client/`)
 
-**Prerequisites (all platforms):** the Flutter SDK (Dart **3.12+**), then the platform-specific toolchain below. After installing the toolchain, fetch dependencies once:
+**Prerequisites (all platforms):** the Flutter SDK (Dart **3.11+**, which Flutter 3.41 onward provides), then the platform-specific toolchain below. After installing the toolchain, fetch dependencies once:
 
 ```sh
 cd client

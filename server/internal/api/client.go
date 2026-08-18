@@ -441,12 +441,22 @@ func (c *clientConn) handleSurfacePress(data []byte) {
 	if !c.server.surface.inBounds(*f.Key) {
 		return
 	}
-	// Record the hold first (on the client's intent), so a release is sent on
-	// disconnect even if this press's delivery is uncertain.
-	c.trackSurfaceHold(*f.Key, *f.Pressed)
-	if err := c.server.surface.press(*f.Key, *f.Pressed); err != nil {
+	// A hold is recorded on the client's intent, before delivery, so the
+	// disconnect fallback still releases a key whose press may or may not have
+	// reached Companion. A release is only forgotten once it has actually been
+	// delivered: dropping it first would leave a failed release both unsent and
+	// untracked, and Companion latched on a hold-to-act button.
+	if *f.Pressed {
+		c.trackSurfaceHold(*f.Key, true)
+	}
+	err := c.server.surface.press(*f.Key, *f.Pressed)
+	if err != nil {
 		c.server.logger.Warn("surface press failed", "key", *f.Key, "err", err)
 		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "Companion surface unavailable"}))
+		return
+	}
+	if !*f.Pressed {
+		c.trackSurfaceHold(*f.Key, false)
 	}
 }
 

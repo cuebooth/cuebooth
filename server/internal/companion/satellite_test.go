@@ -198,6 +198,51 @@ func TestSatelliteRegistrationRejected(t *testing.T) {
 	}
 }
 
+// Companion can reject a surface that is already live — it hands the device id
+// to another connection and tells the incumbent. The session has to end so Run
+// reconnects; the connection stays healthy otherwise (we keep answering PING),
+// leaving a surface that refuses every press with nothing retrying.
+func TestSatelliteRejectedAfterRegistrationEndsSession(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(0, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("surface never registered: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Drain what the surface writes so the pipe never blocks the writer.
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			if _, err := fake.conn.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+
+	fake.writeLine(t, `ADD-DEVICE ERROR DEVICEID="cuebooth" MESSAGE="Device exists elsewhere"`)
+
+	select {
+	case <-sessionErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session survived a rejection issued after registration")
+	}
+	if err := sat.Press(0, true); !errors.Is(err, ErrSatelliteNotConnected) {
+		t.Errorf("Press after the session ended: got %v, want ErrSatelliteNotConnected", err)
+	}
+}
+
 // Companion writes ADD-DEVICE OK and the first key states back to back, so the
 // layout callback has to be raised from the same goroutine that dispatches them.
 // If it were raised elsewhere, key states processed before it would be

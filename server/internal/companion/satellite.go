@@ -140,8 +140,9 @@ type Satellite struct {
 	// without a shared global the running sessions would race on.
 	readTimeout time.Duration
 
-	mu  sync.Mutex
-	out chan<- string // current session's outbound queue; nil when disconnected
+	mu   sync.Mutex
+	out  chan<- string // current session's outbound queue; nil when disconnected
+	conn net.Conn      // current session's socket, so a rejection can end it
 	// registered is true once Companion has accepted this session's ADD-DEVICE.
 	// Press is refused until then: Companion discards key presses for a surface
 	// it has not registered, so reporting them as sent would be a lie.
@@ -274,7 +275,7 @@ func (s *Satellite) session(ctx context.Context) error {
 	writerDone := make(chan struct{})
 	reg := make(chan error, 1)
 	go s.writer(conn, out, writerDone)
-	s.setSession(out, reg)
+	s.setSession(conn, out, reg)
 
 	// Read from the start: the registration verdict arrives on the wire, so the
 	// reader has to be running before we wait for it.
@@ -298,6 +299,7 @@ func (s *Satellite) session(ctx context.Context) error {
 		s.mu.Lock()
 		s.out = nil
 		s.reg = nil
+		s.conn = nil
 		s.registered = false
 		close(out)
 		s.mu.Unlock()
@@ -364,8 +366,9 @@ func (s *Satellite) writer(conn net.Conn, out <-chan string, done chan<- struct{
 	}
 }
 
-func (s *Satellite) setSession(out chan<- string, reg chan error) {
+func (s *Satellite) setSession(conn net.Conn, out chan<- string, reg chan error) {
 	s.mu.Lock()
+	s.conn = conn
 	s.out = out
 	s.reg = reg
 	s.mu.Unlock()
@@ -379,13 +382,23 @@ func (s *Satellite) signalRegistration(err error) {
 	reg := s.reg
 	s.reg = nil
 	s.registered = err == nil
+	conn := s.conn
 	s.mu.Unlock()
-	if reg == nil {
+
+	if reg != nil {
+		select {
+		case reg <- err:
+		default:
+		}
 		return
 	}
-	select {
-	case reg <- err:
-	default:
+	// Nobody is waiting, so this verdict arrived after the session was already
+	// live — Companion handing our device id to another surface, for instance.
+	// Closing the socket ends the session and lets Run reconnect; without it the
+	// connection stays healthy (we still answer PING) while the surface is dead,
+	// so every press is refused and nothing ever retries.
+	if err != nil && conn != nil {
+		conn.Close()
 	}
 }
 
