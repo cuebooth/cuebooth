@@ -410,7 +410,7 @@ Surface frames travel on the main `/ws` channel but are **not** part of the `sta
 
 ### `surface-layout` (server → client)
 
-Announces the surface grid dimensions. Sent once after the initial `state` snapshot, and again whenever the server's surface (re)registers with Companion (e.g. after a reconnect). A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops the keys the layout supersedes, since the server re-sends every key afterward.
+Announces the surface grid dimensions. Sent after the initial `state` snapshot, again whenever the server's surface (re)registers with Companion (e.g. after a reconnect), and again after a `subscribe`/`unsubscribe`, which re-sends the surface so a topic change can't cost a client the keys broadcast while it was re-baselining. A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops the keys the layout supersedes, since the server re-sends every key afterward.
 
 ```json
 { "type": "surface-layout", "rows": 4, "cols": 8, "seq": 141, "bitmap_size": 72 }

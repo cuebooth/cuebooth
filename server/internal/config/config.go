@@ -66,6 +66,11 @@ type SatelliteConfig struct {
 	BitmapSize int `toml:"bitmap_size"`
 }
 
+// maxSatelliteDimension bounds a single grid dimension. The largest surface
+// anyone drives is a couple of Stream Deck XLs wide; this only exists to keep a
+// mistyped value from becoming a huge per-client buffer.
+const maxSatelliteDimension = 64
+
 // Disabled reports whether the satellite surface is turned off by config.
 func (s SatelliteConfig) Disabled() bool {
 	switch strings.ToLower(strings.TrimSpace(s.Addr)) {
@@ -172,8 +177,15 @@ func (s SatelliteConfig) validate() error {
 	if strings.ContainsAny(s.DeviceID, " \t\r\n\"=") {
 		return fmt.Errorf("companion.satellite.device_id must not contain whitespace, '=', or '\"'")
 	}
+	// The grid size drives what we advertise to Companion and how much the
+	// server buffers per client, so an implausible value (a typo'd extra digit)
+	// is rejected rather than turned into a huge allocation and a Companion
+	// asked to render that many bitmaps.
 	if s.Rows < 0 || s.Cols < 0 {
 		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must not be negative")
+	}
+	if s.Rows > maxSatelliteDimension || s.Cols > maxSatelliteDimension {
+		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must be at most %d", maxSatelliteDimension)
 	}
 	// Companion silently coerces a BITMAPS size below 5 to its 72px default, so a
 	// 1–4 value would make us advertise the wrong dimensions to clients (corrupt

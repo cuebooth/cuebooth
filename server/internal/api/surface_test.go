@@ -315,16 +315,26 @@ func TestSurfaceLayoutCarriesSeq(t *testing.T) {
 		t.Errorf("layout seq = %v, want 2 (the two keys applied so far)", got)
 	}
 
-	// A re-registration broadcast carries the sequence too.
+	// A re-registration broadcast carries the sequence reached so far, so a
+	// client can tell which of its keys the layout supersedes.
 	hub.add(c)
 	drainFrames(c)
+	sat.onKey(companion.SatelliteKey{Key: 2, Type: "BUTTON"}) // seq 3
+	drainFrames(c)
 	sat.onLayout(2, 2, 72)
+
+	var sawLayout bool
 	for _, f := range drainFrames(c) {
-		if f["type"] == typeSurfaceLayout {
-			if _, ok := f["seq"]; !ok {
-				t.Error("broadcast layout carried no seq")
-			}
+		if f["type"] != typeSurfaceLayout {
+			continue
 		}
+		sawLayout = true
+		if got := f["seq"].(float64); got != 3 {
+			t.Errorf("broadcast layout seq = %v, want 3", got)
+		}
+	}
+	if !sawLayout {
+		t.Error("re-registration broadcast no layout frame")
 	}
 }
 

@@ -315,9 +315,6 @@ func (s *Satellite) session(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	if s.onLayout != nil {
-		s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
-	}
 	s.logger.Info("companion satellite registered", "addr", s.cfg.Addr, "device_id", s.cfg.DeviceID)
 
 	go s.pingLoop(ctx, readDone)
@@ -470,6 +467,14 @@ func (s *Satellite) handleLine(line string) {
 			return
 		}
 		if _, ok := args["OK"]; ok {
+			// The layout is raised here, on the read goroutine, so it is
+			// necessarily ahead of every KEY-STATE that follows it on the wire.
+			// Raising it from the session goroutine instead would let key states
+			// this loop had already dispatched be re-baselined away by a layout
+			// that logically preceded them.
+			if s.onLayout != nil {
+				s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
+			}
 			s.signalRegistration(nil)
 		}
 	case "ERROR":

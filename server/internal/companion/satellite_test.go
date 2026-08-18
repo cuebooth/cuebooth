@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -193,6 +194,54 @@ func TestSatelliteRegistrationRejected(t *testing.T) {
 	case <-layouts:
 		t.Error("layout fired for a rejected registration")
 	default:
+	}
+}
+
+// Companion writes ADD-DEVICE OK and the first key states back to back, so the
+// layout callback has to be raised from the same goroutine that dispatches them.
+// If it were raised elsewhere, key states processed before it would be
+// re-baselined away by a layout that logically preceded them — the consumer
+// drops keys the layout supersedes (protocol.md §10), so those buttons would go
+// blank until Companion happened to re-render them.
+func TestSatelliteLayoutPrecedesKeysInSameBurst(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{
+		DeviceID: "cuebooth", Rows: 1, Cols: 4, BitmapSize: 72,
+	})
+
+	const keyCount = 4
+	events := make(chan string, keyCount+1)
+	sat.OnLayout(func(int, int, int) { events <- "layout" })
+	sat.OnKey(func(SatelliteKey) { events <- "key" })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+
+	// One write, the way Companion sends it: the ack immediately followed by the
+	// surface. Any ordering seam shows up as a key arriving before the layout.
+	var burst strings.Builder
+	burst.WriteString(`ADD-DEVICE OK DEVICEID="cuebooth"` + "\n")
+	for i := 0; i < keyCount; i++ {
+		fmt.Fprintf(&burst, "KEY-STATE DEVICEID=cuebooth KEY=%d TYPE=BUTTON PRESSED=0 COLOR=#000000 BITMAP=QUJD\n", i)
+	}
+	if _, err := fake.conn.Write([]byte(burst.String())); err != nil {
+		t.Fatalf("burst write: %v", err)
+	}
+
+	for i := 0; i < keyCount+1; i++ {
+		select {
+		case ev := <-events:
+			if i == 0 && ev != "layout" {
+				t.Fatalf("event %d was %q; the layout must arrive before any key", i, ev)
+			}
+			if i > 0 && ev != "key" {
+				t.Fatalf("event %d was %q, want a key", i, ev)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out after %d of %d events", i, keyCount+1)
+		}
 	}
 }
 

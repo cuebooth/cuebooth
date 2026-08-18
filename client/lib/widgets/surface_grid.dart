@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../services/session.dart';
 import '../services/surface_state.dart';
@@ -75,8 +76,22 @@ class _SurfaceCellState extends State<_SurfaceCell> {
     // (e.g. onTapUp then onTapCancel both release), and a duplicate frame would
     // be needless surface-press traffic to the server/Companion.
     if (_down == down) return;
-    setState(() => _down = down);
+    _down = down;
+    // Sent before the rebuild is requested, so a release still reaches Companion
+    // even if the rebuild can't happen — otherwise the button stays latched.
     widget.onPress(down);
+    if (!mounted) return;
+    if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.idle) {
+      setState(() {});
+      return;
+    }
+    // A surface re-baseline can drop the key under a finger, unmounting this
+    // cell's detector; the recognizer's forced cancel then arrives mid-frame
+    // with the tree locked, where setState is illegal. The state is already
+    // recorded, so ask for the rebuild once the frame is done.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
