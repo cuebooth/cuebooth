@@ -43,6 +43,7 @@ type collector struct {
 	ready    chan struct{}
 	want     int
 	closed   bool
+	updates  int
 }
 
 func newCollector(want int) *collector {
@@ -60,10 +61,17 @@ func (c *collector) onKey(k SatelliteKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.keys[k.Key] = k
+	c.updates++
 	if !c.closed && len(c.keys) >= c.want {
 		c.closed = true
 		close(c.ready)
 	}
+}
+
+func (c *collector) updateCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.updates
 }
 
 func (c *collector) snapshot() (keys map[int]SatelliteKey, rows, cols, bitmapSz, layouts int) {
@@ -140,18 +148,59 @@ func TestOnlineSurfaceRegistersAndStreamsKeys(t *testing.T) {
 		}
 	}
 
-	// A press must be accepted on the live connection; an error means the
-	// surface was never registered or the socket is gone.
+	// Press reports that the line was queued on a live session — it does not
+	// prove Companion parsed it, since the acknowledgement (KEY-PRESS OK) isn't
+	// surfaced to callers. An unconfigured button produces no other observable
+	// effect: Companion sends no KEY-STATE echo for it.
 	if err := sat.Press(1, true); err != nil {
-		t.Errorf("press down: %v", err)
+		t.Fatalf("press down: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond)
 	if err := sat.Press(1, false); err != nil {
-		t.Errorf("press up: %v", err)
+		t.Fatalf("press up: %v", err)
 	}
 
-	// The keepalive interval is 2s; still being connected past it shows PING is
-	// answered rather than the connection being dropped as idle.
+	// A page-navigation key is the exception: pressing it makes Companion change
+	// page and re-render every key, so the effect is visible over this
+	// connection. Whether the surface has one is a per-surface Companion setting,
+	// so this runs when it does and is skipped when it doesn't.
+	pageKey := -1
+	for idx, k := range keys {
+		if k.Type == "PAGEUP" || k.Type == "PAGEDOWN" {
+			pageKey = idx
+			break
+		}
+	}
+	if pageKey >= 0 {
+		before := col.updateCount()
+		if err := sat.Press(pageKey, true); err != nil {
+			t.Fatalf("press page key down: %v", err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		if err := sat.Press(pageKey, false); err != nil {
+			t.Fatalf("press page key up: %v", err)
+		}
+		deadline := time.After(30 * time.Second)
+		for col.updateCount() < before+total {
+			select {
+			case <-deadline:
+				t.Errorf("companion %s: pressing key %d (%s) produced %d key updates, want %d — the press was not acted on",
+					version, pageKey, keys[pageKey].Type, col.updateCount()-before, total)
+				deadline = nil
+			case <-time.After(100 * time.Millisecond):
+			}
+			if deadline == nil {
+				break
+			}
+		}
+	} else {
+		t.Logf("companion %s: surface has no page-navigation key; skipping the press-effect assertion", version)
+	}
+
+	// Presses still succeed well past the 2s keepalive interval, so the session
+	// outlived at least one PING round trip rather than being dropped as idle.
+	// This does not prove Companion's PONG was processed, only that neither side
+	// tore the connection down.
 	time.Sleep(3 * time.Second)
 	if err := sat.Press(1, true); err != nil {
 		t.Errorf("press after keepalive interval (connection dropped?): %v", err)

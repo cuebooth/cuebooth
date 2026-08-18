@@ -89,7 +89,10 @@ class Session extends ChangeNotifier {
       case FrameType.surfaceKey:
         _onSurfaceKey(frame);
       case FrameType.nak:
-        _emit(NoticeSeverity.error, _errorText(frame['error'], 'command rejected'));
+        _emit(
+          NoticeSeverity.error,
+          _errorText(frame['error'], 'command rejected'),
+        );
       case FrameType.event:
         _onEvent(frame);
       case FrameType.error:
@@ -156,6 +159,7 @@ class Session extends ChangeNotifier {
       (frame['rows'] as num?)?.toInt() ?? 0,
       (frame['cols'] as num?)?.toInt() ?? 0,
       (frame['bitmap_size'] as num?)?.toInt() ?? 0,
+      (frame['seq'] as num?)?.toInt() ?? 0,
     );
   }
 

@@ -273,6 +273,61 @@ func TestSurfaceManagerSendInitialLargeGridDoesNotDrop(t *testing.T) {
 	}
 }
 
+// Companion is the only source of key indices, but a key outside the grid we
+// registered has no cell to render into and would sit in the cache forever.
+func TestSurfaceManagerIgnoresOutOfGridKey(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72} // 4 keys
+	hub := newHub()
+	m := newSurfaceManager(sat, hub)
+	c := newTestClient()
+	hub.add(c)
+
+	sat.onKey(companion.SatelliteKey{Key: 99, Type: "BUTTON", BitmapBase64: "AA=="})
+
+	if frames := drainFrames(c); len(frames) != 0 {
+		t.Errorf("out-of-grid key was broadcast: %+v", frames)
+	}
+	c2 := newTestClient()
+	m.sendInitial(c2)
+	for _, f := range drainFrames(c2) {
+		if f["type"] == typeSurfaceKey {
+			t.Errorf("out-of-grid key was cached and replayed: %+v", f)
+		}
+	}
+}
+
+// The layout carries the sequence it was snapshotted at so a client can keep a
+// key update that overtook it (protocol.md §10).
+func TestSurfaceLayoutCarriesSeq(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	m := newSurfaceManager(sat, hub)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON"})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON"})
+
+	c := newTestClient()
+	m.sendInitial(c)
+	frames := drainFrames(c)
+	if len(frames) == 0 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("expected a layout frame first, got %+v", frames)
+	}
+	if got := frames[0]["seq"].(float64); got != 2 {
+		t.Errorf("layout seq = %v, want 2 (the two keys applied so far)", got)
+	}
+
+	// A re-registration broadcast carries the sequence too.
+	hub.add(c)
+	drainFrames(c)
+	sat.onLayout(2, 2, 72)
+	for _, f := range drainFrames(c) {
+		if f["type"] == typeSurfaceLayout {
+			if _, ok := f["seq"]; !ok {
+				t.Error("broadcast layout carried no seq")
+			}
+		}
+	}
+}
+
 func TestReleaseHeldSurfaceKeysOnDisconnect(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())

@@ -9,7 +9,7 @@ void main() {
     test('applyLayout sets dimensions and hasLayout', () {
       final s = SurfaceState();
       expect(s.hasLayout, isFalse);
-      s.applyLayout(4, 8, 72);
+      s.applyLayout(4, 8, 72, 0);
       expect(s.rows, 4);
       expect(s.cols, 8);
       expect(s.bitmapSize, 72);
@@ -18,7 +18,7 @@ void main() {
     });
 
     test('applyKey records a color-only key and parses the color', () {
-      final s = SurfaceState()..applyLayout(4, 8, 72);
+      final s = SurfaceState()..applyLayout(4, 8, 72, 0);
       s.applyKey(
         key: 9,
         seq: 1,
@@ -38,30 +38,108 @@ void main() {
     });
 
     test('a stale (older or equal seq) update for a key is ignored', () {
-      final s = SurfaceState()..applyLayout(1, 1, 72);
-      s.applyKey(key: 0, seq: 5, row: 0, col: 0, keyType: 'BUTTON', pressed: true);
-      s.applyKey(key: 0, seq: 3, row: 0, col: 0, keyType: 'BUTTON', pressed: false);
+      final s = SurfaceState()..applyLayout(1, 1, 72, 0);
+      s.applyKey(
+        key: 0,
+        seq: 5,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: true,
+      );
+      s.applyKey(
+        key: 0,
+        seq: 3,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
       expect(s.keyAt(0)!.pressed, isTrue, reason: 'older seq must be ignored');
-      s.applyKey(key: 0, seq: 5, row: 0, col: 0, keyType: 'BUTTON', pressed: false);
+      s.applyKey(
+        key: 0,
+        seq: 5,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
       expect(s.keyAt(0)!.pressed, isTrue, reason: 'equal seq must be ignored');
-      s.applyKey(key: 0, seq: 6, row: 0, col: 0, keyType: 'BUTTON', pressed: false);
+      s.applyKey(
+        key: 0,
+        seq: 6,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
       expect(s.keyAt(0)!.pressed, isFalse, reason: 'newer seq applies');
       s.dispose();
     });
 
     test('applyLayout drops existing keys (re-baseline)', () {
-      final s = SurfaceState()..applyLayout(1, 1, 72);
-      s.applyKey(key: 0, seq: 1, row: 0, col: 0, keyType: 'BUTTON', pressed: false);
+      final s = SurfaceState()..applyLayout(1, 1, 72, 0);
+      s.applyKey(
+        key: 0,
+        seq: 1,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
       expect(s.keyAt(0), isNotNull);
-      s.applyLayout(2, 2, 96);
+      s.applyLayout(2, 2, 96, 1);
       expect(s.keyAt(0), isNull);
       expect(s.bitmapSize, 96);
       s.dispose();
     });
 
+    test('applyLayout keeps a key update that overtook it', () {
+      // On reconnect the server replays its cached surface, but a live update
+      // can reach the client ahead of the layout frame. Dropping everything on
+      // layout would let the older replayed frame win and leave the button
+      // showing the wrong state until Companion happens to re-render it.
+      final s = SurfaceState()..applyLayout(1, 1, 72, 0);
+      s.applyKey(
+        key: 0,
+        seq: 500,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: true,
+      );
+
+      s.applyLayout(1, 1, 72, 499); // snapshot taken before seq 500
+      expect(
+        s.keyAt(0),
+        isNotNull,
+        reason: 'a newer key must survive the layout',
+      );
+      expect(s.keyAt(0)!.pressed, isTrue);
+
+      // ...and the replayed cached frame behind it is still rejected as stale.
+      s.applyKey(
+        key: 0,
+        seq: 499,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
+      expect(s.keyAt(0)!.pressed, isTrue, reason: 'stale replay must not win');
+      s.dispose();
+    });
+
     test('reset clears the surface and notifies', () {
-      final s = SurfaceState()..applyLayout(4, 8, 72);
-      s.applyKey(key: 0, seq: 1, row: 0, col: 0, keyType: 'BUTTON', pressed: false);
+      final s = SurfaceState()..applyLayout(4, 8, 72, 0);
+      s.applyKey(
+        key: 0,
+        seq: 1,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+      );
       var notified = 0;
       s.addListener(() => notified++);
       s.reset();
@@ -72,8 +150,16 @@ void main() {
     });
 
     test('an invalid color is dropped to null', () {
-      final s = SurfaceState()..applyLayout(1, 1, 72);
-      s.applyKey(key: 0, seq: 1, row: 0, col: 0, keyType: 'BUTTON', pressed: false, color: 'green');
+      final s = SurfaceState()..applyLayout(1, 1, 72, 0);
+      s.applyKey(
+        key: 0,
+        seq: 1,
+        row: 0,
+        col: 0,
+        keyType: 'BUTTON',
+        pressed: false,
+        color: 'green',
+      );
       expect(s.keyAt(0)!.color, isNull);
       s.dispose();
     });
@@ -86,7 +172,7 @@ void main() {
         0, 0, 255, // blue
         255, 255, 255, // white
       ]);
-      final s = SurfaceState()..applyLayout(1, 1, 2);
+      final s = SurfaceState()..applyLayout(1, 1, 2, 0);
       await tester.runAsync(() async {
         s.applyKey(
           key: 0,
@@ -107,8 +193,11 @@ void main() {
       s.dispose();
     });
 
-    testWidgets('a malformed (too-short) bitmap is ignored, color kept', (tester) async {
-      final s = SurfaceState()..applyLayout(1, 1, 4); // expects 4×4×3 = 48 bytes
+    testWidgets('a malformed (too-short) bitmap is ignored, color kept', (
+      tester,
+    ) async {
+      final s = SurfaceState()
+        ..applyLayout(1, 1, 4, 0); // expects 4×4×3 = 48 bytes
       await tester.runAsync(() async {
         s.applyKey(
           key: 0,

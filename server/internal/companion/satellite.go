@@ -61,7 +61,16 @@ const (
 	satPingInterval = 2 * time.Second
 	// satDialTimeout bounds a single dial attempt.
 	satDialTimeout = 5 * time.Second
+	// satRegisterTimeout bounds the wait for Companion's ADD-DEVICE reply.
+	satRegisterTimeout = 10 * time.Second
 )
+
+// satReadTimeout bounds how long the read loop waits for any line before
+// treating the connection as dead. Companion answers every PING, so a healthy
+// link is never quiet for a whole interval; without this, a peer that vanishes
+// without a FIN (sleeping PC, downed switch port) is only noticed when TCP gives
+// up retransmitting, which is minutes on Linux.
+const satReadTimeout = 3 * satPingInterval
 
 // ErrSatelliteNotConnected is returned by Press when no Companion satellite
 // connection is currently established. The caller surfaces it as a
@@ -117,9 +126,22 @@ type Satellite struct {
 	onLayout func(rows, cols, bitmapSize int)
 	onClear  func()
 
+	// readTimeout is satReadTimeout, per-instance so a test can shorten it
+	// without a shared global the running sessions would race on.
+	readTimeout time.Duration
+
 	mu  sync.Mutex
 	out chan<- string // current session's outbound queue; nil when disconnected
+	// reg carries Companion's verdict on our ADD-DEVICE for the current session:
+	// nil once it replies OK, an error if it replies ERROR. Buffered and
+	// single-use, so the read loop never blocks delivering it.
+	reg chan error
 }
+
+// ErrSatelliteRejected is returned when Companion refuses the ADD-DEVICE
+// registration. The surface is not live, so the session is torn down and retried
+// rather than left connected with a grid that will never receive key states.
+var ErrSatelliteRejected = errors.New("companion: satellite registration rejected")
 
 // outBuffer bounds the per-session outbound queue. A surface registers, presses,
 // and pings — all tiny and infrequent — so a wedged writer that backs this up is
@@ -185,8 +207,9 @@ func NewSatellite(cfg SatelliteConfig, opts ...SatelliteOption) *Satellite {
 		cfg.BitmapSize = DefaultSatBitmapSize
 	}
 	s := &Satellite{
-		cfg:    cfg,
-		logger: slog.Default(),
+		cfg:         cfg,
+		logger:      slog.Default(),
+		readTimeout: satReadTimeout,
 	}
 	s.dial = func(ctx context.Context) (net.Conn, error) {
 		d := net.Dialer{Timeout: satDialTimeout}
@@ -235,8 +258,9 @@ func (s *Satellite) session(ctx context.Context) error {
 
 	out := make(chan string, outBuffer)
 	writerDone := make(chan struct{})
+	reg := make(chan error, 1)
 	go s.writer(conn, out, writerDone)
-	s.setOut(out)
+	s.setSession(out, reg)
 	// Teardown order matters: close the socket first to unblock any in-progress
 	// read or write, then clear the outbound handle and close the queue under the
 	// lock (atomic with enqueue's send, so a racing Press/ping can't send on a
@@ -245,18 +269,11 @@ func (s *Satellite) session(ctx context.Context) error {
 		conn.Close()
 		s.mu.Lock()
 		s.out = nil
+		s.reg = nil
 		close(out)
 		s.mu.Unlock()
 		<-writerDone
 	}()
-
-	if err := s.register(); err != nil {
-		return fmt.Errorf("register: %w", err)
-	}
-	if s.onLayout != nil {
-		s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
-	}
-	s.logger.Info("companion satellite connected", "addr", s.cfg.Addr, "device_id", s.cfg.DeviceID)
 
 	// Cancel the read when ctx is done (shutdown) by closing the connection,
 	// which unblocks the blocking Read below.
@@ -270,9 +287,42 @@ func (s *Satellite) session(ctx context.Context) error {
 		}
 	}()
 
+	if err := s.register(); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	// Read while the registration is in flight: the verdict arrives on the wire.
+	readErr := make(chan error, 1)
+	go func() { readErr <- s.readLoop(conn) }()
+
+	// Companion answers ADD-DEVICE with OK or ERROR, and sends no key states at
+	// all when it refuses. Waiting for that verdict keeps a refused surface from
+	// being reported as connected and leaving clients on a grid that never
+	// updates.
+	select {
+	case err := <-reg:
+		if err != nil {
+			return err
+		}
+	case err := <-readErr:
+		if err == nil {
+			err = errors.New("connection closed during registration")
+		}
+		return err
+	case <-time.After(satRegisterTimeout):
+		return fmt.Errorf("companion: no ADD-DEVICE reply within %s", satRegisterTimeout)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	if s.onLayout != nil {
+		s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
+	}
+	s.logger.Info("companion satellite registered", "addr", s.cfg.Addr, "device_id", s.cfg.DeviceID)
+
 	go s.pingLoop(ctx, readDone)
 
-	return s.readLoop(conn)
+	return <-readErr
 }
 
 // writer is the sole writer of conn, draining the outbound queue until it is
@@ -292,10 +342,28 @@ func (s *Satellite) writer(conn net.Conn, out <-chan string, done chan<- struct{
 	}
 }
 
-func (s *Satellite) setOut(out chan<- string) {
+func (s *Satellite) setSession(out chan<- string, reg chan error) {
 	s.mu.Lock()
 	s.out = out
+	s.reg = reg
 	s.mu.Unlock()
+}
+
+// signalRegistration delivers Companion's ADD-DEVICE verdict to session. The
+// channel is buffered and cleared on teardown, so a duplicate or late reply is
+// dropped rather than blocking the read loop.
+func (s *Satellite) signalRegistration(err error) {
+	s.mu.Lock()
+	reg := s.reg
+	s.reg = nil
+	s.mu.Unlock()
+	if reg == nil {
+		return
+	}
+	select {
+	case reg <- err:
+	default:
+	}
 }
 
 // register sends the ADD-DEVICE that declares our surface to Companion. After
@@ -354,6 +422,11 @@ func (s *Satellite) readLoop(conn net.Conn) error {
 	// ~20 KB base64), unlike bufio.Scanner's fixed token cap.
 	r := bufio.NewReader(conn)
 	for {
+		// Refreshed per line rather than set once: any traffic proves the peer is
+		// alive, and our PING guarantees traffic well inside the window.
+		if err := conn.SetReadDeadline(time.Now().Add(s.readTimeout)); err != nil {
+			return err
+		}
 		line, err := r.ReadString('\n')
 		if line != "" {
 			s.handleLine(strings.TrimRight(line, "\r\n"))
@@ -381,8 +454,30 @@ func (s *Satellite) handleLine(line string) {
 		if s.onClear != nil {
 			s.onClear()
 		}
-	case "BEGIN", "CAPS", "ADD-DEVICE", "REMOVE-DEVICE":
-		// Handshake/ack lines we don't act on; log at debug for diagnostics.
+	case "ADD-DEVICE":
+		// The verdict on our registration: "ADD-DEVICE OK DEVICEID=..." or
+		// "ADD-DEVICE ERROR DEVICEID=... MESSAGE=...", the latter carrying no
+		// key states at all.
+		if _, bad := args["ERROR"]; bad {
+			msg := args["MESSAGE"]
+			if msg == "" {
+				msg = "no message"
+			}
+			s.logger.Error("companion rejected the satellite surface",
+				"device_id", s.cfg.DeviceID, "message", msg,
+				"keys_total", s.cfg.keysTotal(), "keys_per_row", s.cfg.keysPerRow())
+			s.signalRegistration(fmt.Errorf("%w: %s", ErrSatelliteRejected, msg))
+			return
+		}
+		if _, ok := args["OK"]; ok {
+			s.signalRegistration(nil)
+		}
+	case "ERROR":
+		// A protocol-level complaint about something we sent; without this it
+		// would vanish at debug level and the surface would look merely idle.
+		s.logger.Error("companion satellite protocol error", "message", args["MESSAGE"])
+	case "BEGIN", "CAPS", "REMOVE-DEVICE":
+		// Handshake lines we don't act on; log at debug for diagnostics.
 		s.logger.Debug("companion satellite line", "cmd", cmd)
 	default:
 		s.logger.Debug("companion satellite: ignoring command", "cmd", cmd)

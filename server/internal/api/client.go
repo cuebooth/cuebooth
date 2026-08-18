@@ -12,8 +12,12 @@ import (
 )
 
 const (
-	// sendBuffer bounds per-client outbound queue depth. A client that can't
-	// keep up past this is dropped and must reconnect (and re-snapshot).
+	// sendBuffer is the per-client outbound queue depth reserved for state and
+	// command traffic. A client that can't keep up past its whole buffer is
+	// dropped and must reconnect (and re-snapshot). Surface traffic is bursty in
+	// a way this number alone doesn't cover — Companion re-pushes every key on a
+	// page change — so the buffer a connection actually gets is this plus one
+	// full surface; see newClientConn.
 	sendBuffer = 64
 	// writeTimeout bounds a single frame write.
 	writeTimeout = 5 * time.Second
@@ -65,10 +69,18 @@ type clientConn struct {
 }
 
 func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
+	// A page change makes Companion re-render the whole surface, so one burst is
+	// rows*cols frames through the non-blocking broadcast path. Reserving room
+	// for a full surface on top of sendBuffer keeps an ordinary page change from
+	// spending most of the queue and dropping a client that is merely slow.
+	depth := sendBuffer
+	if s.surface != nil {
+		depth += s.surface.keyCount()
+	}
 	return &clientConn{
 		server: s,
 		conn:   conn,
-		send:   make(chan []byte, sendBuffer),
+		send:   make(chan []byte, depth),
 		done:   make(chan struct{}),
 		topics: allTopicsSet(),
 	}
@@ -173,12 +185,13 @@ func (c *clientConn) scopePatch(patch map[string]any) map[string]any {
 	return state.FilterTopics(patch, c.topics)
 }
 
-// run drives the connection: it queues hello and the initial state snapshot
-// (the only enqueues before the write loop starts, so they must fit the buffer
-// — both are single frames), registers with the hub, starts the read/write/ping
-// loops, then replays the current Companion surface under backpressure before
-// serving the connection until it ends. parentCtx is the server/request
-// context; its cancellation (server shutdown) triggers a close.
+// run drives the connection: it queues hello and the initial state snapshot,
+// registers with the hub, starts the read/write/ping loops, then replays the
+// current Companion surface under backpressure before serving the connection
+// until it ends. Everything queued before the write loop starts — hello, the
+// snapshot, and any broadcast racing the hub registration — has to fit the send
+// buffer, which is why the buffer is sized for a full surface. parentCtx is the
+// server/request context; its cancellation (server shutdown) triggers a close.
 func (c *clientConn) run(parentCtx context.Context) {
 	// dispatchCtx bounds command-handler work (e.g. Companion calls) to the
 	// connection's and the server's lifetime.
@@ -500,6 +513,16 @@ func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
 	}
 	c.mu.Unlock()
 	c.sendSnapshot(func() { c.server.hub.add(c) })
+
+	// The snapshot re-baselines state, but the surface isn't part of it: any
+	// surface-key broadcast while this client was out of the hub is gone for
+	// good. Replay it, so "every client receives the surface" (protocol.md §10)
+	// survives a subscription change. Safe to block here — handleSubscription
+	// runs on the connection's own read goroutine, which is what enqueueBlocking
+	// requires.
+	if c.server.surface != nil {
+		c.server.surface.sendInitial(c)
+	}
 }
 
 // sendSnapshot enqueues a `state` frame scoped to the client's current

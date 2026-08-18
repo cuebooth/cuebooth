@@ -62,17 +62,24 @@ func (m *surfaceManager) onLayout(rows, cols, bitmapSize int) {
 	m.mu.Lock()
 	m.rows, m.cols, m.bitmapSize = rows, cols, bitmapSize
 	m.keys = make(map[int]surfaceKeyFrame)
+	seq := m.seq
 	m.mu.Unlock()
 	m.hub.broadcast(mustMarshal(surfaceLayoutFrame{
 		Type:       typeSurfaceLayout,
 		Rows:       rows,
 		Cols:       cols,
+		Seq:        seq,
 		BitmapSize: bitmapSize,
 	}))
 }
 
 // onKey caches a key's latest rendered state and broadcasts it to all clients.
+// A key outside the grid we registered is dropped rather than cached: it would
+// occupy a slot no client can render and grow the cache without bound.
 func (m *surfaceManager) onKey(k companion.SatelliteKey) {
+	if !m.inBounds(k.Key) {
+		return
+	}
 	m.mu.Lock()
 	cols := m.cols
 	m.seq++
@@ -118,6 +125,7 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 		Type:       typeSurfaceLayout,
 		Rows:       m.rows,
 		Cols:       m.cols,
+		Seq:        m.seq,
 		BitmapSize: m.bitmapSize,
 	}
 	frames := make([]surfaceKeyFrame, 0, len(m.keys))
@@ -137,12 +145,15 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 }
 
 // inBounds reports whether key is a valid index for the current surface grid.
-// Before any keys arrive (grid 0×0) nothing is in bounds.
 func (m *surfaceManager) inBounds(key int) bool {
+	return key >= 0 && key < m.keyCount()
+}
+
+// keyCount is the number of keys on the current surface.
+func (m *surfaceManager) keyCount() int {
 	m.mu.Lock()
-	max := m.rows * m.cols
-	m.mu.Unlock()
-	return key >= 0 && key < max
+	defer m.mu.Unlock()
+	return m.rows * m.cols
 }
 
 // press routes a client's key press to Companion. The boundary is also guarded

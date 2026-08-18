@@ -410,16 +410,19 @@ Surface frames travel on the main `/ws` channel but are **not** part of the `sta
 
 ### `surface-layout` (server → client)
 
-Announces the surface grid dimensions. Sent once after the initial `state` snapshot, and again whenever the server's surface (re)registers with Companion (e.g. after a reconnect). A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops all previously received keys, since the server re-sends every key afterward.
+Announces the surface grid dimensions. Sent once after the initial `state` snapshot, and again whenever the server's surface (re)registers with Companion (e.g. after a reconnect). A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops the keys the layout supersedes, since the server re-sends every key afterward.
 
 ```json
-{ "type": "surface-layout", "rows": 4, "cols": 8, "bitmap_size": 72 }
+{ "type": "surface-layout", "rows": 4, "cols": 8, "seq": 141, "bitmap_size": 72 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `rows` / `cols` | int | Grid dimensions. The flat key index is `row * cols + col`. |
+| `seq` | int | The surface sequence this layout was taken at. Drop held keys whose last applied `seq` is **≤** this value; keep anything newer. |
 | `bitmap_size` | int | Button bitmap edge length in pixels (square). Always positive (the server normalizes it to a default). |
+
+A client must not drop keys newer than `seq`. The server snapshots its cache and then enqueues, so a `surface-key` can overtake the `surface-layout` behind which it was cached; discarding it would let the older replayed frame win and leave the button showing a state Companion has already moved on from.
 
 ### `surface-key` (server → client)
 

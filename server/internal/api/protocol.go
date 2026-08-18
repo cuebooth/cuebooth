@@ -154,10 +154,15 @@ type eventFrame struct {
 // surfaceLayoutFrame announces the surface grid dimensions (protocol.md §10).
 // Sent on connect and whenever the surface re-registers with Companion.
 type surfaceLayoutFrame struct {
-	Type       string `json:"type"`
-	Rows       int    `json:"rows"`
-	Cols       int    `json:"cols"`
-	BitmapSize int    `json:"bitmap_size"`
+	Type string `json:"type"`
+	Rows int    `json:"rows"`
+	Cols int    `json:"cols"`
+	// Seq is the surface sequence this layout was taken at. A client drops the
+	// keys it holds up to and including this value and keeps anything newer,
+	// which is what stops a key update that overtook the layout from being
+	// undone by the older cached frame replayed behind it.
+	Seq        int `json:"seq"`
+	BitmapSize int `json:"bitmap_size"`
 }
 
 // surfaceKeyFrame is one key's current rendered state (protocol.md §10). It is

@@ -71,15 +71,23 @@ class SurfaceState extends ChangeNotifier {
   /// The key at flat index [index], or null if none has arrived yet.
   SurfaceKey? keyAt(int index) => _keys[index];
 
-  /// Applies a surface-layout: (re)sets the grid dimensions and drops all keys,
-  /// since the server re-pushes every key after a (re)registration.
-  void applyLayout(int rows, int cols, int bitmapSize) {
+  /// Applies a surface-layout: (re)sets the grid dimensions and drops the keys
+  /// the layout supersedes, since the server re-pushes every key after a
+  /// (re)registration.
+  ///
+  /// [seq] is the surface sequence the layout was taken at. Only keys at or
+  /// below it are dropped: a key update can overtake the layout on the wire, and
+  /// discarding it would let the older cached frame replayed behind it win.
+  void applyLayout(int rows, int cols, int bitmapSize, int seq) {
     _rows = rows;
     _cols = cols;
     _bitmapSize = bitmapSize;
-    _disposeKeys();
-    _keys.clear();
-    _seq.clear();
+    for (final key in _keys.keys.toList()) {
+      if ((_seq[key] ?? 0) <= seq) {
+        _keys.remove(key)?.image?.dispose();
+        _seq.remove(key);
+      }
+    }
     notifyListeners();
   }
 
@@ -165,7 +173,9 @@ class SurfaceState extends ChangeNotifier {
   /// Parses a Companion COLOR ("#rrggbb") into an opaque 0xAARRGGBB value, or
   /// null if absent/unparseable.
   static int? _parseColor(String? color) {
-    if (color == null || !color.startsWith('#') || color.length != 7) return null;
+    if (color == null || !color.startsWith('#') || color.length != 7) {
+      return null;
+    }
     final rgb = int.tryParse(color.substring(1), radix: 16);
     return rgb == null ? null : 0xFF000000 | rgb;
   }
@@ -187,7 +197,13 @@ class SurfaceState extends ChangeNotifier {
       rgba[j++] = 0xFF;
     }
     final completer = Completer<ui.Image>();
-    ui.decodeImageFromPixels(rgba, size, size, ui.PixelFormat.rgba8888, completer.complete);
+    ui.decodeImageFromPixels(
+      rgba,
+      size,
+      size,
+      ui.PixelFormat.rgba8888,
+      completer.complete,
+    );
     return completer.future;
   }
 }

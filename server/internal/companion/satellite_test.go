@@ -88,6 +88,14 @@ func (f *fakeCompanion) writeLine(t *testing.T, s string) {
 	}
 }
 
+// ackRegister replies the way a real Companion does once it has accepted the
+// surface. Until this arrives the session is still pending, so a test that wants
+// a live surface must send it.
+func (f *fakeCompanion) ackRegister(t *testing.T, deviceID string) {
+	t.Helper()
+	f.writeLine(t, `ADD-DEVICE OK DEVICEID="`+deviceID+`"`)
+}
+
 // newSatelliteWithPipe wires a Satellite to an in-memory fake Companion. The
 // dialer hands over the pipe once; subsequent reconnects fail fast so the test
 // controls a single session.
@@ -129,6 +137,14 @@ func TestSatelliteRegisterAndKeyState(t *testing.T) {
 		t.Fatalf("ADD-DEVICE:\n got %q\nwant %q", got, want)
 	}
 
+	// The surface is not live until Companion accepts it.
+	select {
+	case l := <-layouts:
+		t.Fatalf("layout fired before ADD-DEVICE was acknowledged: %v", l)
+	case <-time.After(100 * time.Millisecond):
+	}
+	fake.ackRegister(t, "cuebooth")
+
 	if l := <-layouts; l != [3]int{4, 8, 72} {
 		t.Errorf("layout: got %v, want [4 8 72]", l)
 	}
@@ -142,6 +158,67 @@ func TestSatelliteRegisterAndKeyState(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for OnKey")
+	}
+}
+
+// Companion refuses a surface it doesn't like ("ADD-DEVICE ERROR ... MESSAGE=")
+// and then sends no key states at all. Treating that as connected would leave
+// every client on a grid that never updates, with nothing in the log to say why.
+func TestSatelliteRegistrationRejected(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	layouts := make(chan struct{}, 1)
+	sat.OnLayout(func(int, int, int) { layouts <- struct{}{} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.writeLine(t, `ADD-DEVICE ERROR DEVICEID="cuebooth" MESSAGE="Invalid KEYS_TOTAL"`)
+
+	select {
+	case err := <-sessionErr:
+		if !errors.Is(err, ErrSatelliteRejected) {
+			t.Errorf("session error = %v, want ErrSatelliteRejected", err)
+		}
+		if !strings.Contains(err.Error(), "Invalid KEYS_TOTAL") {
+			t.Errorf("session error %q does not carry Companion's message", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not end after ADD-DEVICE ERROR")
+	}
+
+	select {
+	case <-layouts:
+		t.Error("layout fired for a rejected registration")
+	default:
+	}
+}
+
+// A peer that disappears without closing the socket leaves the read blocked
+// indefinitely; the read deadline is what turns that into a reconnect.
+func TestSatelliteReadDeadlineEndsSilentSession(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	// Set before any session starts, so nothing reads it concurrently.
+	sat.readTimeout = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	// Say nothing further: a live Companion answers our PING well inside the
+	// window, so silence past it means the peer is gone.
+	select {
+	case err := <-sessionErr:
+		if err == nil {
+			t.Fatal("silent peer ended the session with a nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("session survived a silent peer past the read deadline")
 	}
 }
 
