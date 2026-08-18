@@ -188,6 +188,23 @@ flutter test
 
 These mirror what CI runs on every push (see [`.github/workflows/README.md`](../.github/workflows/README.md)).
 
+### Against a real Companion
+
+The suites above use an in-memory fake for Companion. To exercise the Satellite client against a **real** Companion, run:
+
+```sh
+scripts/companion-live-test.sh v3.4.1      # or v5.0.3
+```
+
+It starts that Companion version in a container (podman or docker, whichever is present), waits for the Satellite port, runs the integration test, and removes the container. Useful variants:
+
+```sh
+COMPANION_KEEP=1 scripts/companion-live-test.sh v5.0.3        # leave it running to poke at the admin UI
+COMPANION_SATELLITE_ADDR=127.0.0.1:16622 scripts/companion-live-test.sh   # use a Companion you already run
+```
+
+CI runs this same script against both versions (see the workflows README), so a local run and a CI run do the same thing. The test is skipped by a plain `go test ./...` unless `COMPANION_SATELLITE_ADDR` is set, which keeps the normal suite hermetic.
+
 ---
 
 ## 7. A minimal end-to-end run

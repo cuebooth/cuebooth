@@ -1,0 +1,58 @@
+name: companion-live
+
+# Integration test of the Companion Satellite client against real Companion
+# instances, rather than the in-memory fake. GitHub-hosted runners are full VMs
+# with Podman and Docker preinstalled, so the container starts without the
+# nesting/AppArmor caveats of an unprivileged LXC.
+#
+# The job is a thin wrapper: all the logic lives in scripts/companion-live-test.sh,
+# which is the same entry point a developer runs locally, so the two cannot drift.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/internal/companion/**'
+      - 'scripts/companion-live-test.sh'
+      - '.github/workflows/companion-live.yml'
+  pull_request:
+    paths:
+      - 'server/internal/companion/**'
+      - 'scripts/companion-live-test.sh'
+      - '.github/workflows/companion-live.yml'
+  # Companion releases move independently of this repo, so also check on a
+  # schedule: a breaking change upstream should surface here, not on an event day.
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  live:
+    name: satellite vs Companion ${{ matrix.companion }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The version running on the production PC — the one that must work.
+          - companion: v3.4.1
+          # Current release, so an upgrade doesn't surprise us. 5.x quotes its
+          # protocol values and sends PRESSED=0/1; 3.4.x does neither.
+          - companion: v5.0.3
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      # The script dumps Companion's own log if the test fails, before its
+      # cleanup trap removes the container.
+      - name: satellite integration test
+        run: scripts/companion-live-test.sh ${{ matrix.companion }}
