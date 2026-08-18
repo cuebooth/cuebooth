@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -271,6 +272,56 @@ func TestSatelliteReadDeadlineEndsSilentSession(t *testing.T) {
 	}
 }
 
+// bufio's ReadString hands back the bytes it managed to read together with the
+// error, so a line the peer never terminated must not be parsed: a KEY-STATE cut
+// short mid-bitmap would otherwise be published under a fresh sequence and beat
+// the intact frame it replaced.
+func TestSatelliteDropsUnterminatedLine(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	keys := make(chan SatelliteKey, 4)
+	sat.OnKey(func(k SatelliteKey) { keys <- k })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	// A key state that stops partway through, then the socket goes away.
+	if _, err := fake.conn.Write([]byte("KEY-STATE DEVICEID=cuebooth KEY=7 TYPE=BUTTON PRESSED=0 BITMAP=QUJ")); err != nil {
+		t.Fatalf("partial write: %v", err)
+	}
+	fake.conn.Close()
+
+	select {
+	case k := <-keys:
+		t.Errorf("a truncated KEY-STATE was dispatched: %+v", k)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// A press Companion refuses is the operator's tap doing nothing, so it has to be
+// visible; the acknowledgement is the only place that failure appears.
+func TestSatelliteLogsRejectedPress(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	sat := NewSatellite(SatelliteConfig{DeviceID: "cuebooth"}, WithSatelliteLogger(logger))
+	sat.handleLine(`KEY-PRESS ERROR DEVICEID="cuebooth" MESSAGE="Device not found"`)
+
+	got := buf.String()
+	if !strings.Contains(got, "rejected a key press") || !strings.Contains(got, "Device not found") {
+		t.Errorf("rejected press was not logged at error level; got %q", got)
+	}
+
+	buf.Reset()
+	sat.handleLine(`KEY-PRESS OK`)
+	if buf.Len() != 0 {
+		t.Errorf("an accepted press logged an error: %q", buf.String())
+	}
+}
+
 func TestSatellitePingPong(t *testing.T) {
 	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -290,10 +341,19 @@ func TestSatellitePress(t *testing.T) {
 	defer cancel()
 	go sat.Run(ctx)
 
-	_ = fake.readLine(t) // ADD-DEVICE; after this the write conn is established
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
 
-	if err := sat.Press(5, true); err != nil {
-		t.Fatalf("Press: %v", err)
+	// Press is refused until Companion has accepted the surface, so wait for the
+	// registration to be applied rather than racing it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(5, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("Press still refused after registration: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if got := fake.readLine(t); got != "KEY-PRESS DEVICEID=cuebooth KEY=5 PRESSED=true" {
 		t.Errorf("KEY-PRESS down: got %q", got)
@@ -303,6 +363,23 @@ func TestSatellitePress(t *testing.T) {
 	}
 	if got := fake.readLine(t); got != "KEY-PRESS DEVICEID=cuebooth KEY=5 PRESSED=false" {
 		t.Errorf("KEY-PRESS up: got %q", got)
+	}
+}
+
+// Companion discards presses for a surface it has not registered, so the window
+// between connecting and being accepted must not look like a working surface:
+// otherwise a tap during a Companion restart is written, silently dropped, and
+// reported to the operator as sent.
+func TestSatellitePressRefusedBeforeRegistration(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE sent; the socket is up but unacknowledged
+
+	if err := sat.Press(1, true); !errors.Is(err, ErrSatelliteNotConnected) {
+		t.Errorf("Press before ADD-DEVICE OK: got %v, want ErrSatelliteNotConnected", err)
 	}
 }
 

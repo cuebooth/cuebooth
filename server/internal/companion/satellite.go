@@ -132,6 +132,10 @@ type Satellite struct {
 
 	mu  sync.Mutex
 	out chan<- string // current session's outbound queue; nil when disconnected
+	// registered is true once Companion has accepted this session's ADD-DEVICE.
+	// Press is refused until then: Companion discards key presses for a surface
+	// it has not registered, so reporting them as sent would be a lie.
+	registered bool
 	// reg carries Companion's verdict on our ADD-DEVICE for the current session:
 	// nil once it replies OK, an error if it replies ERROR. Buffered and
 	// single-use, so the read loop never blocks delivering it.
@@ -261,15 +265,30 @@ func (s *Satellite) session(ctx context.Context) error {
 	reg := make(chan error, 1)
 	go s.writer(conn, out, writerDone)
 	s.setSession(out, reg)
+
+	// Read from the start: the registration verdict arrives on the wire, so the
+	// reader has to be running before we wait for it.
+	readErr := make(chan error, 1)
+	readerExited := make(chan struct{})
+	go func() {
+		readErr <- s.readLoop(conn)
+		close(readerExited)
+	}()
+
 	// Teardown order matters: close the socket first to unblock any in-progress
-	// read or write, then clear the outbound handle and close the queue under the
-	// lock (atomic with enqueue's send, so a racing Press/ping can't send on a
-	// closed channel), then wait for the writer to drain and exit.
+	// read or write; wait for the reader to exit before clearing session state,
+	// so a line it is still dispatching cannot land on the next session's
+	// callbacks or acknowledge a registration that never happened; then clear the
+	// outbound handle and close the queue under the lock (atomic with enqueue's
+	// send, so a racing Press/ping can't send on a closed channel), and wait for
+	// the writer to drain and exit.
 	defer func() {
 		conn.Close()
+		<-readerExited
 		s.mu.Lock()
 		s.out = nil
 		s.reg = nil
+		s.registered = false
 		close(out)
 		s.mu.Unlock()
 		<-writerDone
@@ -290,10 +309,6 @@ func (s *Satellite) session(ctx context.Context) error {
 	if err := s.register(); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
-
-	// Read while the registration is in flight: the verdict arrives on the wire.
-	readErr := make(chan error, 1)
-	go func() { readErr <- s.readLoop(conn) }()
 
 	// Companion answers ADD-DEVICE with OK or ERROR, and sends no key states at
 	// all when it refuses. Waiting for that verdict keeps a refused surface from
@@ -353,6 +368,7 @@ func (s *Satellite) signalRegistration(err error) {
 	s.mu.Lock()
 	reg := s.reg
 	s.reg = nil
+	s.registered = err == nil
 	s.mu.Unlock()
 	if reg == nil {
 		return
@@ -379,6 +395,12 @@ func (s *Satellite) register() error {
 // Press sends a KEY-PRESS for the given flat key index. pressed=true is a
 // key-down, false a key-up; a normal tap is a down followed by an up.
 func (s *Satellite) Press(key int, pressed bool) error {
+	s.mu.Lock()
+	ready := s.registered
+	s.mu.Unlock()
+	if !ready {
+		return ErrSatelliteNotConnected
+	}
 	line := fmt.Sprintf("KEY-PRESS DEVICEID=%s KEY=%d PRESSED=%s",
 		s.cfg.DeviceID, key, boolWire(pressed))
 	if err := s.enqueue(line); err != nil {
@@ -425,12 +447,14 @@ func (s *Satellite) readLoop(conn net.Conn) error {
 			return err
 		}
 		line, err := r.ReadString('\n')
-		if line != "" {
-			s.handleLine(strings.TrimRight(line, "\r\n"))
-		}
 		if err != nil {
+			// ReadString returns what it had along with the error, so anything
+			// here is a line the peer never terminated — a bitmap cut short by
+			// the read deadline or a mid-line close. Parsing it would publish a
+			// truncated KEY-STATE under a fresh seq, beating the intact frame.
 			return err
 		}
+		s.handleLine(strings.TrimRight(line, "\r\n"))
 	}
 }
 
@@ -476,6 +500,14 @@ func (s *Satellite) handleLine(line string) {
 				s.onLayout(s.cfg.Rows, s.cfg.Cols, s.cfg.BitmapSize)
 			}
 			s.signalRegistration(nil)
+		}
+	case "KEY-PRESS":
+		// Companion acknowledges every press with OK or ERROR. A rejected press
+		// is the operator's tap doing nothing, so it must not vanish at debug
+		// level the way an ack can.
+		if _, bad := args["ERROR"]; bad {
+			s.logger.Error("companion rejected a key press",
+				"device_id", s.cfg.DeviceID, "message", args["MESSAGE"])
 		}
 	case "ERROR":
 		// A protocol-level complaint about something we sent; without this it
