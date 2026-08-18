@@ -94,9 +94,11 @@ func (m *surfaceManager) onKey(k companion.SatelliteKey) {
 	m.hub.broadcast(mustMarshal(frame))
 }
 
-// onClear drops the cached key state (Companion asked the surface to blank,
-// e.g. on a page change) so a client connecting mid-change isn't sent stale
-// bitmaps. Live clients keep their last render until fresh KEY-STATEs arrive.
+// onClear drops the cached key state (Companion asked the surface to blank) so a
+// client connecting mid-change isn't sent stale bitmaps. Live clients keep their
+// last render until fresh KEY-STATEs arrive. Page changes don't reach here on the
+// versions we've measured — Companion re-pushes every key instead — so this is
+// the defensive path for versions that do send KEYS-CLEAR.
 func (m *surfaceManager) onClear() {
 	m.mu.Lock()
 	m.keys = make(map[int]surfaceKeyFrame)

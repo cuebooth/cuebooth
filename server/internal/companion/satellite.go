@@ -156,8 +156,11 @@ func (s *Satellite) OnKey(fn func(SatelliteKey)) { s.onKey = fn }
 // surface dimensions, so a consumer can (re)baseline its grid.
 func (s *Satellite) OnLayout(fn func(rows, cols, bitmapSize int)) { s.onLayout = fn }
 
-// OnClear registers the callback invoked on a KEYS-CLEAR (Companion asking the
-// surface to blank all keys, e.g. on page change before new bitmaps arrive).
+// OnClear registers the callback invoked on a KEYS-CLEAR — Companion asking the
+// surface to blank every key. Companion 3.4.1 and 5.0.3 were both observed not
+// to send it on a page change: they re-push a KEY-STATE for every key instead
+// (see satellite_live_test.go for the captured frames). It stays handled because
+// the protocol defines it and other versions may use it.
 func (s *Satellite) OnClear(fn func()) { s.onClear = fn }
 
 // NewSatellite builds a Satellite from cfg, applying defaults for any unset
