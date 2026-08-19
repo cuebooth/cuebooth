@@ -37,6 +37,9 @@ class FakeWebSocketChannel extends StreamChannelMixin<dynamic>
   void completeReady() => _ready.complete();
   void failReady(Object error) => _ready.completeError(error);
   void emit(String frame) => _incoming.add(frame);
+
+  /// Ends the inbound stream, as a server that goes away does.
+  Future<void> endStream() => _incoming.close();
 }
 
 class _FakeSink implements WebSocketSink {
@@ -69,15 +72,18 @@ Future<void> pump() async {
 
 void main() {
   group('ServerConnection.connect input validation', () {
-    test('empty host -> error state, lastError set, no socket opened', () async {
-      final conn = ServerConnection();
-      addTearDown(conn.dispose);
+    test(
+      'empty host -> error state, lastError set, no socket opened',
+      () async {
+        final conn = ServerConnection();
+        addTearDown(conn.dispose);
 
-      await conn.connect('', 7878);
+        await conn.connect('', 7878);
 
-      expect(conn.state, ServerConnectionState.error);
-      expect(conn.lastError, isNotNull);
-    });
+        expect(conn.state, ServerConnectionState.error);
+        expect(conn.lastError, isNotNull);
+      },
+    );
 
     test('malformed host (throws FormatException) -> error state', () async {
       final conn = ServerConnection();
@@ -127,18 +133,83 @@ void main() {
       expect(conn.lastError, isNotNull);
     });
 
-    test('ready failure closes the failed channel (no leak across backoff)', () async {
-      final fake = FakeWebSocketChannel();
-      final conn = ServerConnection(connectChannel: (_) => fake);
+    test(
+      'ready failure closes the failed channel (no leak across backoff)',
+      () async {
+        final fake = FakeWebSocketChannel();
+        final conn = ServerConnection(connectChannel: (_) => fake);
+        addTearDown(conn.dispose);
+
+        await conn.connect('host', 7878);
+        fake.failReady(Exception('connection refused'));
+        await pump();
+
+        // The dead channel must be closed immediately rather than left open and
+        // referenced until the next reconnect fires.
+        expect((fake.sink as _FakeSink).closed, isTrue);
+      },
+    );
+
+    // Losing the server mid-service and getting it back is the flow the
+    // generation-token machinery exists for, and the one an operator hits when
+    // the production PC restarts. Assert the whole cycle, not just that the
+    // state reaches `reconnecting`.
+    test('a dropped connection reconnects and becomes usable again', () async {
+      final channels = <FakeWebSocketChannel>[];
+      final conn = ServerConnection(
+        connectChannel: (_) {
+          final c = FakeWebSocketChannel();
+          channels.add(c);
+          return c;
+        },
+      );
       addTearDown(conn.dispose);
 
-      await conn.connect('host', 7878);
-      fake.failReady(Exception('connection refused'));
-      await pump();
+      final frames = <Map<String, dynamic>>[];
+      conn.messages.listen(frames.add);
 
-      // The dead channel must be closed immediately rather than left open and
-      // referenced until the next reconnect fires.
-      expect((fake.sink as _FakeSink).closed, isTrue);
+      await conn.connect('host', 7878);
+      channels[0].completeReady();
+      await pump();
+      expect(conn.state, ServerConnectionState.connected);
+      channels[0].emit('{"type":"hello","proto":"1.0","server_id":"pc"}');
+      await pump();
+      expect(frames.length, 1);
+
+      // The server goes away.
+      await channels[0].endStream();
+      await pump();
+      expect(conn.state, ServerConnectionState.reconnecting);
+      expect(
+        channels.length,
+        1,
+        reason: 'the retry is scheduled, not immediate',
+      );
+
+      // The backoff elapses and the retry dials a fresh channel.
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      expect(
+        channels.length,
+        2,
+        reason: 'the reconnect timer must open a new connection',
+      );
+
+      channels[1].completeReady();
+      await pump();
+      expect(
+        conn.state,
+        ServerConnectionState.connected,
+        reason: 'the second connection must come up',
+      );
+
+      // And the new connection carries traffic: a fresh hello reaches the app,
+      // and sends go to the new sink rather than the dead one.
+      channels[1].emit('{"type":"hello","proto":"1.0","server_id":"pc"}');
+      await pump();
+      expect(frames.length, 2);
+      expect(conn.send({'type': 'ping', 'id': 'k1'}), isTrue);
+      expect((channels[1].sink as _FakeSink).added, isNotEmpty);
+      expect((channels[0].sink as _FakeSink).added, isEmpty);
     });
 
     test('send only succeeds once connected', () async {

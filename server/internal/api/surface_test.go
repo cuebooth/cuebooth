@@ -6,23 +6,31 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 )
 
+// satPress is one press the fake recorded.
+type satPress struct {
+	key     int
+	pressed bool
+}
+
 // fakeSat is a stand-in for *companion.Satellite that lets a test drive the
-// surface manager's callbacks and observe presses.
+// surface manager's callbacks and observe presses. Press is called from the
+// connection's read goroutine in the end-to-end tests, so the log is guarded;
+// read it with pressLog.
 type fakeSat struct {
 	rows, cols, bm int
 	onKey          func(companion.SatelliteKey)
 	onLayout       func(rows, cols, bm int)
 	onClear        func()
-	presses        []struct {
-		key     int
-		pressed bool
-	}
+
+	mu       sync.Mutex
+	presses  []satPress
 	pressErr error
 }
 
@@ -32,11 +40,24 @@ func (f *fakeSat) OnLayout(fn func(int, int, int))       { f.onLayout = fn }
 func (f *fakeSat) OnClear(fn func())                     { f.onClear = fn }
 func (f *fakeSat) Run(context.Context)                   {}
 func (f *fakeSat) Press(key int, pressed bool) error {
-	f.presses = append(f.presses, struct {
-		key     int
-		pressed bool
-	}{key, pressed})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.presses = append(f.presses, satPress{key, pressed})
 	return f.pressErr
+}
+
+// pressLog returns a copy of the presses recorded so far.
+func (f *fakeSat) pressLog() []satPress {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]satPress(nil), f.presses...)
+}
+
+// failPresses makes subsequent presses fail, as a dropped satellite would.
+func (f *fakeSat) failPresses(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pressErr = err
 }
 
 // newTestClient builds a clientConn that captures enqueued frames in its send
@@ -193,8 +214,8 @@ func TestSurfaceManagerPress(t *testing.T) {
 	if err := m.press(7, true); err != nil {
 		t.Fatalf("press: %v", err)
 	}
-	if len(sat.presses) != 1 || sat.presses[0].key != 7 || !sat.presses[0].pressed {
-		t.Errorf("press not routed: %+v", sat.presses)
+	if len(sat.pressLog()) != 1 || sat.pressLog()[0].key != 7 || !sat.pressLog()[0].pressed {
+		t.Errorf("press not routed: %+v", sat.pressLog())
 	}
 }
 
@@ -203,8 +224,8 @@ func TestSurfaceManagerPressOutOfRange(t *testing.T) {
 	m := newSurfaceManager(sat, newHub())
 	_ = m.press(32, true) // first invalid index
 	_ = m.press(-1, true)
-	if len(sat.presses) != 0 {
-		t.Errorf("out-of-range presses should be dropped, got %+v", sat.presses)
+	if len(sat.pressLog()) != 0 {
+		t.Errorf("out-of-range presses should be dropped, got %+v", sat.pressLog())
 	}
 }
 
@@ -378,8 +399,8 @@ func TestHandleSurfacePress(t *testing.T) {
 		press(c, `{"type":"surface-press","pressed":true}`)
 		press(c, `{"type":"surface-press","key":1}`)
 		press(c, `{"type":"surface-press"`)
-		if len(sat.presses) != 0 {
-			t.Errorf("malformed frames reached Companion: %+v", sat.presses)
+		if len(sat.pressLog()) != 0 {
+			t.Errorf("malformed frames reached Companion: %+v", sat.pressLog())
 		}
 		var errors int
 		for _, f := range drainFrames(c) {
@@ -397,12 +418,12 @@ func TestHandleSurfacePress(t *testing.T) {
 		m := newSurfaceManager(sat, newHub())
 		c := newConn(m)
 		press(c, `{"type":"surface-press","key":99,"pressed":true}`)
-		if len(sat.presses) != 0 {
-			t.Errorf("out-of-grid press forwarded: %+v", sat.presses)
+		if len(sat.pressLog()) != 0 {
+			t.Errorf("out-of-grid press forwarded: %+v", sat.pressLog())
 		}
 		c.releaseHeldSurfaceKeys()
-		if len(sat.presses) != 0 {
-			t.Errorf("out-of-grid key was tracked as held: %+v", sat.presses)
+		if len(sat.pressLog()) != 0 {
+			t.Errorf("out-of-grid key was tracked as held: %+v", sat.pressLog())
 		}
 	})
 
@@ -411,13 +432,13 @@ func TestHandleSurfacePress(t *testing.T) {
 		m := newSurfaceManager(sat, newHub())
 		c := newConn(m)
 		press(c, `{"type":"surface-press","key":2,"pressed":true}`)
-		if len(sat.presses) != 1 || sat.presses[0].key != 2 || !sat.presses[0].pressed {
-			t.Fatalf("press not forwarded: %+v", sat.presses)
+		if len(sat.pressLog()) != 1 || sat.pressLog()[0].key != 2 || !sat.pressLog()[0].pressed {
+			t.Fatalf("press not forwarded: %+v", sat.pressLog())
 		}
 		press(c, `{"type":"surface-press","key":2,"pressed":false}`)
 		c.releaseHeldSurfaceKeys()
-		if len(sat.presses) != 2 {
-			t.Errorf("a delivered release should clear the hold, got %+v", sat.presses)
+		if len(sat.pressLog()) != 2 {
+			t.Errorf("a delivered release should clear the hold, got %+v", sat.pressLog())
 		}
 	})
 
@@ -428,21 +449,21 @@ func TestHandleSurfacePress(t *testing.T) {
 		press(c, `{"type":"surface-press","key":1,"pressed":true}`)
 
 		// The satellite drops between the press and the release.
-		sat.pressErr = errors.New("satellite not connected")
+		sat.failPresses(errors.New("satellite not connected"))
 		press(c, `{"type":"surface-press","key":1,"pressed":false}`)
-		sat.pressErr = nil
+		sat.failPresses(nil)
 
 		// The disconnect fallback must still release it, or Companion is left
 		// holding a button whose release never arrived.
 		c.releaseHeldSurfaceKeys()
 		var released bool
-		for _, p := range sat.presses {
+		for _, p := range sat.pressLog() {
 			if p.key == 1 && !p.pressed {
 				released = true
 			}
 		}
 		if !released {
-			t.Errorf("an undelivered release left the key untracked: %+v", sat.presses)
+			t.Errorf("an undelivered release left the key untracked: %+v", sat.pressLog())
 		}
 	})
 
@@ -474,12 +495,12 @@ func TestReleaseHeldSurfaceKeysOnDisconnect(t *testing.T) {
 
 	c.releaseHeldSurfaceKeys()
 
-	if len(sat.presses) != 1 || sat.presses[0].key != 5 || sat.presses[0].pressed {
-		t.Errorf("expected a single release of key 5, got %+v", sat.presses)
+	if len(sat.pressLog()) != 1 || sat.pressLog()[0].key != 5 || sat.pressLog()[0].pressed {
+		t.Errorf("expected a single release of key 5, got %+v", sat.pressLog())
 	}
 	// Idempotent: nothing left to release on a second call.
 	c.releaseHeldSurfaceKeys()
-	if len(sat.presses) != 1 {
-		t.Errorf("second release should be a no-op, got %+v", sat.presses)
+	if len(sat.pressLog()) != 1 {
+		t.Errorf("second release should be a no-op, got %+v", sat.pressLog())
 	}
 }
