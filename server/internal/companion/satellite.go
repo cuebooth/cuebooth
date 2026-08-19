@@ -136,9 +136,11 @@ type Satellite struct {
 	onLayout func(rows, cols, bitmapSize int)
 	onClear  func()
 
-	// readTimeout is satReadTimeout, per-instance so a test can shorten it
-	// without a shared global the running sessions would race on.
-	readTimeout time.Duration
+	// readTimeout is satReadTimeout and reconnectBackoff is
+	// satReconnectBackoff, per-instance so a test can shorten them without a
+	// shared global the running sessions would race on.
+	readTimeout      time.Duration
+	reconnectBackoff time.Duration
 
 	mu   sync.Mutex
 	out  chan<- string // current session's outbound queue; nil when disconnected
@@ -222,9 +224,10 @@ func NewSatellite(cfg SatelliteConfig, opts ...SatelliteOption) *Satellite {
 		cfg.BitmapSize = DefaultSatBitmapSize
 	}
 	s := &Satellite{
-		cfg:         cfg,
-		logger:      slog.Default(),
-		readTimeout: satReadTimeout,
+		cfg:              cfg,
+		logger:           slog.Default(),
+		readTimeout:      satReadTimeout,
+		reconnectBackoff: satReconnectBackoff,
 	}
 	s.dial = func(ctx context.Context) (net.Conn, error) {
 		d := net.Dialer{Timeout: satDialTimeout}
@@ -255,7 +258,7 @@ func (s *Satellite) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(satReconnectBackoff):
+		case <-time.After(s.reconnectBackoff):
 		}
 	}
 }

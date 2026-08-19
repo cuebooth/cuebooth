@@ -118,6 +118,97 @@ func newSatelliteWithPipe(t *testing.T, cfg SatelliteConfig) (*Satellite, *fakeC
 	return sat, fake
 }
 
+// Companion restarting mid-service is the ordinary way this connection dies, and
+// the whole surface depends on the loop in Run putting it back: redial, register
+// again, re-raise the layout, and let Companion re-stream the keys. Nothing else
+// covers that loop — the other tests hand out a single connection.
+func TestSatelliteReconnectsAfterDrop(t *testing.T) {
+	type pipeEnd struct {
+		srv net.Conn
+		dev net.Conn
+	}
+	var ends []pipeEnd
+	for i := 0; i < 2; i++ {
+		srv, dev := net.Pipe()
+		ends = append(ends, pipeEnd{srv, dev})
+	}
+	t.Cleanup(func() {
+		for _, e := range ends {
+			e.srv.Close()
+			e.dev.Close()
+		}
+	})
+
+	var mu sync.Mutex
+	dialed := 0
+	dial := func(ctx context.Context) (net.Conn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dialed >= len(ends) {
+			return nil, errors.New("no more connections")
+		}
+		c := ends[dialed].dev
+		dialed++
+		return c, nil
+	}
+
+	sat := NewSatellite(SatelliteConfig{
+		DeviceID: "cuebooth", Rows: 1, Cols: 2, BitmapSize: 72,
+	}, WithSatelliteDialer(dial))
+	sat.reconnectBackoff = 50 * time.Millisecond
+
+	layouts := make(chan [3]int, 4)
+	keys := make(chan int, 8)
+	sat.OnLayout(func(r, c, bm int) { layouts <- [3]int{r, c, bm} })
+	sat.OnKey(func(k SatelliteKey) { keys <- k.Key })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	// First session: register, then take a key.
+	first := &fakeCompanion{conn: ends[0].srv, r: bufio.NewReader(ends[0].srv)}
+	_ = first.readLine(t) // ADD-DEVICE
+	first.ackRegister(t, "cuebooth")
+	if l := <-layouts; l != [3]int{1, 2, 72} {
+		t.Fatalf("first layout: got %v", l)
+	}
+	first.writeLine(t, "KEY-STATE DEVICEID=cuebooth KEY=0 TYPE=BUTTON PRESSED=0 BITMAP=QUJD")
+	if k := <-keys; k != 0 {
+		t.Fatalf("first key: got %d", k)
+	}
+
+	// Companion goes away.
+	ends[0].srv.Close()
+
+	// Second session: the surface must register itself again unprompted.
+	second := &fakeCompanion{conn: ends[1].srv, r: bufio.NewReader(ends[1].srv)}
+	if got := second.readLine(t); !strings.HasPrefix(got, "ADD-DEVICE ") {
+		t.Fatalf("after a drop the surface sent %q, want a fresh ADD-DEVICE", got)
+	}
+	second.ackRegister(t, "cuebooth")
+
+	select {
+	case l := <-layouts:
+		if l != [3]int{1, 2, 72} {
+			t.Errorf("layout after reconnect: got %v", l)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no layout was raised after reconnecting")
+	}
+
+	// And keys flow again, which is what puts the operator's grid back.
+	second.writeLine(t, "KEY-STATE DEVICEID=cuebooth KEY=1 TYPE=BUTTON PRESSED=0 BITMAP=QUJD")
+	select {
+	case k := <-keys:
+		if k != 1 {
+			t.Errorf("key after reconnect: got %d, want 1", k)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no key states after reconnecting")
+	}
+}
+
 func TestSatelliteRegisterAndKeyState(t *testing.T) {
 	keys := make(chan SatelliteKey, 4)
 	layouts := make(chan [3]int, 1)

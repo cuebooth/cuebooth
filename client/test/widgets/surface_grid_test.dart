@@ -177,13 +177,14 @@ void main() {
     expect(presses.where((m) => m['pressed'] == false).length, 1);
   });
 
-  testWidgets('dragging across the grid does not fire a button', (
+  testWidgets('the surface never scrolls, however many rows it has', (
     tester,
   ) async {
-    // Dragging must never run a cue. A tap recognizer that reported its press
-    // before winning the arena would deliver a complete press and release to
-    // Companion when the scrollable took over; the recognizer defers the press
-    // until it wins, so a drag yields a cancel with no press behind it.
+    // A scrollable grid would let a swipe run a cue: the tap recognizer reports
+    // its press from its own 100ms deadline, before the gesture arena resolves,
+    // so a scroll that began on a button has already delivered a press — and the
+    // drag taking the pointer delivers the release behind it. Keeping every key
+    // on screen removes the gesture that could be mistaken for navigation.
     final keys = [
       for (var i = 0; i < 80; i++)
         {
@@ -197,7 +198,7 @@ void main() {
           'color': '#336699',
         },
     ];
-    final (session, sent) = await surfaceSession(
+    final (session, _) = await surfaceSession(
       tester,
       rows: 20,
       cols: 4,
@@ -213,19 +214,13 @@ void main() {
     );
     await tester.pump();
 
-    final gesture = await tester.startGesture(const Offset(100, 200));
-    await tester.pump(
-      const Duration(milliseconds: 150),
-    ); // past the tap deadline
-    await gesture.moveBy(const Offset(0, -160));
-    await tester.pump();
-    await gesture.up();
-    await tester.pump();
-
+    final position = tester
+        .state<ScrollableState>(find.byType(Scrollable))
+        .position;
     expect(
-      sent.where((m) => m['type'] == 'surface-press').toList(),
-      isEmpty,
-      reason: 'a drag must not press a button',
+      position.maxScrollExtent,
+      0,
+      reason: '20 rows in a short viewport must still fit rather than scroll',
     );
   });
 

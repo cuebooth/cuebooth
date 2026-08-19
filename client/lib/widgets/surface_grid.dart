@@ -34,21 +34,41 @@ class SurfaceGrid extends StatelessWidget {
           );
         }
         final cols = surface.cols;
-        final count = surface.rows * cols;
+        final rows = surface.rows;
+        const spacing = 6.0;
         return Padding(
           padding: const EdgeInsets.all(8),
-          child: GridView.builder(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: cols,
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-            ),
-            itemCount: count,
-            itemBuilder: (context, index) => _SurfaceCell(
-              keyState: surface.keyAt(index),
-              // The grid index is the flat key index (row * cols + col).
-              onPress: (down) => session.sendSurfacePress(index, down),
-            ),
+          // The grid never scrolls: every key is sized to fit, the way the
+          // hardware surface it mirrors is all visible at once. That is also
+          // what keeps a swipe from running a cue — a scrollable's drag
+          // recognizer competes for the pointer, and the tap recognizer reports
+          // its press from its own deadline before the arena resolves, so a
+          // scroll that started on a button would already have delivered a
+          // complete press and release to Companion.
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final cellWidth =
+                  (constraints.maxWidth - (cols - 1) * spacing) / cols;
+              final cellHeight =
+                  (constraints.maxHeight - (rows - 1) * spacing) / rows;
+              return GridView.builder(
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: cols,
+                  mainAxisSpacing: spacing,
+                  crossAxisSpacing: spacing,
+                  childAspectRatio: cellWidth <= 0 || cellHeight <= 0
+                      ? 1
+                      : cellWidth / cellHeight,
+                ),
+                itemCount: rows * cols,
+                itemBuilder: (context, index) => _SurfaceCell(
+                  keyState: surface.keyAt(index),
+                  // The grid index is the flat key index (row * cols + col).
+                  onPress: (down) => session.sendSurfacePress(index, down),
+                ),
+              );
+            },
           ),
         );
       },
