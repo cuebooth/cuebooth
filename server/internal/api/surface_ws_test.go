@@ -93,6 +93,50 @@ func TestSurfaceReachesAClientOverWebSocket(t *testing.T) {
 	}
 }
 
+// A tablet that loses Wi-Fi mid-hold cannot send its own release: the session
+// stops being ready before the grid tears down, so the client suppresses it.
+// The server releasing held keys on disconnect is the only thing that stops
+// Companion sitting latched on a hold-to-act button until the operator comes
+// back and taps it again.
+func TestHeldKeyIsReleasedWhenTheClientVanishes(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	conn, ctx := dialSurfaceServer(t, sat)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if readFrame(t, ctx, conn)["type"] == typeSurfaceLayout {
+			break
+		}
+	}
+
+	writeFrame(t, ctx, conn, map[string]any{"type": typeSurfacePress, "key": 1, "pressed": true})
+	for time.Now().Before(deadline) {
+		if len(sat.pressLog()) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if log := sat.pressLog(); len(log) != 1 || !log[0].pressed {
+		t.Fatalf("the hold never reached Companion: %+v", log)
+	}
+
+	// The tablet goes away without releasing.
+	conn.Close(websocket.StatusAbnormalClosure, "wifi dropped")
+
+	var released bool
+	for time.Now().Before(deadline) && !released {
+		for _, p := range sat.pressLog() {
+			if p.key == 1 && !p.pressed {
+				released = true
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !released {
+		t.Fatalf("a key held at disconnect was never released; Companion stays latched: %+v", sat.pressLog())
+	}
+}
+
 func TestSurfacePressFromAClientReachesCompanion(t *testing.T) {
 	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
 	conn, ctx := dialSurfaceServer(t, sat)
