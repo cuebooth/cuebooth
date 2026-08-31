@@ -33,8 +33,6 @@ type surfaceFrame struct {
 // ack-then-delta ordering is between two frames of the same lane. Draining in
 // this order keeps an ack from waiting behind a page change — 32 frames and
 // ~670KB at the default grid — on the congested link where that is most felt.
-// The state lane cannot starve the surface: it is capped, and only a command or
-// an event puts anything in it.
 //
 // Within each lane the order is FIFO, and coalescing never disturbs it: a key
 // frame is replaced where it already sits, and the frames a layout supersedes

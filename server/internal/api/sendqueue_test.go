@@ -48,15 +48,14 @@ func TestSendQueueServesStateFramesFirst(t *testing.T) {
 // strengthen it — but a client must never see a surface frame before `hello`.
 func TestSendQueueKeepsHelloAndSnapshotAheadOfTheSurface(t *testing.T) {
 	q := newSendQueue()
-	// The connect sequence, with a page change racing the hub registration.
+	// The connect sequence, with live key updates racing the hub registration.
 	q.pushOther([]byte("hello"))
 	q.pushSurfaceKey(0, 1, []byte("k0"))
 	q.pushOther([]byte("state"))
-	q.pushSurfaceLayout(1, []byte("layout"))
+	q.pushSurfaceKey(1, 2, []byte("k1"))
 
-	frames := drainQueue(q)
-	if frames[0] != "hello" || frames[1] != "state" {
-		t.Fatalf("frames = %v, want hello and state first", frames)
+	if got, want := strings.Join(drainQueue(q), ","), "hello,state,k0,k1"; got != want {
+		t.Errorf("order = %q, want %q", got, want)
 	}
 }
 
@@ -106,8 +105,8 @@ func TestSendQueueLayoutSupersedesTheKeysItCovers(t *testing.T) {
 	q.pushSurfaceKey(3, 4, []byte("k3"))
 	q.pushSurfaceLayout(4, []byte("layout-new"))
 
-	// Only the state frame and the newest layout survive; the state frame keeps
-	// its place, since a layout says nothing about state traffic.
+	// Only the state frame and the newest layout survive: a layout says nothing
+	// about state traffic.
 	if got, want := strings.Join(drainQueue(q), ","), "a,layout-new"; got != want {
 		t.Errorf("order = %q, want %q", got, want)
 	}
