@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 )
@@ -61,10 +60,10 @@ func (f *fakeSat) failPresses(err error) {
 }
 
 // newTestClient builds a clientConn that captures enqueued frames in its send
-// buffer without a real WebSocket connection.
+// queue without a real WebSocket connection.
 func newTestClient() *clientConn {
 	return &clientConn{
-		send:   make(chan []byte, 256),
+		send:   newSendQueue(),
 		done:   make(chan struct{}),
 		topics: allTopicsSet(),
 	}
@@ -73,14 +72,13 @@ func newTestClient() *clientConn {
 func drainFrames(c *clientConn) []map[string]any {
 	var out []map[string]any
 	for {
-		select {
-		case raw := <-c.send:
-			var m map[string]any
-			if err := json.Unmarshal(raw, &m); err == nil {
-				out = append(out, m)
-			}
-		default:
+		raw, ok := c.send.pop()
+		if !ok {
 			return out
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err == nil {
+			out = append(out, m)
 		}
 	}
 }
@@ -208,6 +206,70 @@ func TestSurfaceManagerClearRebaselinesClients(t *testing.T) {
 	}
 }
 
+// The clear has to carry the sequence it was taken at, or the send queue cannot
+// tell which queued renders it supersedes and a client that hasn't drained yet
+// still receives — and paints — the buttons Companion just blanked.
+func TestSurfaceManagerClearDropsRendersStillQueued(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	sat.onClear() // nothing has drained yet: both renders are still queued
+
+	frames := drainFrames(c)
+	if len(frames) != 1 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("expected the clear to leave only a layout queued, got %+v", frames)
+	}
+}
+
+// The same for a re-registration, which is the common case: Companion restarts
+// mid-service and re-pushes the whole grid, and the renders queued to a tablet
+// that hasn't drained are ~670KB the layout supersedes.
+func TestSurfaceManagerLayoutDropsRendersStillQueued(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	sat.onLayout(2, 2, 72)
+
+	frames := drainFrames(c)
+	if len(frames) != 1 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("expected the re-registration to leave only a layout queued, got %+v", frames)
+	}
+}
+
+// And the replay's own layout. With renders already queued to this client, a
+// layout that supersedes none of them lands behind them instead of in front:
+// the client paints those buttons and the layout then drops them, leaving an
+// empty grid until Companion pushes again.
+func TestSendInitialLayoutLeadsTheReplay(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	m := newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	m.sendInitial(c)
+
+	frames := drainFrames(c)
+	if len(frames) == 0 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("the replay's layout must lead, got %+v", frames)
+	}
+}
+
 func TestSurfaceManagerPress(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())
@@ -244,74 +306,31 @@ func TestSurfaceManagerInBounds(t *testing.T) {
 	}
 }
 
-func TestEnqueueBlockingAppliesBackpressure(t *testing.T) {
-	c := &clientConn{send: make(chan []byte, 1), done: make(chan struct{})}
-	if !c.enqueueBlocking([]byte("a")) {
-		t.Fatal("first enqueueBlocking should succeed into an empty buffer")
-	}
-	// Buffer is full; the next send must block until a reader makes room.
-	done := make(chan bool, 1)
-	go func() { done <- c.enqueueBlocking([]byte("b")) }()
-	select {
-	case <-done:
-		t.Fatal("enqueueBlocking returned while the buffer was full")
-	case <-time.After(20 * time.Millisecond):
-	}
-	<-c.send // drain "a"
-	select {
-	case ok := <-done:
-		if !ok {
-			t.Fatal("enqueueBlocking should report true once room frees")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("enqueueBlocking did not unblock after the buffer drained")
-	}
-}
-
-func TestEnqueueBlockingAbortsOnTeardown(t *testing.T) {
-	c := &clientConn{send: make(chan []byte, 1), done: make(chan struct{})}
-	_ = c.enqueueBlocking([]byte("a")) // fill the buffer
-	done := make(chan bool, 1)
-	go func() { done <- c.enqueueBlocking([]byte("b")) }()
-	close(c.done) // connection torn down before room frees
-	select {
-	case ok := <-done:
-		if ok {
-			t.Fatal("enqueueBlocking should report false when the connection is torn down")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("enqueueBlocking did not abort on done")
-	}
-}
-
-func TestSurfaceManagerSendInitialLargeGridDoesNotDrop(t *testing.T) {
-	// A surface larger than the send buffer must replay fully under backpressure
-	// rather than overflowing and dropping the client (the bug that made grids
-	// beyond ~61 keys unusable). 8x8 = 64 keys → 65 frames into a 4-slot buffer.
+func TestSurfaceManagerSendInitialReplaysALargeGrid(t *testing.T) {
+	// A surface far larger than sendBuffer replays in full: surface frames are
+	// not counted against the state backlog, so the replay can neither overflow
+	// it nor drop a healthy client. 8x8 = 64 keys → 65 frames.
 	sat := &fakeSat{rows: 8, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())
 	for i := 0; i < 64; i++ {
 		sat.onKey(companion.SatelliteKey{Key: i, Type: "BUTTON", BitmapBase64: "AA=="})
 	}
 
-	c := &clientConn{send: make(chan []byte, 4), done: make(chan struct{})}
-	go m.sendInitial(c)
+	c := newTestClient()
+	m.sendInitial(c)
 
-	const want = 65 // 1 layout + 64 keys
-	layout := 0
-	for got := 0; got < want; got++ {
-		select {
-		case raw := <-c.send:
-			var f map[string]any
-			if json.Unmarshal(raw, &f) == nil && f["type"] == typeSurfaceLayout {
-				layout++
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("replay stalled or dropped: got %d of %d frames", got, want)
+	frames := drainFrames(c)
+	if len(frames) != 65 {
+		t.Fatalf("replay delivered %d frames, want 65 (1 layout + 64 keys)", len(frames))
+	}
+	layouts := 0
+	for _, f := range frames {
+		if f["type"] == typeSurfaceLayout {
+			layouts++
 		}
 	}
-	if layout != 1 {
-		t.Errorf("expected exactly 1 layout frame, got %d", layout)
+	if layouts != 1 {
+		t.Errorf("expected exactly 1 layout frame, got %d", layouts)
 	}
 }
 

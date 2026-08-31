@@ -64,7 +64,7 @@ func (m *surfaceManager) onLayout(rows, cols, bitmapSize int) {
 	m.keys = make(map[int]surfaceKeyFrame)
 	seq := m.seq
 	m.mu.Unlock()
-	m.hub.broadcast(mustMarshal(surfaceLayoutFrame{
+	m.hub.broadcastSurfaceLayout(seq, mustMarshal(surfaceLayoutFrame{
 		Type:       typeSurfaceLayout,
 		Rows:       rows,
 		Cols:       cols,
@@ -98,14 +98,13 @@ func (m *surfaceManager) onKey(k companion.SatelliteKey) {
 	}
 	m.keys[k.Key] = frame
 	m.mu.Unlock()
-	m.hub.broadcast(mustMarshal(frame))
+	m.hub.broadcastSurfaceKey(frame.Key, frame.Seq, mustMarshal(frame))
 }
 
 // onClear drops the cached key state (Companion asked the surface to blank) so a
-// client connecting mid-change isn't sent stale bitmaps. Live clients keep their
-// last render until fresh KEY-STATEs arrive. Page changes don't reach here on the
-// versions we've measured — Companion re-pushes every key instead — so this is
-// the defensive path for versions that do send KEYS-CLEAR.
+// client connecting mid-change isn't sent stale bitmaps. Page changes don't reach
+// here on the versions we've measured — Companion re-pushes every key instead —
+// so this is the defensive path for versions that do send KEYS-CLEAR.
 func (m *surfaceManager) onClear() {
 	m.mu.Lock()
 	m.keys = make(map[int]surfaceKeyFrame)
@@ -121,38 +120,33 @@ func (m *surfaceManager) onClear() {
 	// already connected showing buttons Companion has blanked, while a client
 	// connecting a moment later saw an empty grid — and a tap on one of those
 	// stale buttons still reaches Companion, which now has something else there.
-	m.hub.broadcast(mustMarshal(layout))
+	m.hub.broadcastSurfaceLayout(layout.Seq, mustMarshal(layout))
 }
 
 // sendInitial replays the current surface (layout + every cached key) to a
-// single just-connected client. Called from the connection's run() once its
-// write loop is draining, so it uses the blocking enqueue: a full surface is
-// rows*cols key frames (unbounded by config), which would overflow the per-client
-// send buffer and drop a healthy client on a large grid if pushed through the
-// non-blocking path. Backpressure here only stalls this one connection, and it
-// stops early if the connection is torn down mid-replay.
+// single just-connected client. The replay is one frame per key, which is what
+// the connection's send queue is bounded at anyway, so it cannot overflow — and
+// a live update landing mid-replay supersedes the cached frame for that key
+// rather than queueing behind it.
+//
+// The lock covers the enqueues, not just the snapshot: a re-baseline landing
+// between them would queue this snapshot's remaining keys *behind* the layout
+// that supersedes them, and the client — which drops its keys on a layout and
+// then applies whatever follows — would repaint a surface Companion has
+// blanked. Holding it is affordable because no enqueue blocks; the satellite's
+// callback goroutine waits only for the marshalling.
 func (m *surfaceManager) sendInitial(c *clientConn) {
 	m.mu.Lock()
-	layout := surfaceLayoutFrame{
+	defer m.mu.Unlock()
+	c.enqueueSurfaceLayout(m.seq, mustMarshal(surfaceLayoutFrame{
 		Type:       typeSurfaceLayout,
 		Rows:       m.rows,
 		Cols:       m.cols,
 		Seq:        m.seq,
 		BitmapSize: m.bitmapSize,
-	}
-	frames := make([]surfaceKeyFrame, 0, len(m.keys))
+	}))
 	for _, f := range m.keys {
-		frames = append(frames, f)
-	}
-	m.mu.Unlock()
-
-	if !c.enqueueBlocking(mustMarshal(layout)) {
-		return
-	}
-	for _, f := range frames {
-		if !c.enqueueBlocking(mustMarshal(f)) {
-			return
-		}
+		c.enqueueSurfaceKey(f.Key, f.Seq, mustMarshal(f))
 	}
 }
 

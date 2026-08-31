@@ -47,14 +47,25 @@ func (h *hub) broadcastDelta(rev int, patch map[string]any) {
 	}
 }
 
-// broadcast sends a pre-marshalled frame to every connected client,
-// unconditionally (not topic-scoped). Used for surface frames (protocol.md §10),
-// which every client receives — the surface is not a state topic.
-func (h *hub) broadcast(frame []byte) {
+// broadcastSurfaceKey sends one key's render to every connected client,
+// unconditionally (not topic-scoped) — the surface is not a state topic
+// (protocol.md §10). Unlike a state delta, a client that has fallen behind is
+// not dropped: the frame supersedes whatever was queued for the same key.
+func (h *hub) broadcastSurfaceKey(key, seq int, frame []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		c.enqueue(frame)
+		c.enqueueSurfaceKey(key, seq, frame)
+	}
+}
+
+// broadcastSurfaceLayout sends a surface re-baseline to every connected client,
+// discarding the queued key frames it supersedes.
+func (h *hub) broadcastSurfaceLayout(seq int, frame []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.enqueueSurfaceLayout(seq, frame)
 	}
 }
 

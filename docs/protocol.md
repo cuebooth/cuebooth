@@ -408,6 +408,8 @@ The design intent: the button grid is **whatever Companion is configured with** 
 
 Surface frames travel on the main `/ws` channel but are **not** part of the `state`/`state-delta` machinery and are **not** a subscription topic: button bitmaps are large and change frequently (clocks, feedback), so routing them through revisioned state deltas would be wasteful. Every client receives the surface unconditionally, after the initial `state` snapshot.
 
+Otherwise the two are independent streams. A client MUST NOT assume a surface frame and a state frame arrive in the order the server produced them: when a connection is behind, the server sends every non-surface frame it has pending ahead of queued button images, so that tapping a control is acknowledged promptly on a link too slow to carry a re-rendered page. Ordering *within* each stream is unaffected.
+
 ### `surface-layout` (server → client)
 
 Announces the surface grid dimensions. Sent after the initial `state` snapshot, again whenever the server's surface (re)registers with Companion (e.g. after a reconnect), and again after a `subscribe`/`unsubscribe`, which re-sends the surface so a topic change can't cost a client the keys broadcast while it was re-baselining. A client treats each `surface-layout` as a re-baseline: it resets its grid to these dimensions and drops the keys the layout supersedes, since the server re-sends every key afterward.
@@ -422,7 +424,7 @@ Announces the surface grid dimensions. Sent after the initial `state` snapshot, 
 | `seq` | int | The surface sequence this layout was taken at. Drop held keys whose last applied `seq` is **≤** this value; keep anything newer. |
 | `bitmap_size` | int | Button bitmap edge length in pixels (square). Always positive (the server normalizes it to a default). |
 
-A client must not drop keys newer than `seq`. The server snapshots its cache and then enqueues, so a `surface-key` can overtake the `surface-layout` behind which it was cached; discarding it would let the older replayed frame win and leave the button showing a state Companion has already moved on from.
+A client must not drop keys newer than `seq`. A `surface-key` above the layout's sequence is a render the layout does not cover, and discarding it would leave the button showing a state Companion has already moved on from.
 
 ### `surface-key` (server → client)
 
@@ -453,6 +455,8 @@ One key's current rendered state. Sent for every cached key right after `surface
 | `bitmap` | string | Companion's rendered button image: base64-encoded 8-bit RGB pixel data, `bitmap_size`×`bitmap_size`, forwarded verbatim. Omitted if none. |
 
 **Ordering.** The cached `surface-key` frames sent on connect can race a concurrent live update for the same key. Clients MUST apply updates per key in `seq` order — last-write-wins — and ignore any frame whose `seq` is not newer than the last applied for that key. `seq` is a single surface-wide counter, not per-key.
+
+**Coalescing.** `seq` increases but is **not** contiguous: a client MUST NOT assume it will see every value, or treat a gap as a lost frame. When a client is not draining as fast as Companion renders, the server replaces the frame it still has queued for a key with the newer one rather than sending both, and drops the frames a `surface-layout` supersedes. What arrives is always the newest render of each key, which is the only one a last-write-wins client would have kept, and the surface backlog cannot outgrow one frame per key.
 
 ### `surface-press` (client → server)
 
