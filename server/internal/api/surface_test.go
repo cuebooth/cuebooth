@@ -227,6 +227,49 @@ func TestSurfaceManagerClearDropsRendersStillQueued(t *testing.T) {
 	}
 }
 
+// The same for a re-registration, which is the common case: Companion restarts
+// mid-service and re-pushes the whole grid, and the renders queued to a tablet
+// that hasn't drained are ~670KB the layout supersedes.
+func TestSurfaceManagerLayoutDropsRendersStillQueued(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	sat.onLayout(2, 2, 72)
+
+	frames := drainFrames(c)
+	if len(frames) != 1 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("expected the re-registration to leave only a layout queued, got %+v", frames)
+	}
+}
+
+// And the replay's own layout. With renders already queued to this client, a
+// layout that supersedes none of them lands behind them instead of in front:
+// the client paints those buttons and the layout then drops them, leaving an
+// empty grid until Companion pushes again.
+func TestSendInitialLayoutLeadsTheReplay(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	m := newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	m.sendInitial(c)
+
+	frames := drainFrames(c)
+	if len(frames) == 0 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("the replay's layout must lead, got %+v", frames)
+	}
+}
+
 func TestSurfaceManagerPress(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())

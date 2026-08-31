@@ -240,6 +240,31 @@ func TestSendQueuePopUnindexes(t *testing.T) {
 	}
 }
 
+// The wake channel has to be buffered. A push happens while the write loop is
+// between its empty pop and its select on wake as often as not, and an
+// unbuffered channel has no receiver at that moment, so poke's non-blocking
+// send would take its default arm and lose the signal. A lone frame — an ack, or
+// the error frame before a close — would then sit queued until unrelated traffic
+// woke the loop.
+func TestSendQueuePushLeavesAWakeBehind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		push func(*sendQueue)
+	}{
+		{"other", func(q *sendQueue) { q.pushOther([]byte("x")) }},
+		{"surface key", func(q *sendQueue) { q.pushSurfaceKey(0, 1, []byte("k")) }},
+		{"surface layout", func(q *sendQueue) { q.pushSurfaceLayout(1, []byte("l")) }},
+	} {
+		q := newSendQueue()
+		tc.push(q)
+		select {
+		case <-q.wake:
+		default:
+			t.Errorf("%s: pushed with no write loop parked and left no wake behind", tc.name)
+		}
+	}
+}
+
 func TestSendQueuePokeIsNonBlocking(t *testing.T) {
 	q := newSendQueue()
 	done := make(chan struct{})
