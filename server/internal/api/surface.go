@@ -64,7 +64,7 @@ func (m *surfaceManager) onLayout(rows, cols, bitmapSize int) {
 	m.keys = make(map[int]surfaceKeyFrame)
 	seq := m.seq
 	m.mu.Unlock()
-	m.hub.broadcast(mustMarshal(surfaceLayoutFrame{
+	m.hub.broadcastSurfaceLayout(seq, mustMarshal(surfaceLayoutFrame{
 		Type:       typeSurfaceLayout,
 		Rows:       rows,
 		Cols:       cols,
@@ -98,7 +98,7 @@ func (m *surfaceManager) onKey(k companion.SatelliteKey) {
 	}
 	m.keys[k.Key] = frame
 	m.mu.Unlock()
-	m.hub.broadcast(mustMarshal(frame))
+	m.hub.broadcastSurfaceKey(frame.Key, frame.Seq, mustMarshal(frame))
 }
 
 // onClear drops the cached key state (Companion asked the surface to blank) so a
@@ -121,16 +121,14 @@ func (m *surfaceManager) onClear() {
 	// already connected showing buttons Companion has blanked, while a client
 	// connecting a moment later saw an empty grid — and a tap on one of those
 	// stale buttons still reaches Companion, which now has something else there.
-	m.hub.broadcast(mustMarshal(layout))
+	m.hub.broadcastSurfaceLayout(layout.Seq, mustMarshal(layout))
 }
 
 // sendInitial replays the current surface (layout + every cached key) to a
-// single just-connected client. Called from the connection's run() once its
-// write loop is draining, so it uses the blocking enqueue: a full surface is
-// rows*cols key frames (unbounded by config), which would overflow the per-client
-// send buffer and drop a healthy client on a large grid if pushed through the
-// non-blocking path. Backpressure here only stalls this one connection, and it
-// stops early if the connection is torn down mid-replay.
+// single just-connected client. The replay is one frame per key, which is what
+// the connection's send queue is bounded at anyway, so it cannot overflow — and
+// a live update landing mid-replay supersedes the cached frame for that key
+// rather than queueing behind it.
 func (m *surfaceManager) sendInitial(c *clientConn) {
 	m.mu.Lock()
 	layout := surfaceLayoutFrame{
@@ -146,13 +144,15 @@ func (m *surfaceManager) sendInitial(c *clientConn) {
 	}
 	m.mu.Unlock()
 
-	if !c.enqueueBlocking(mustMarshal(layout)) {
+	// A re-registration can broadcast a fresher layout between the snapshot above
+	// and this enqueue. When it has, this snapshot's keys are all older than that
+	// re-baseline and Companion is already re-pushing them, so sending them would
+	// only paint a grid Companion has moved on from.
+	if !c.enqueueSurfaceLayout(layout.Seq, mustMarshal(layout)) {
 		return
 	}
 	for _, f := range frames {
-		if !c.enqueueBlocking(mustMarshal(f)) {
-			return
-		}
+		c.enqueueSurfaceKey(f.Key, f.Seq, mustMarshal(f))
 	}
 }
 
