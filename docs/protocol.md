@@ -408,7 +408,7 @@ The design intent: the button grid is **whatever Companion is configured with** 
 
 Surface frames travel on the main `/ws` channel but are **not** part of the `state`/`state-delta` machinery and are **not** a subscription topic: button bitmaps are large and change frequently (clocks, feedback), so routing them through revisioned state deltas would be wasteful. Every client receives the surface unconditionally, after the initial `state` snapshot.
 
-Otherwise the two are independent streams. A client MUST NOT assume a surface frame and a state frame arrive in the order the server produced them: when a connection is behind, the server sends every non-surface frame it has pending — `state`, `state-delta`, `ack`, `nak`, `event`, `pong`, `error` — ahead of queued button images, so that tapping a control is acknowledged promptly on a link too slow to carry a re-rendered page. Ordering *within* each stream is unaffected.
+Otherwise the two are independent streams. A client MUST NOT assume a surface frame and a state frame arrive in the order the server produced them: when a connection is behind, the server sends every non-surface frame it has pending ahead of queued button images, so that tapping a control is acknowledged promptly on a link too slow to carry a re-rendered page. Ordering *within* each stream is unaffected.
 
 ### `surface-layout` (server → client)
 
