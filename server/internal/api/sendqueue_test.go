@@ -27,7 +27,9 @@ func drainQueue(q *sendQueue) []string {
 	}
 }
 
-func TestSendQueueFIFOAcrossClasses(t *testing.T) {
+// State frames go first so an ack does not wait behind a page change's worth of
+// bitmaps; within each lane the order is the order they were queued.
+func TestSendQueueServesStateFramesFirst(t *testing.T) {
 	q := newSendQueue()
 	q.pushOther([]byte("a"))
 	q.pushSurfaceLayout(0, []byte("layout"))
@@ -36,8 +38,25 @@ func TestSendQueueFIFOAcrossClasses(t *testing.T) {
 	q.pushSurfaceKey(2, 2, []byte("k2"))
 
 	got := strings.Join(drainQueue(q), ",")
-	if want := "a,layout,k1,b,k2"; got != want {
+	if want := "a,b,layout,k1,k2"; got != want {
 		t.Errorf("order = %q, want %q", got, want)
+	}
+}
+
+// The guarantee that ordering has to preserve (protocol.md §10): the surface
+// follows the initial `state` snapshot. Draining state first can only
+// strengthen it — but a client must never see a surface frame before `hello`.
+func TestSendQueueKeepsHelloAndSnapshotAheadOfTheSurface(t *testing.T) {
+	q := newSendQueue()
+	// The connect sequence, with a page change racing the hub registration.
+	q.pushOther([]byte("hello"))
+	q.pushSurfaceKey(0, 1, []byte("k0"))
+	q.pushOther([]byte("state"))
+	q.pushSurfaceLayout(1, []byte("layout"))
+
+	frames := drainQueue(q)
+	if frames[0] != "hello" || frames[1] != "state" {
+		t.Fatalf("frames = %v, want hello and state first", frames)
 	}
 }
 
@@ -63,12 +82,12 @@ func TestSendQueueCoalescesPerKey(t *testing.T) {
 func TestSendQueueCoalescingKeepsPosition(t *testing.T) {
 	q := newSendQueue()
 	q.pushSurfaceKey(1, 1, []byte("k1-old"))
-	q.pushOther([]byte("a"))
 	q.pushSurfaceKey(2, 2, []byte("k2"))
-	q.pushSurfaceKey(1, 3, []byte("k1-new")) // supersedes k1-old in place
+	q.pushSurfaceKey(3, 3, []byte("k3"))
+	q.pushSurfaceKey(1, 4, []byte("k1-new")) // supersedes k1-old in place
 
 	got := strings.Join(drainQueue(q), ",")
-	if want := "k1-new,a,k2"; got != want {
+	if want := "k1-new,k2,k3"; got != want {
 		t.Errorf("order = %q, want %q", got, want)
 	}
 }

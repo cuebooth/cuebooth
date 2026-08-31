@@ -5,48 +5,46 @@ import (
 	"sync"
 )
 
-// frameClass selects the back-pressure policy the send queue applies to a
-// frame. State and command traffic is a stream — every frame matters, so an
-// overflow can only be answered by failing the connection. Surface traffic is a
-// projection: each frame is the current render of one key, so a newer frame
-// makes the one it replaces dead weight (protocol.md §10).
-type frameClass int
-
-const (
-	classOther frameClass = iota
-	classSurfaceKey
-	classSurfaceLayout
-)
-
-type queuedFrame struct {
-	data []byte
-	kind frameClass
-	// key is the surface key index for classSurfaceKey, unused otherwise.
-	key int
-	// seq is the surface sequence the frame was taken at (protocol.md §10),
-	// unused for classOther.
-	seq int
+// surfaceFrame is one queued surface frame: a key's render, or a re-baseline
+// when layout is set. seq is the surface sequence it was taken at
+// (protocol.md §10).
+type surfaceFrame struct {
+	data   []byte
+	key    int
+	seq    int
+	layout bool
 }
 
-// sendQueue is a connection's outbound frame queue: an ordered list plus an
-// index into it, so a surface frame can supersede the one it replaces instead
-// of queueing behind it.
+// sendQueue is a connection's outbound frame queue, split into two lanes
+// because state and surface traffic are different shapes.
 //
-// Ordering is FIFO across every class. Coalescing never reorders what remains:
-// a key frame is replaced where it already sits, and the frames a layout
-// supersedes are removed rather than moved.
+// State and command traffic is a stream — every frame matters, so an overflow
+// can only be answered by failing the connection, and the lane is capped at
+// sendBuffer. Surface traffic is a projection: each frame is the current render
+// of one key, so a newer frame makes the one it replaces dead weight. That lane
+// coalesces instead of overflowing, and needs no cap — it holds at most one
+// frame per key index plus one layout, and key indices are gated by
+// surfaceManager.inBounds before they reach here, so its ceiling is one full
+// surface.
 //
-// Non-surface frames are capped at sendBuffer; overflowing it fails the
-// connection. Surface frames need no cap: the queue holds at most one per key
-// index plus one layout, and key indices are gated by surfaceManager.inBounds
-// before they reach here, so the ceiling is one full surface. A socket that has
-// genuinely stopped draining is still failed, by writeFrame's deadline.
+// pop drains the state lane first. Nothing orders the two against each other:
+// protocol.md §10 requires the surface to follow the initial `state` snapshot,
+// which this preserves because the snapshot is a state frame, and §4's
+// ack-then-delta ordering is between two frames of the same lane. Draining in
+// this order keeps an ack from waiting behind a page change — 32 frames and
+// ~670KB at the default grid — on the congested link where that is most felt.
+// The state lane cannot starve the surface: it is capped, and only a command or
+// an event puts anything in it.
+//
+// Within each lane the order is FIFO, and coalescing never disturbs it: a key
+// frame is replaced where it already sits, and the frames a layout supersedes
+// are removed rather than moved.
 type sendQueue struct {
-	mu     sync.Mutex
-	frames *list.List            // of queuedFrame, oldest at the front
-	keys   map[int]*list.Element // newest queued surface-key frame, per key index
-	layout *list.Element         // the queued surface-layout frame, if any
-	other  int                   // queued frames of classOther, against the sendBuffer cap
+	mu      sync.Mutex
+	state   *list.List            // of []byte, oldest at the front
+	surface *list.List            // of surfaceFrame, oldest at the front
+	keys    map[int]*list.Element // newest queued key frame, per key index
+	layout  *list.Element         // the queued layout frame, if any
 
 	// wake signals the write loop, buffered so a producer never blocks and no
 	// signal is lost: a poke that finds it full leaves a wake the write loop has
@@ -56,9 +54,10 @@ type sendQueue struct {
 
 func newSendQueue() *sendQueue {
 	return &sendQueue{
-		frames: list.New(),
-		keys:   make(map[int]*list.Element),
-		wake:   make(chan struct{}, 1),
+		state:   list.New(),
+		surface: list.New(),
+		keys:    make(map[int]*list.Element),
+		wake:    make(chan struct{}, 1),
 	}
 }
 
@@ -66,12 +65,11 @@ func newSendQueue() *sendQueue {
 // has exceeded its backlog and must be failed.
 func (q *sendQueue) pushOther(data []byte) bool {
 	q.mu.Lock()
-	if q.other >= sendBuffer {
+	if q.state.Len() >= sendBuffer {
 		q.mu.Unlock()
 		return false
 	}
-	q.frames.PushBack(queuedFrame{data: data, kind: classOther})
-	q.other++
+	q.state.PushBack(data)
 	q.mu.Unlock()
 	q.poke()
 	return true
@@ -83,9 +81,9 @@ func (q *sendQueue) pushOther(data []byte) bool {
 // sequence, and the client would discard the older one anyway (protocol.md §10).
 func (q *sendQueue) pushSurfaceKey(key, seq int, data []byte) {
 	q.mu.Lock()
-	frame := queuedFrame{data: data, kind: classSurfaceKey, key: key, seq: seq}
+	frame := surfaceFrame{data: data, key: key, seq: seq}
 	if e, ok := q.keys[key]; ok {
-		if e.Value.(queuedFrame).seq >= seq {
+		if e.Value.(surfaceFrame).seq >= seq {
 			q.mu.Unlock()
 			return
 		}
@@ -93,7 +91,7 @@ func (q *sendQueue) pushSurfaceKey(key, seq int, data []byte) {
 		// and still follows any layout queued ahead of it.
 		e.Value = frame
 	} else {
-		q.keys[key] = q.frames.PushBack(frame)
+		q.keys[key] = q.surface.PushBack(frame)
 	}
 	q.mu.Unlock()
 	q.poke()
@@ -110,45 +108,44 @@ func (q *sendQueue) pushSurfaceKey(key, seq int, data []byte) {
 // the later push is the current view of the surface.
 func (q *sendQueue) pushSurfaceLayout(seq int, data []byte) {
 	q.mu.Lock()
-	if q.layout != nil && q.layout.Value.(queuedFrame).seq > seq {
+	if q.layout != nil && q.layout.Value.(surfaceFrame).seq > seq {
 		q.mu.Unlock()
 		return
 	}
 	for key, e := range q.keys {
-		if e.Value.(queuedFrame).seq <= seq {
-			q.frames.Remove(e)
+		if e.Value.(surfaceFrame).seq <= seq {
+			q.surface.Remove(e)
 			delete(q.keys, key)
 		}
 	}
 	if q.layout != nil {
-		q.frames.Remove(q.layout)
+		q.surface.Remove(q.layout)
 	}
-	q.layout = q.frames.PushBack(queuedFrame{data: data, kind: classSurfaceLayout, seq: seq})
+	q.layout = q.surface.PushBack(surfaceFrame{data: data, seq: seq, layout: true})
 	q.mu.Unlock()
 	q.poke()
 }
 
-// pop removes and returns the oldest queued frame, reporting false if the queue
-// is empty.
+// pop removes and returns the next frame to write — the oldest state frame if
+// there is one, else the oldest surface frame — reporting false if the queue is
+// empty.
 func (q *sendQueue) pop() ([]byte, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	e := q.frames.Front()
+	if e := q.state.Front(); e != nil {
+		return q.state.Remove(e).([]byte), true
+	}
+	e := q.surface.Front()
 	if e == nil {
 		return nil, false
 	}
-	f := q.frames.Remove(e).(queuedFrame)
-	switch f.kind {
-	case classSurfaceKey:
-		if q.keys[f.key] == e {
-			delete(q.keys, f.key)
-		}
-	case classSurfaceLayout:
+	f := q.surface.Remove(e).(surfaceFrame)
+	if f.layout {
 		if q.layout == e {
 			q.layout = nil
 		}
-	default:
-		q.other--
+	} else if q.keys[f.key] == e {
+		delete(q.keys, f.key)
 	}
 	return f.data, true
 }
@@ -157,7 +154,7 @@ func (q *sendQueue) pop() ([]byte, bool) {
 func (q *sendQueue) depth() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.frames.Len()
+	return q.state.Len() + q.surface.Len()
 }
 
 // poke signals the write loop that work is waiting, without blocking.
