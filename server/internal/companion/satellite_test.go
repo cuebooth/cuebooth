@@ -1,0 +1,600 @@
+package companion
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestTokenizeSatellite(t *testing.T) {
+	got := tokenizeSatellite(`ADD-DEVICE DEVICEID=x PRODUCT_NAME="CueBooth Client" BITMAPS=72`)
+	want := []string{"ADD-DEVICE", "DEVICEID=x", "PRODUCT_NAME=CueBooth Client", "BITMAPS=72"}
+	if len(got) != len(want) {
+		t.Fatalf("token count: got %d (%q), want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("token %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestTokenizeSatelliteEscaping(t *testing.T) {
+	// A backslash escapes the next char, including a quote inside a quoted value.
+	got := tokenizeSatellite(`CMD A="x \"q\" y" B=c\\d`)
+	want := []string{"CMD", `A=x "q" y`, `B=c\d`}
+	if len(got) != len(want) {
+		t.Fatalf("token count: got %d (%q), want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("token %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseSatelliteLine(t *testing.T) {
+	cmd, args := parseSatelliteLine(`KEY-STATE DEVICEID=cuebooth KEY=5 TYPE=BUTTON PRESSED=1 COLOR=#00ff00 BITMAP=AAEC`)
+	if cmd != "KEY-STATE" {
+		t.Fatalf("cmd: got %q", cmd)
+	}
+	for k, want := range map[string]string{
+		"DEVICEID": "cuebooth", "KEY": "5", "TYPE": "BUTTON",
+		"PRESSED": "1", "COLOR": "#00ff00", "BITMAP": "AAEC",
+	} {
+		if args[k] != want {
+			t.Errorf("arg %s: got %q, want %q", k, args[k], want)
+		}
+	}
+}
+
+func TestParseWireBool(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{{"1", true}, {"true", true}, {"True", true}, {"0", false}, {"false", false}, {"", false}} {
+		if got := parseWireBool(tc.in); got != tc.want {
+			t.Errorf("parseWireBool(%q): got %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// fakeCompanion is one end of an in-memory pipe standing in for Companion's
+// satellite listener.
+type fakeCompanion struct {
+	conn net.Conn
+	r    *bufio.Reader
+}
+
+func (f *fakeCompanion) readLine(t *testing.T) string {
+	t.Helper()
+	_ = f.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := f.r.ReadString('\n')
+	if err != nil {
+		t.Fatalf("fakeCompanion read: %v", err)
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+func (f *fakeCompanion) writeLine(t *testing.T, s string) {
+	t.Helper()
+	if _, err := f.conn.Write([]byte(s + "\n")); err != nil {
+		t.Fatalf("fakeCompanion write: %v", err)
+	}
+}
+
+// ackRegister replies the way a real Companion does once it has accepted the
+// surface. Until this arrives the session is still pending, so a test that wants
+// a live surface must send it.
+func (f *fakeCompanion) ackRegister(t *testing.T, deviceID string) {
+	t.Helper()
+	f.writeLine(t, `ADD-DEVICE OK DEVICEID="`+deviceID+`"`)
+}
+
+// newSatelliteWithPipe wires a Satellite to an in-memory fake Companion. The
+// dialer hands over the pipe once; subsequent reconnects fail fast so the test
+// controls a single session.
+func newSatelliteWithPipe(t *testing.T, cfg SatelliteConfig) (*Satellite, *fakeCompanion) {
+	t.Helper()
+	srvEnd, devEnd := net.Pipe()
+	fake := &fakeCompanion{conn: srvEnd, r: bufio.NewReader(srvEnd)}
+
+	var once sync.Once
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var c net.Conn
+		err := errors.New("no more connections")
+		once.Do(func() { c, err = devEnd, nil })
+		return c, err
+	}
+	sat := NewSatellite(cfg, WithSatelliteDialer(dial))
+	t.Cleanup(func() { srvEnd.Close(); devEnd.Close() })
+	return sat, fake
+}
+
+// Companion restarting mid-service is the ordinary way this connection dies, and
+// the whole surface depends on the loop in Run putting it back: redial, register
+// again, re-raise the layout, and let Companion re-stream the keys. Nothing else
+// covers that loop — the other tests hand out a single connection.
+func TestSatelliteReconnectsAfterDrop(t *testing.T) {
+	type pipeEnd struct {
+		srv net.Conn
+		dev net.Conn
+	}
+	var ends []pipeEnd
+	for i := 0; i < 2; i++ {
+		srv, dev := net.Pipe()
+		ends = append(ends, pipeEnd{srv, dev})
+	}
+	t.Cleanup(func() {
+		for _, e := range ends {
+			e.srv.Close()
+			e.dev.Close()
+		}
+	})
+
+	var mu sync.Mutex
+	dialed := 0
+	dial := func(ctx context.Context) (net.Conn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if dialed >= len(ends) {
+			return nil, errors.New("no more connections")
+		}
+		c := ends[dialed].dev
+		dialed++
+		return c, nil
+	}
+
+	sat := NewSatellite(SatelliteConfig{
+		DeviceID: "cuebooth", Rows: 1, Cols: 2, BitmapSize: 72,
+	}, WithSatelliteDialer(dial))
+	sat.reconnectBackoff = 50 * time.Millisecond
+
+	layouts := make(chan [3]int, 4)
+	keys := make(chan int, 8)
+	sat.OnLayout(func(r, c, bm int) { layouts <- [3]int{r, c, bm} })
+	sat.OnKey(func(k SatelliteKey) { keys <- k.Key })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	// First session: register, then take a key.
+	first := &fakeCompanion{conn: ends[0].srv, r: bufio.NewReader(ends[0].srv)}
+	_ = first.readLine(t) // ADD-DEVICE
+	first.ackRegister(t, "cuebooth")
+	if l := <-layouts; l != [3]int{1, 2, 72} {
+		t.Fatalf("first layout: got %v", l)
+	}
+	first.writeLine(t, "KEY-STATE DEVICEID=cuebooth KEY=0 TYPE=BUTTON PRESSED=0 BITMAP=QUJD")
+	if k := <-keys; k != 0 {
+		t.Fatalf("first key: got %d", k)
+	}
+
+	// Companion goes away.
+	ends[0].srv.Close()
+
+	// Second session: the surface must register itself again unprompted.
+	second := &fakeCompanion{conn: ends[1].srv, r: bufio.NewReader(ends[1].srv)}
+	if got := second.readLine(t); !strings.HasPrefix(got, "ADD-DEVICE ") {
+		t.Fatalf("after a drop the surface sent %q, want a fresh ADD-DEVICE", got)
+	}
+	second.ackRegister(t, "cuebooth")
+
+	select {
+	case l := <-layouts:
+		if l != [3]int{1, 2, 72} {
+			t.Errorf("layout after reconnect: got %v", l)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no layout was raised after reconnecting")
+	}
+
+	// And keys flow again, which is what puts the operator's grid back.
+	second.writeLine(t, "KEY-STATE DEVICEID=cuebooth KEY=1 TYPE=BUTTON PRESSED=0 BITMAP=QUJD")
+	select {
+	case k := <-keys:
+		if k != 1 {
+			t.Errorf("key after reconnect: got %d, want 1", k)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no key states after reconnecting")
+	}
+}
+
+func TestSatelliteRegisterAndKeyState(t *testing.T) {
+	keys := make(chan SatelliteKey, 4)
+	layouts := make(chan [3]int, 1)
+
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{
+		DeviceID: "cuebooth", Rows: 4, Cols: 8, BitmapSize: 72,
+	})
+	sat.OnKey(func(k SatelliteKey) { keys <- k })
+	sat.OnLayout(func(rows, cols, bm int) { layouts <- [3]int{rows, cols, bm} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	// The surface registers itself first.
+	got := fake.readLine(t)
+	want := `ADD-DEVICE DEVICEID=cuebooth PRODUCT_NAME="CueBooth" KEYS_TOTAL=32 KEYS_PER_ROW=8 BITMAPS=72 COLORS=hex`
+	if got != want {
+		t.Fatalf("ADD-DEVICE:\n got %q\nwant %q", got, want)
+	}
+
+	// The surface is not live until Companion accepts it.
+	select {
+	case l := <-layouts:
+		t.Fatalf("layout fired before ADD-DEVICE was acknowledged: %v", l)
+	case <-time.After(100 * time.Millisecond):
+	}
+	fake.ackRegister(t, "cuebooth")
+
+	if l := <-layouts; l != [3]int{4, 8, 72} {
+		t.Errorf("layout: got %v, want [4 8 72]", l)
+	}
+
+	// Companion pushes a key.
+	fake.writeLine(t, "KEY-STATE DEVICEID=cuebooth KEY=9 TYPE=BUTTON PRESSED=1 COLOR=#ff0000 BITMAP=QUJD")
+	select {
+	case k := <-keys:
+		if k.Key != 9 || k.Type != "BUTTON" || !k.Pressed || k.Color != "#ff0000" || k.BitmapBase64 != "QUJD" {
+			t.Errorf("key: got %+v", k)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OnKey")
+	}
+}
+
+// Companion refuses a surface it doesn't like ("ADD-DEVICE ERROR ... MESSAGE=")
+// and then sends no key states at all. Treating that as connected would leave
+// every client on a grid that never updates, with nothing in the log to say why.
+func TestSatelliteRegistrationRejected(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	layouts := make(chan struct{}, 1)
+	sat.OnLayout(func(int, int, int) { layouts <- struct{}{} })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.writeLine(t, `ADD-DEVICE ERROR DEVICEID="cuebooth" MESSAGE="Invalid KEYS_TOTAL"`)
+
+	select {
+	case err := <-sessionErr:
+		if !errors.Is(err, ErrSatelliteRejected) {
+			t.Errorf("session error = %v, want ErrSatelliteRejected", err)
+		}
+		if !strings.Contains(err.Error(), "Invalid KEYS_TOTAL") {
+			t.Errorf("session error %q does not carry Companion's message", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not end after ADD-DEVICE ERROR")
+	}
+
+	select {
+	case <-layouts:
+		t.Error("layout fired for a rejected registration")
+	default:
+	}
+}
+
+// Companion can reject a surface that is already live — it hands the device id
+// to another connection and tells the incumbent. The session has to end so Run
+// reconnects; the connection stays healthy otherwise (we keep answering PING),
+// leaving a surface that refuses every press with nothing retrying.
+func TestSatelliteRejectedAfterRegistrationEndsSession(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(0, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("surface never registered: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Drain what the surface writes so the pipe never blocks the writer.
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			if _, err := fake.conn.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+
+	fake.writeLine(t, `ADD-DEVICE ERROR DEVICEID="cuebooth" MESSAGE="Device exists elsewhere"`)
+
+	select {
+	case <-sessionErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session survived a rejection issued after registration")
+	}
+	if err := sat.Press(0, true); !errors.Is(err, ErrSatelliteNotConnected) {
+		t.Errorf("Press after the session ended: got %v, want ErrSatelliteNotConnected", err)
+	}
+}
+
+// Companion writes ADD-DEVICE OK and the first key states back to back, so the
+// layout callback has to be raised from the same goroutine that dispatches them.
+// If it were raised elsewhere, key states processed before it would be
+// re-baselined away by a layout that logically preceded them — the consumer
+// drops keys the layout supersedes (protocol.md §10), so those buttons would go
+// blank until Companion happened to re-render them.
+func TestSatelliteLayoutPrecedesKeysInSameBurst(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{
+		DeviceID: "cuebooth", Rows: 1, Cols: 4, BitmapSize: 72,
+	})
+
+	const keyCount = 4
+	events := make(chan string, keyCount+1)
+	sat.OnLayout(func(int, int, int) { events <- "layout" })
+	sat.OnKey(func(SatelliteKey) { events <- "key" })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+
+	// One write, the way Companion sends it: the ack immediately followed by the
+	// surface. Any ordering seam shows up as a key arriving before the layout.
+	var burst strings.Builder
+	burst.WriteString(`ADD-DEVICE OK DEVICEID="cuebooth"` + "\n")
+	for i := 0; i < keyCount; i++ {
+		fmt.Fprintf(&burst, "KEY-STATE DEVICEID=cuebooth KEY=%d TYPE=BUTTON PRESSED=0 COLOR=#000000 BITMAP=QUJD\n", i)
+	}
+	if _, err := fake.conn.Write([]byte(burst.String())); err != nil {
+		t.Fatalf("burst write: %v", err)
+	}
+
+	for i := 0; i < keyCount+1; i++ {
+		select {
+		case ev := <-events:
+			if i == 0 && ev != "layout" {
+				t.Fatalf("event %d was %q; the layout must arrive before any key", i, ev)
+			}
+			if i > 0 && ev != "key" {
+				t.Fatalf("event %d was %q, want a key", i, ev)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out after %d of %d events", i, keyCount+1)
+		}
+	}
+}
+
+// A peer that disappears without closing the socket leaves the read blocked
+// indefinitely; the read deadline is what turns that into a reconnect.
+func TestSatelliteReadDeadlineEndsSilentSession(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	// Set before any session starts, so nothing reads it concurrently.
+	sat.readTimeout = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionErr := make(chan error, 1)
+	go func() { sessionErr <- sat.session(ctx) }()
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	// Say nothing further: a live Companion answers our PING well inside the
+	// window, so silence past it means the peer is gone.
+	select {
+	case err := <-sessionErr:
+		if err == nil {
+			t.Fatal("silent peer ended the session with a nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("session survived a silent peer past the read deadline")
+	}
+}
+
+// bufio's ReadString hands back the bytes it managed to read together with the
+// error, so a line the peer never terminated must not be parsed: a KEY-STATE cut
+// short mid-bitmap would otherwise be published under a fresh sequence and beat
+// the intact frame it replaced.
+func TestSatelliteDropsUnterminatedLine(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	keys := make(chan SatelliteKey, 4)
+	sat.OnKey(func(k SatelliteKey) { keys <- k })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	// A key state that stops partway through, then the socket goes away.
+	if _, err := fake.conn.Write([]byte("KEY-STATE DEVICEID=cuebooth KEY=7 TYPE=BUTTON PRESSED=0 BITMAP=QUJ")); err != nil {
+		t.Fatalf("partial write: %v", err)
+	}
+	fake.conn.Close()
+
+	select {
+	case k := <-keys:
+		t.Errorf("a truncated KEY-STATE was dispatched: %+v", k)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// A press Companion refuses is the operator's tap doing nothing, so it has to be
+// visible; the acknowledgement is the only place that failure appears.
+func TestSatelliteLogsRejectedPress(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	sat := NewSatellite(SatelliteConfig{DeviceID: "cuebooth"}, WithSatelliteLogger(logger))
+	sat.handleLine(`KEY-PRESS ERROR DEVICEID="cuebooth" MESSAGE="Device not found"`)
+
+	got := buf.String()
+	if !strings.Contains(got, "rejected a key press") || !strings.Contains(got, "Device not found") {
+		t.Errorf("rejected press was not logged at error level; got %q", got)
+	}
+
+	buf.Reset()
+	sat.handleLine(`KEY-PRESS OK`)
+	if buf.Len() != 0 {
+		t.Errorf("an accepted press logged an error: %q", buf.String())
+	}
+}
+
+func TestSatellitePingPong(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.writeLine(t, "PING token123")
+	if got := fake.readLine(t); got != "PONG token123" {
+		t.Errorf("PONG: got %q, want %q", got, "PONG token123")
+	}
+}
+
+func TestSatellitePress(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE
+	fake.ackRegister(t, "cuebooth")
+
+	// Press is refused until Companion has accepted the surface, so wait for the
+	// registration to be applied rather than racing it.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(5, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("Press still refused after registration: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := fake.readLine(t); got != "KEY-PRESS DEVICEID=cuebooth KEY=5 PRESSED=true" {
+		t.Errorf("KEY-PRESS down: got %q", got)
+	}
+	if err := sat.Press(5, false); err != nil {
+		t.Fatalf("Press up: %v", err)
+	}
+	if got := fake.readLine(t); got != "KEY-PRESS DEVICEID=cuebooth KEY=5 PRESSED=false" {
+		t.Errorf("KEY-PRESS up: got %q", got)
+	}
+}
+
+// Companion discards presses for a surface it has not registered, so the window
+// between connecting and being accepted must not look like a working surface:
+// otherwise a tap during a Companion restart is written, silently dropped, and
+// reported to the operator as sent.
+func TestSatellitePressRefusedBeforeRegistration(t *testing.T) {
+	sat, fake := newSatelliteWithPipe(t, SatelliteConfig{DeviceID: "cuebooth", Rows: 4, Cols: 8})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sat.Run(ctx)
+
+	_ = fake.readLine(t) // ADD-DEVICE sent; the socket is up but unacknowledged
+
+	if err := sat.Press(1, true); !errors.Is(err, ErrSatelliteNotConnected) {
+		t.Errorf("Press before ADD-DEVICE OK: got %v, want ErrSatelliteNotConnected", err)
+	}
+}
+
+func TestSatellitePressNotConnected(t *testing.T) {
+	// No Run(), so no connection is established.
+	sat := NewSatellite(SatelliteConfig{DeviceID: "cuebooth"})
+	if err := sat.Press(0, true); !errors.Is(err, ErrSatelliteNotConnected) {
+		t.Errorf("Press without connection: got %v, want ErrSatelliteNotConnected", err)
+	}
+}
+
+// TestSatelliteConcurrentPressDuringTeardown guards the send-on-closed-channel
+// race: many presses fire while the session tears down (ctx cancel). enqueue's
+// send and teardown's close share the lock, so this must not panic. Run under
+// -race in CI to catch a regression.
+func TestSatelliteConcurrentPressDuringTeardown(t *testing.T) {
+	srvEnd, devEnd := net.Pipe()
+	var once sync.Once
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var c net.Conn
+		err := errors.New("no more connections")
+		once.Do(func() { c, err = devEnd, nil })
+		return c, err
+	}
+	sat := NewSatellite(SatelliteConfig{DeviceID: "x"}, WithSatelliteDialer(dial))
+	// Accept the surface, then drain so the writer never blocks on the pipe.
+	// Without the acknowledgement Press stops at the registration gate and no
+	// press reaches enqueue, which is the whole point of the test.
+	go func() {
+		if _, err := srvEnd.Write([]byte(`ADD-DEVICE OK DEVICEID="x"` + "\n")); err != nil {
+			return
+		}
+		b := make([]byte, 4096)
+		for {
+			if _, err := srvEnd.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go sat.Run(ctx)
+
+	// Presses only reach enqueue once the surface is registered.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := sat.Press(0, true); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("surface never registered, so no press would reach enqueue: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_ = sat.Press(j%32, j%2 == 0)
+			}
+		}()
+	}
+	time.Sleep(10 * time.Millisecond) // let the session connect, then tear down mid-press
+	cancel()
+	wg.Wait()
+	srvEnd.Close()
+	devEnd.Close()
+	// Reaching here without a panic is the assertion.
+}
+
+func TestNewSatelliteDefaults(t *testing.T) {
+	sat := NewSatellite(SatelliteConfig{})
+	rows, cols, bm := sat.Layout()
+	if rows != DefaultSatRows || cols != DefaultSatCols || bm != DefaultSatBitmapSize {
+		t.Errorf("defaults: got %d×%d bm=%d", rows, cols, bm)
+	}
+	if sat.cfg.Addr != DefaultSatelliteAddr || sat.cfg.DeviceID != defaultDeviceID {
+		t.Errorf("addr/device defaults: got %q / %q", sat.cfg.Addr, sat.cfg.DeviceID)
+	}
+}

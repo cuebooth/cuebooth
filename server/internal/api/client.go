@@ -12,8 +12,12 @@ import (
 )
 
 const (
-	// sendBuffer bounds per-client outbound queue depth. A client that can't
-	// keep up past this is dropped and must reconnect (and re-snapshot).
+	// sendBuffer is the per-client outbound queue depth reserved for state and
+	// command traffic. A client that can't keep up past its whole buffer is
+	// dropped and must reconnect (and re-snapshot). Surface traffic is bursty in
+	// a way this number alone doesn't cover — Companion re-pushes every key on a
+	// page change — so the buffer a connection actually gets is this plus one
+	// full surface; see newClientConn.
 	sendBuffer = 64
 	// writeTimeout bounds a single frame write.
 	writeTimeout = 5 * time.Second
@@ -59,13 +63,25 @@ type clientConn struct {
 	closeCode   websocket.StatusCode
 	closeReason string
 	graceful    bool
+	// heldSurfaceKeys are surface keys this client has pressed-down but not yet
+	// released, so they can be released on disconnect (see releaseHeldSurfaceKeys).
+	heldSurfaceKeys map[int]bool
 }
 
 func newClientConn(s *Server, conn *websocket.Conn) *clientConn {
+	// Two full surfaces of headroom on top of sendBuffer: the connect replay can
+	// still be queued when a page change arrives, and that page change is another
+	// rows*cols frames through the non-blocking broadcast path. One surface of
+	// headroom would let the replay consume it and leave an ordinary page change
+	// to drop a client that is merely slow.
+	depth := sendBuffer
+	if s.surface != nil {
+		depth += 2 * s.surface.keyCount()
+	}
 	return &clientConn{
 		server: s,
 		conn:   conn,
-		send:   make(chan []byte, sendBuffer),
+		send:   make(chan []byte, depth),
 		done:   make(chan struct{}),
 		topics: allTopicsSet(),
 	}
@@ -91,6 +107,25 @@ func (c *clientConn) enqueue(frame []byte) {
 	case c.send <- frame:
 	default:
 		c.close(websocket.StatusPolicyViolation, "client send buffer full", false)
+	}
+}
+
+// enqueueBlocking queues a frame, blocking until there's room rather than
+// dropping the client on a full buffer. It reports false if the connection is
+// torn down before the frame is queued. Unlike enqueue (the slow-consumer drop
+// path used by the hub broadcast, which must never block while holding hub.mu),
+// this applies backpressure and so is ONLY safe to call from the connection's
+// own run goroutine — never from the hub. It is used for the initial surface
+// replay, an unbounded-by-config burst (rows*cols key frames) that would
+// otherwise overflow the send buffer on a large grid before the write loop
+// drains it. The wait is bounded: a stalled socket trips writeFrame's deadline,
+// which closes the connection and fires done.
+func (c *clientConn) enqueueBlocking(frame []byte) bool {
+	select {
+	case c.send <- frame:
+		return true
+	case <-c.done:
+		return false
 	}
 }
 
@@ -151,11 +186,13 @@ func (c *clientConn) scopePatch(patch map[string]any) map[string]any {
 	return state.FilterTopics(patch, c.topics)
 }
 
-// run drives the connection: it sends hello and the initial snapshot directly
-// (the only writes before the write loop starts, so there's a single writer),
-// registers with the hub, then runs the read/write/ping loops until the
-// connection ends. parentCtx is the server/request context; its cancellation
-// (server shutdown) triggers a close.
+// run drives the connection: it queues hello and the initial state snapshot,
+// registers with the hub, starts the read/write/ping loops, then replays the
+// current Companion surface under backpressure before serving the connection
+// until it ends. Everything queued before the write loop starts — hello, the
+// snapshot, and any broadcast racing the hub registration — has to fit the send
+// buffer, which is why the buffer is sized for a full surface. parentCtx is the
+// server/request context; its cancellation (server shutdown) triggers a close.
 func (c *clientConn) run(parentCtx context.Context) {
 	// dispatchCtx bounds command-handler work (e.g. Companion calls) to the
 	// connection's and the server's lifetime.
@@ -191,6 +228,22 @@ func (c *clientConn) run(parentCtx context.Context) {
 	wg.Add(2)
 	go func() { defer wg.Done(); c.writeLoop() }()
 	go func() { defer wg.Done(); c.pingLoop() }()
+
+	// The client has joined the hub (so no surface update is missed) and the
+	// write loop is now draining, so replay the current surface under
+	// backpressure: sendInitial enqueues a layout frame plus one per cached key
+	// (rows*cols frames — unbounded by config), which would overflow the send
+	// buffer and drop a healthy client on a large grid if queued before the loop
+	// ran. Each surface-key carries a monotonic seq, so the client reconciles
+	// these cached frames with any live updates that raced the join (protocol.md
+	// §10).
+	if c.server.surface != nil {
+		c.server.surface.sendInitial(c)
+	}
+	// Release any keys still held when the client goes away, so a press whose
+	// release never arrived (connection dropped mid-press) doesn't leave
+	// Companion latched with the button down.
+	defer c.releaseHeldSurfaceKeys()
 
 	c.readLoop(dispatchCtx) // blocks until the connection is closed
 	c.close(websocket.StatusNormalClosure, "connection closed", false)
@@ -333,6 +386,8 @@ func (c *clientConn) handle(ctx context.Context, data []byte) {
 		c.handleSubscription(data, false)
 	case typeGetState:
 		c.sendSnapshot(nil)
+	case typeSurfacePress:
+		c.handleSurfacePress(data)
 	case typePing:
 		var f pingFrame
 		if err := json.Unmarshal(data, &f); err != nil || f.ID == "" {
@@ -364,6 +419,74 @@ func (c *clientConn) handleCmd(ctx context.Context, data []byte) {
 	c.enqueue(mustMarshal(ackFrame{Type: typeAck, ID: f.ID}))
 	if mutate != nil {
 		c.server.applyState(mutate)
+	}
+}
+
+// handleSurfacePress routes a surface key press to Companion via the satellite.
+// A surface press has no id and is not ack'd/nak'd; a failure (e.g. the
+// satellite isn't connected) surfaces as a warn event so the operator sees it.
+func (c *clientConn) handleSurfacePress(data []byte) {
+	var f surfacePressFrame
+	if err := json.Unmarshal(data, &f); err != nil || f.Key == nil || f.Pressed == nil {
+		c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "surface-press requires key and pressed"}))
+		return
+	}
+	if c.server.surface == nil {
+		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "no Companion surface configured"}))
+		return
+	}
+	// Drop an out-of-range key before recording or forwarding it, so a client
+	// can't grow heldSurfaceKeys unbounded by spamming large indices (the held
+	// set is then bounded by the grid size).
+	if !c.server.surface.inBounds(*f.Key) {
+		return
+	}
+	// A hold is recorded on the client's intent, before delivery, so the
+	// disconnect fallback still releases a key whose press may or may not have
+	// reached Companion. A release is only forgotten once it has actually been
+	// delivered: dropping it first would leave a failed release both unsent and
+	// untracked, and Companion latched on a hold-to-act button.
+	if *f.Pressed {
+		c.trackSurfaceHold(*f.Key, true)
+	}
+	err := c.server.surface.press(*f.Key, *f.Pressed)
+	if err != nil {
+		c.server.logger.Warn("surface press failed", "key", *f.Key, "err", err)
+		c.enqueue(mustMarshal(eventFrame{Type: typeEvent, Severity: "warn", Source: "surface", Message: "Companion surface unavailable"}))
+		return
+	}
+	if !*f.Pressed {
+		c.trackSurfaceHold(*f.Key, false)
+	}
+}
+
+// trackSurfaceHold records (pressed) or clears (released) a surface key the
+// client is holding, for release on disconnect.
+func (c *clientConn) trackSurfaceHold(key int, pressed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pressed {
+		if c.heldSurfaceKeys == nil {
+			c.heldSurfaceKeys = make(map[int]bool)
+		}
+		c.heldSurfaceKeys[key] = true
+	} else {
+		delete(c.heldSurfaceKeys, key)
+	}
+}
+
+// releaseHeldSurfaceKeys releases any surface keys still held at disconnect, so a
+// press whose release never arrived doesn't leave Companion latched down.
+func (c *clientConn) releaseHeldSurfaceKeys() {
+	if c.server.surface == nil {
+		return
+	}
+	c.mu.Lock()
+	held := c.heldSurfaceKeys
+	c.heldSurfaceKeys = nil
+	c.mu.Unlock()
+	for key := range held {
+		_ = c.server.surface.press(key, false)
 	}
 }
 
@@ -401,6 +524,16 @@ func (c *clientConn) handleSubscription(data []byte, subscribe bool) {
 	}
 	c.mu.Unlock()
 	c.sendSnapshot(func() { c.server.hub.add(c) })
+
+	// The snapshot re-baselines state, but the surface isn't part of it: any
+	// surface-key broadcast while this client was out of the hub is gone for
+	// good. Replay it, so "every client receives the surface" (protocol.md §10)
+	// survives a subscription change. Safe to block here — handleSubscription
+	// runs on the connection's own read goroutine, which is what enqueueBlocking
+	// requires.
+	if c.server.surface != nil {
+		c.server.surface.sendInitial(c)
+	}
 }
 
 // sendSnapshot enqueues a `state` frame scoped to the client's current

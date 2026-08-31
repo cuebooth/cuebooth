@@ -38,6 +38,10 @@ type Server struct {
 	version    string
 	serverID   string
 
+	// surface relays the Companion Satellite button surface to clients; nil when
+	// no satellite is configured (see WithSatellite).
+	surface *surfaceManager
+
 	pollInterval time.Duration
 	sources      []state.Source
 
@@ -88,6 +92,18 @@ func WithPollInterval(d time.Duration) Option {
 // handlers (the Phase 1 default).
 func WithSources(sources ...state.Source) Option {
 	return func(s *Server) { s.sources = append(s.sources, sources...) }
+}
+
+// WithSatellite wires a Companion Satellite surface (typically
+// *companion.Satellite) so clients receive Companion's rendered button grid and
+// presses route back to it (protocol.md §10). Without it, the surface frames are
+// simply never sent.
+func WithSatellite(sat satelliteSurface) Option {
+	return func(s *Server) {
+		if sat != nil {
+			s.surface = newSurfaceManager(sat, s.hub)
+		}
+	}
 }
 
 // NewServer builds the API server. comp is the Companion button presser the
@@ -149,6 +165,9 @@ func (s *Server) Run(ctx context.Context) error {
 // their own listener and observe its address.
 func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	go s.poller.Run(ctx)
+	if s.surface != nil {
+		go s.surface.Run(ctx)
+	}
 
 	s.httpServer = &http.Server{
 		Handler:     s.mux,

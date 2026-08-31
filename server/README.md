@@ -52,6 +52,10 @@ server/
     └── cuebooth.example.toml   Copy to cuebooth.toml and edit
 ```
 
+## Building & running
+
+`make run` builds and runs against the example config; `make build` produces `bin/cuebooth-server`, and `make build-windows` cross-compiles the Windows binary. See [`../docs/development.md`](../docs/development.md) for prerequisites, configuration, and running the full stack.
+
 ## Distribution
 
 The server is intended to run as a Windows service on the production PC. Release builds will be packaged as a Windows installer via GitHub Actions (see [`../.github/workflows/README.md`](../.github/workflows/README.md)).

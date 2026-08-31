@@ -64,7 +64,24 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 		return err
 	}
 
-	srv := api.NewServer(cfg, comp, api.WithLogger(logger), api.WithVersion(version))
+	opts := []api.Option{api.WithLogger(logger), api.WithVersion(version)}
+
+	// Register a Companion Satellite surface unless disabled: clients render
+	// Companion's own buttons (auto-discovered, no client-side config) and
+	// presses route back to it (see docs/protocol.md §10).
+	if sc := cfg.Companion.Satellite; !sc.Disabled() {
+		sat := companion.NewSatellite(companion.SatelliteConfig{
+			Addr:       sc.Addr,
+			DeviceID:   sc.DeviceID,
+			Rows:       sc.Rows,
+			Cols:       sc.Cols,
+			BitmapSize: sc.BitmapSize,
+		}, companion.WithSatelliteLogger(logger))
+		opts = append(opts, api.WithSatellite(sat))
+		logger.Info("companion satellite surface enabled", "addr", sc.Addr)
+	}
+
+	srv := api.NewServer(cfg, comp, opts...)
 
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()

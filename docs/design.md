@@ -322,7 +322,7 @@ companion_button = "1/1/0"     # OR direct OSC:
 ### 3.5 Client Application (Flutter)
 
 A single app that consolidates:
-- Companion-style button grid (camera presets, mute toggles, scene switches).
+- The Companion button grid, rendered natively from Companion's own Satellite surface (see §3.6.1): every button — camera presets, mute toggles, scene switches, page navigation, live feedback — is whatever Companion is configured with, auto-discovered with nothing defined client-side.
 - OBS program/preview video.
 - Audio meters and fader controls for selected channels.
 - Stream chat (embedded Restream chat or direct API).
@@ -360,6 +360,14 @@ Client ↔ Server communication is over WebSocket with JSON messages. The server
 ```
 
 Audio meters are sent at a higher frequency (~10 Hz, configurable) on a separate WebSocket endpoint (`/ws/meters`) to avoid flooding the main state channel; see [`protocol.md`](protocol.md) §6 (*Meter channel*).
+
+#### 3.6.1 Companion button surface
+
+The operator's button grid is **not** re-implemented in the client. Instead the server registers itself with Bitfocus Companion's **Satellite API** as a remote surface — the same protocol a Stream Deck Satellite or Companion's web emulator uses — over TCP (Companion's default port 16622). Companion renders each configured button to a bitmap and streams it to the server; the server forwards those bitmaps to clients over the main `/ws` channel as `surface-key` frames, and the client renders them natively in a grid and sends taps back as `surface-press` frames, which the server relays to Companion as key presses.
+
+This means the button grid is exactly whatever Companion is configured with — labels, icons, colors, page navigation, and live feedback are all rendered by Companion — with **nothing defined or maintained client-side and no way for the grid to drift out of sync** with the Companion configuration. It directly realizes the original intent (running the Companion emulator alongside the operator) while keeping everything in one native app, leaving room for the higher-value native controls Companion handles poorly (velocity PTZ joystick, faders) to sit alongside the grid. The surface frames are specified in [`protocol.md`](protocol.md) §10; they deliberately bypass the revisioned `state`/`state-delta` machinery because button bitmaps are large and change often (clocks, feedback).
+
+The default surface is a Stream Deck XL layout (8 columns × 4 rows, 72px bitmaps), matching the operator's primary Companion page; it is configurable per deployment and disabled when no satellite endpoint is set. The server connects over TCP (16622); Companion 3.5+ also offers the same protocol over WebSocket (16623), and the transport is isolated so it can move there later if it proves advantageous.
 
 ### 3.7 Remote Access
 
@@ -506,7 +514,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-012** `server` — WebSocket API server: client connections, command routing, state broadcast
 - **CB-013** `server` — State aggregation: poll Companion button states, build unified state object for clients
 - **CB-014** `client` — Server connection screen: IP/port entry (with Tailscale IP support), connection status
-- **CB-015** `client` — Main control surface: button grid mapped to Companion actions (scenes, presets, mutes)
+- **CB-015** `server`+`client` — Main control surface: render Companion's own Satellite surface natively (auto-discovered button grid, no client-side button definitions). Server registers as a Companion Satellite device and relays button bitmaps/presses; client renders the grid. See §3.6.1 and protocol.md §10.
 - **CB-016** `client` — Stream/recording status indicators and start/stop controls
 - **CB-017** `client` — Restream chat integration (embedded webview or direct API)
 
@@ -551,6 +559,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-062** `client` — Program/preview video display (screenshot mode)
 - **CB-063** `server` — RTMP/SRT ingest from OBS, WebRTC relay to clients
 - **CB-064** `client` — Live video preview via WebRTC
+- **CB-065** `server`+`client` — OBS stream status metrics (uptime, bitrate, dropped frames) in the client status bar, via OBS WebSocket `GetStreamStatus` (depends on CB-060); split out of CB-016
 
 ### Phase 7 — Audio Automation
 - **CB-070** `server` — Feedback detection algorithm: meter analysis, frequency identification

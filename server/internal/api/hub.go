@@ -47,6 +47,17 @@ func (h *hub) broadcastDelta(rev int, patch map[string]any) {
 	}
 }
 
+// broadcast sends a pre-marshalled frame to every connected client,
+// unconditionally (not topic-scoped). Used for surface frames (protocol.md §10),
+// which every client receives — the surface is not a state topic.
+func (h *hub) broadcast(frame []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		c.enqueue(frame)
+	}
+}
+
 // closeAll requests teardown of every client connection with the given reason.
 // Used on graceful shutdown.
 func (h *hub) closeAll(reason string) {
