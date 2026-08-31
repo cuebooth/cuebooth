@@ -214,3 +214,65 @@ func TestOnlineSurfaceRegistersAndStreamsKeys(t *testing.T) {
 		t.Error("Run did not return after context cancellation")
 	}
 }
+
+// Companion renders at the BITMAPS size we advertise rather than at any physical
+// device's, which is what makes the bitmap_size knob — and the 256 ceiling
+// config.maxSatelliteBitmapSize puts on it — mean anything. The test above pins
+// 72px; this pins that ceiling, since a client sizes its RGB decode from the
+// surface-layout and a bitmap that does not match decodes to a crop of the
+// button or, if it is short, to nothing at all.
+func TestOnlineBitmapMatchesTheAdvertisedSize(t *testing.T) {
+	addr := liveAddr(t)
+	const rows, cols, size = 2, 2, 256
+	col := newCollector(rows * cols)
+
+	sat := NewSatellite(SatelliteConfig{
+		Addr:       addr,
+		DeviceID:   "cuebooth-livetest-bitmap",
+		Rows:       rows,
+		Cols:       cols,
+		BitmapSize: size,
+	})
+	sat.OnLayout(col.onLayout)
+	sat.OnKey(col.onKey)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); sat.Run(ctx) }()
+
+	select {
+	case <-col.ready:
+	case <-time.After(60 * time.Second):
+		keys, _, _, _, _ := col.snapshot()
+		t.Fatalf("companion %s at %s: got %d/%d keys before timeout",
+			os.Getenv("COMPANION_VERSION"), addr, len(keys), rows*cols)
+	}
+
+	keys, _, _, gotSize, _ := col.snapshot()
+	if gotSize != size {
+		t.Errorf("layout reports bitmap size %d, want %d", gotSize, size)
+	}
+	for idx, k := range keys {
+		if k.BitmapBase64 == "" {
+			t.Errorf("key %d: no bitmap", idx)
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(k.BitmapBase64)
+		if err != nil {
+			t.Errorf("key %d: bitmap not base64: %v", idx, err)
+			continue
+		}
+		if len(raw) != size*size*3 {
+			t.Errorf("key %d: bitmap %d bytes, want %d (%dx%d RGB)",
+				idx, len(raw), size*size*3, size, size)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Error("Run did not return after context cancellation")
+	}
+}

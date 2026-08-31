@@ -23,7 +23,7 @@ addr = "localhost:16622" # Companion satellite endpoint; "off" to disable the su
 device_id = "cuebooth"   # stable surface id (Companion keys per-surface settings by it)
 rows = 4                 # grid dimensions (default 4×8 — a Stream Deck XL layout; max 64 each)
 cols = 8
-bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256)
+bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256, or 0 for the default)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Presets

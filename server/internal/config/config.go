@@ -71,10 +71,12 @@ type SatelliteConfig struct {
 // mistyped value from becoming a huge per-client buffer.
 const maxSatelliteDimension = 64
 
-// maxSatelliteBitmapSize bounds the button bitmap edge length, for the same
-// reason: a key frame carries bitmap_size² × 3 bytes of pixel data, so the edge
-// length squares into the per-client buffer that rows and cols multiply into.
-// The largest bitmap any Companion surface renders is 120px.
+// maxSatelliteBitmapSize bounds the button bitmap edge length. Companion renders
+// at whatever size we ask for rather than clamping to a physical device's, so
+// this bound is ours alone to set: a key frame carries bitmap_size² × 3 bytes of
+// pixel data, and the edge length squares into the per-client buffer that rows
+// and cols multiply into. 256 clears the 120px of the largest physical surface
+// with room to spare for a high-DPI client.
 const maxSatelliteBitmapSize = 256
 
 // Disabled reports whether the satellite surface is turned off by config.
