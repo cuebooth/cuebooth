@@ -456,6 +456,8 @@ One key's current rendered state. Sent for every cached key right after `surface
 
 **Ordering.** The cached `surface-key` frames sent on connect can race a concurrent live update for the same key. Clients MUST apply updates per key in `seq` order — last-write-wins — and ignore any frame whose `seq` is not newer than the last applied for that key. `seq` is a single surface-wide counter, not per-key.
 
+A `surface-key` can therefore arrive before the first `surface-layout`, when a live update overtakes the replay a connecting client is about to be sent. Its `seq` is never above that layout's, so the layout supersedes it and the replay behind the layout resends the key: a client that has not yet sized its grid may discard such a frame outright.
+
 **Coalescing.** `seq` increases but is **not** contiguous: a client MUST NOT assume it will see every value, or treat a gap as a lost frame. When a client is not draining as fast as Companion renders, the server replaces the frame it still has queued for a key with the newer one rather than sending both, and drops the frames a `surface-layout` supersedes. What arrives is always the newest render of each key, which is the only one a last-write-wins client would have kept, and the surface backlog cannot outgrow one frame per key.
 
 ### `surface-press` (client → server)

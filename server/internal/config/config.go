@@ -71,6 +71,12 @@ type SatelliteConfig struct {
 // mistyped value from becoming a huge per-client buffer.
 const maxSatelliteDimension = 64
 
+// maxSatelliteBitmapSize bounds the button bitmap edge length, for the same
+// reason: a key frame carries bitmap_size² × 3 bytes of pixel data, so the edge
+// length squares into the per-client buffer that rows and cols multiply into.
+// The largest bitmap any Companion surface renders is 120px.
+const maxSatelliteBitmapSize = 256
+
 // Disabled reports whether the satellite surface is turned off by config.
 func (s SatelliteConfig) Disabled() bool {
 	switch strings.ToLower(strings.TrimSpace(s.Addr)) {
@@ -192,6 +198,9 @@ func (s SatelliteConfig) validate() error {
 	// renders). Reject it; 0 selects the default.
 	if s.BitmapSize < 0 || (s.BitmapSize > 0 && s.BitmapSize < 5) {
 		return fmt.Errorf("companion.satellite.bitmap_size must be 0 (default) or >= 5")
+	}
+	if s.BitmapSize > maxSatelliteBitmapSize {
+		return fmt.Errorf("companion.satellite.bitmap_size must be at most %d", maxSatelliteBitmapSize)
 	}
 	return nil
 }
