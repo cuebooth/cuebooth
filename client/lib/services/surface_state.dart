@@ -76,8 +76,9 @@ class SurfaceState extends ChangeNotifier {
   /// (re)registration.
   ///
   /// [seq] is the surface sequence the layout was taken at. Only keys at or
-  /// below it are dropped: a key update can overtake the layout on the wire, and
-  /// discarding it would let the older cached frame replayed behind it win.
+  /// below it are dropped: a key above it is a render the layout does not cover,
+  /// and discarding it would leave the button showing a state Companion has
+  /// already moved on from.
   void applyLayout(int rows, int cols, int bitmapSize, int seq) {
     _rows = rows;
     _cols = cols;

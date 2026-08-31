@@ -206,6 +206,27 @@ func TestSurfaceManagerClearRebaselinesClients(t *testing.T) {
 	}
 }
 
+// The clear has to carry the sequence it was taken at, or the send queue cannot
+// tell which queued renders it supersedes and a client that hasn't drained yet
+// still receives — and paints — the buttons Companion just blanked.
+func TestSurfaceManagerClearDropsRendersStillQueued(t *testing.T) {
+	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
+	hub := newHub()
+	newSurfaceManager(sat, hub)
+
+	c := newTestClient()
+	hub.add(c)
+	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
+	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
+
+	sat.onClear() // nothing has drained yet: both renders are still queued
+
+	frames := drainFrames(c)
+	if len(frames) != 1 || frames[0]["type"] != typeSurfaceLayout {
+		t.Fatalf("expected the clear to leave only a layout queued, got %+v", frames)
+	}
+}
+
 func TestSurfaceManagerPress(t *testing.T) {
 	sat := &fakeSat{rows: 4, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())
