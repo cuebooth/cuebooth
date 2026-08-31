@@ -242,10 +242,10 @@ func TestSurfaceManagerInBounds(t *testing.T) {
 	}
 }
 
-func TestSurfaceManagerSendInitialLargeGridDoesNotDrop(t *testing.T) {
-	// A surface far larger than sendBuffer must replay in full: surface frames
-	// are not counted against the state backlog, so the replay can neither
-	// overflow it nor drop a healthy client. 8x8 = 64 keys → 65 frames.
+func TestSurfaceManagerSendInitialReplaysALargeGrid(t *testing.T) {
+	// A surface far larger than sendBuffer replays in full: surface frames are
+	// not counted against the state backlog, so the replay can neither overflow
+	// it nor drop a healthy client. 8x8 = 64 keys → 65 frames.
 	sat := &fakeSat{rows: 8, cols: 8, bm: 72}
 	m := newSurfaceManager(sat, newHub())
 	for i := 0; i < 64; i++ {

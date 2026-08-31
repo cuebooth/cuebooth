@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,20 +101,18 @@ func TestSendQueueLayoutSupersedesTheKeysItCovers(t *testing.T) {
 	}
 }
 
-// The counterpart, and the guarantee the layout's seq exists for
-// (protocol.md §10): the replay snapshots the cache and then enqueues, so a live
-// update can reach the queue after the layout it is newer than. Dropping it
-// would let the older replayed frame win and leave the button showing a state
-// Companion has already moved on from.
+// The counterpart, and the rule the layout's seq exists for (protocol.md §10): a
+// key above the layout's sequence is a render the layout does not cover, so it
+// survives, and an older copy of that key loses to it rather than overwriting
+// it. The queue enforces this on its own terms — its callers currently keep
+// seq order, but the client's rule is stated over sequences, not arrivals.
 func TestSendQueueLayoutKeepsKeysNewerThanItself(t *testing.T) {
 	q := newSendQueue()
-	q.pushSurfaceKey(1, 7, []byte("k1-live")) // broadcast after the snapshot below
+	q.pushSurfaceKey(1, 7, []byte("k1-live"))
 	q.pushSurfaceKey(2, 8, []byte("k2-live"))
-	q.pushSurfaceLayout(5, []byte("layout"))   // snapshotted at seq 5, enqueued later
-	q.pushSurfaceKey(1, 3, []byte("k1-cache")) // the replay's stale copy of key 1
+	q.pushSurfaceLayout(5, []byte("layout"))
+	q.pushSurfaceKey(1, 3, []byte("k1-stale"))
 
-	// The layout keeps both live frames, and the replay's older copy of key 1
-	// loses to the live one rather than overwriting it.
 	if got, want := strings.Join(drainQueue(q), ","), "k1-live,k2-live,layout"; got != want {
 		t.Errorf("frames = %q, want %q", got, want)
 	}
@@ -260,8 +260,8 @@ func TestSendQueuePokeIsNonBlocking(t *testing.T) {
 // stalledClient is a clientConn with a real socket (so close() can tear it down)
 // whose write loop is deliberately never started, which is the state a client on
 // a congested link is in: frames accumulate in the queue with nothing draining
-// them.
-func stalledClient(t *testing.T, srv *Server) *clientConn {
+// them. The peer end is returned so a test can read what was actually written.
+func stalledClient(t *testing.T, srv *Server) (*clientConn, *websocket.Conn) {
 	t.Helper()
 	conns := make(chan *websocket.Conn, 1)
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +283,7 @@ func stalledClient(t *testing.T, srv *Server) *clientConn {
 
 	server := <-conns
 	t.Cleanup(func() { server.CloseNow() })
-	return &clientConn{server: srv, conn: server, send: newSendQueue(), done: make(chan struct{}), topics: allTopicsSet()}
+	return &clientConn{server: srv, conn: server, send: newSendQueue(), done: make(chan struct{}), topics: allTopicsSet()}, client
 }
 
 func isClosed(c *clientConn) bool {
@@ -305,7 +305,7 @@ func TestSurfaceFloodDoesNotDropASlowClient(t *testing.T) {
 	hub := newHub()
 	newSurfaceManager(sat, hub)
 
-	c := stalledClient(t, &Server{})
+	c, _ := stalledClient(t, &Server{})
 	hub.add(c)
 
 	// Fifty page changes' worth of re-renders with nothing draining them.
@@ -332,7 +332,7 @@ func TestSurfaceFloodDoesNotDropASlowClient(t *testing.T) {
 // The drop policy still has to apply to state traffic, where every frame counts
 // and falling behind can only be answered by re-snapshotting.
 func TestStateFloodStillDropsASlowClient(t *testing.T) {
-	c := stalledClient(t, &Server{})
+	c, _ := stalledClient(t, &Server{})
 	for range sendBuffer + 1 {
 		c.enqueue([]byte(`{"type":"state-delta"}`))
 	}
@@ -343,5 +343,37 @@ func TestStateFloodStillDropsASlowClient(t *testing.T) {
 	if code != websocket.StatusPolicyViolation || reason != "client send buffer full" {
 		t.Errorf("close = %v %q, want %v %q", code, reason,
 			websocket.StatusPolicyViolation, "client send buffer full")
+	}
+}
+
+// A frame queued as the connection is torn down still has to reach the peer —
+// protocol.md §2 requires the `error` frame for a malformed client frame to be
+// delivered before the close handshake. The write loop reaches this drain only
+// when a frame is queued between its last empty pop and its select on done, a
+// window no test can schedule, so the drain is exercised directly.
+func TestFlushRemainingDeliversFramesQueuedAtClose(t *testing.T) {
+	c, peer := stalledClient(t, &Server{})
+	c.enqueue(mustMarshal(errorFrame{Type: typeError, Code: codeProtocol, Message: "malformed JSON frame"}))
+	c.send.pushSurfaceKey(0, 1, []byte(`{"type":"surface-key","key":0}`))
+
+	c.flushRemaining()
+
+	for _, want := range []string{typeError, typeSurfaceKey} {
+		rctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		_, data, err := peer.Read(rctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("reading the %s frame: %v", want, err)
+		}
+		var f map[string]any
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("unmarshal %q: %v", data, err)
+		}
+		if f["type"] != want {
+			t.Errorf("frame type = %v, want %s", f["type"], want)
+		}
+	}
+	if got := c.send.depth(); got != 0 {
+		t.Errorf("queue depth after the flush = %d, want 0", got)
 	}
 }

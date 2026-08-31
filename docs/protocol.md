@@ -422,7 +422,7 @@ Announces the surface grid dimensions. Sent after the initial `state` snapshot, 
 | `seq` | int | The surface sequence this layout was taken at. Drop held keys whose last applied `seq` is **≤** this value; keep anything newer. |
 | `bitmap_size` | int | Button bitmap edge length in pixels (square). Always positive (the server normalizes it to a default). |
 
-A client must not drop keys newer than `seq`. The server snapshots its cache and then enqueues, so a `surface-key` can overtake the `surface-layout` behind which it was cached; discarding it would let the older replayed frame win and leave the button showing a state Companion has already moved on from.
+A client must not drop keys newer than `seq`. A `surface-key` above the layout's sequence is a render the layout does not cover, and discarding it would leave the button showing a state Companion has already moved on from — the client would fall back to whatever the server replays behind the layout, which is older.
 
 ### `surface-key` (server → client)
 

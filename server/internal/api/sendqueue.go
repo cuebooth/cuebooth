@@ -101,9 +101,8 @@ func (q *sendQueue) pushSurfaceKey(key, seq int, data []byte) {
 
 // pushSurfaceLayout queues a surface re-baseline taken at surface sequence seq,
 // dropping the queued key frames it supersedes: those at or below seq, which is
-// the client's own rule (protocol.md §10). A key newer than seq must survive —
-// a live update can overtake the layout behind which its key was cached, and
-// dropping it would let the older replayed frame win.
+// the client's own rule (protocol.md §10). A key above seq is a render the
+// layout does not cover and survives it.
 //
 // Of two layouts only the newer is kept, the incoming one on a tie. Ties are the
 // ordinary case, not a corner: the sequence advances only on key updates, so a
