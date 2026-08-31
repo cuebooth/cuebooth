@@ -105,15 +105,15 @@ func (q *sendQueue) pushSurfaceKey(key, seq int, data []byte) {
 // a live update can overtake the layout behind which its key was cached, and
 // dropping it would let the older replayed frame win.
 //
-// Of two layouts only the newer is kept, the incoming one on a tie (the sequence
-// advances on key updates, so two layouts can share one while carrying different
-// dimensions). Reports false when the incoming layout lost, which tells the
-// replay its snapshot has been superseded.
-func (q *sendQueue) pushSurfaceLayout(seq int, data []byte) bool {
+// Of two layouts only the newer is kept, the incoming one on a tie. Ties are the
+// ordinary case, not a corner: the sequence advances only on key updates, so a
+// re-baseline broadcast while a replay is in flight carries the same one, and
+// the later push is the current view of the surface.
+func (q *sendQueue) pushSurfaceLayout(seq int, data []byte) {
 	q.mu.Lock()
 	if q.layout != nil && q.layout.Value.(queuedFrame).seq > seq {
 		q.mu.Unlock()
-		return false
+		return
 	}
 	for key, e := range q.keys {
 		if e.Value.(queuedFrame).seq <= seq {
@@ -127,7 +127,6 @@ func (q *sendQueue) pushSurfaceLayout(seq int, data []byte) bool {
 	q.layout = q.frames.PushBack(queuedFrame{data: data, kind: classSurfaceLayout, seq: seq})
 	q.mu.Unlock()
 	q.poke()
-	return true
 }
 
 // pop removes and returns the oldest queued frame, reporting false if the queue

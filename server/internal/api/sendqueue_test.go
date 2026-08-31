@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,6 +79,10 @@ func TestSendQueueLayoutSupersedesTheKeysItCovers(t *testing.T) {
 	q.pushSurfaceKey(1, 2, []byte("k1"))
 	q.pushOther([]byte("a"))
 	q.pushSurfaceKey(2, 3, []byte("k2"))
+	// Key 3 sits exactly at the incoming layout's sequence. That is the ordinary
+	// production case — a broadcast layout carries m.seq and so does the newest
+	// key queued behind it — and it is the boundary the whole rule turns on.
+	q.pushSurfaceKey(3, 4, []byte("k3"))
 	q.pushSurfaceLayout(4, []byte("layout-new"))
 
 	// Only the state frame and the newest layout survive; the state frame keeps
@@ -113,44 +118,71 @@ func TestSendQueueLayoutKeepsKeysNewerThanItself(t *testing.T) {
 	}
 }
 
-// An older layout arriving behind a newer one is itself superseded — the replay
-// can snapshot a layout before a re-registration broadcasts a fresher one.
+// An older layout arriving behind a newer one is itself superseded.
 func TestSendQueueOlderLayoutIsDropped(t *testing.T) {
 	q := newSendQueue()
-	if !q.pushSurfaceLayout(9, []byte("layout-new")) {
-		t.Fatal("the first layout should be queued")
-	}
-	if q.pushSurfaceLayout(5, []byte("layout-stale")) {
-		t.Error("a layout older than the queued one should report that it was dropped")
-	}
+	q.pushSurfaceLayout(9, []byte("layout-new"))
+	q.pushSurfaceLayout(5, []byte("layout-stale"))
 	if got, want := strings.Join(drainQueue(q), ","), "layout-new"; got != want {
 		t.Errorf("frames = %q, want %q", got, want)
 	}
 }
 
-// The replay reads that report: if a re-registration overtook the snapshot it
-// took, every key in that snapshot is older than the re-baseline now queued, and
-// painting them would show a grid Companion has already moved on from.
-func TestSendInitialSkipsKeysWhenItsLayoutIsSuperseded(t *testing.T) {
-	sat := &fakeSat{rows: 2, cols: 2, bm: 72}
-	hub := newHub()
-	m := newSurfaceManager(sat, hub)
-	sat.onKey(companion.SatelliteKey{Key: 0, Type: "BUTTON", BitmapBase64: "AA=="})
-	sat.onKey(companion.SatelliteKey{Key: 1, Type: "BUTTON", BitmapBase64: "BB=="})
-
-	// The client already holds a re-baseline newer than anything the manager
-	// cached, as it would after a re-registration raced the replay.
-	c := newTestClient()
-	c.enqueueSurfaceLayout(99, []byte(`{"type":"surface-layout","seq":99}`))
-
-	m.sendInitial(c)
-
-	frames := drainFrames(c)
-	if len(frames) != 1 {
-		t.Fatalf("got %d frames, want only the newer layout: %+v", len(frames), frames)
+// Two layouts at the same sequence is the ordinary case, not a corner: the
+// sequence advances only on key updates, so onLayout and onClear broadcast at
+// whatever it already was. The later push is the current view of the surface, so
+// it must win — pinning the direction, which a >= comparison would reverse.
+func TestSendQueueLayoutTieKeepsTheIncomingOne(t *testing.T) {
+	q := newSendQueue()
+	q.pushSurfaceLayout(5, []byte("layout-first"))
+	q.pushSurfaceLayout(5, []byte("layout-second"))
+	if got, want := strings.Join(drainQueue(q), ","), "layout-second"; got != want {
+		t.Errorf("frames = %q, want %q", got, want)
 	}
-	if got := frames[0]["seq"].(float64); got != 99 {
-		t.Errorf("surviving layout seq = %v, want 99", got)
+}
+
+// A KEYS-CLEAR landing mid-replay must not leave the replay's remaining keys
+// queued behind the layout that blanks them: the client drops its keys on a
+// layout and applies whatever follows, so those frames would repaint the page
+// Companion just cleared — and after a genuine blank nothing re-pushes to
+// correct it. The operator taps a button that is no longer there.
+func TestSendInitialIsAtomicAgainstAReBaseline(t *testing.T) {
+	const rows, cols = 8, 16 // 128 keys: a replay long enough to interleave
+	for range 30 {
+		sat := &fakeSat{rows: rows, cols: cols, bm: 72}
+		hub := newHub()
+		m := newSurfaceManager(sat, hub)
+		for k := range rows * cols {
+			sat.onKey(companion.SatelliteKey{Key: k, Type: "BUTTON", BitmapBase64: "AA=="})
+		}
+		c := newTestClient()
+		hub.add(c)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); m.sendInitial(c) }()
+		go func() { defer wg.Done(); sat.onClear() }()
+		wg.Wait()
+
+		frames := drainFrames(c)
+		lastLayout, layoutSeq := -1, 0
+		for i, f := range frames {
+			if f["type"] == typeSurfaceLayout {
+				lastLayout, layoutSeq = i, int(f["seq"].(float64))
+			}
+		}
+		if lastLayout < 0 {
+			t.Fatal("no layout was delivered")
+		}
+		for _, f := range frames[lastLayout+1:] {
+			if f["type"] != typeSurfaceKey {
+				continue
+			}
+			if seq := int(f["seq"].(float64)); seq <= layoutSeq {
+				t.Fatalf("key %v at seq %d follows a layout at seq %d that supersedes it",
+					f["key"], seq, layoutSeq)
+			}
+		}
 	}
 }
 

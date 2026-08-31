@@ -60,12 +60,12 @@ func (h *hub) broadcastSurfaceKey(key, seq int, frame []byte) {
 }
 
 // broadcastSurfaceLayout sends a surface re-baseline to every connected client,
-// discarding the key frames each still has queued (Companion re-pushes them).
+// discarding the queued key frames it supersedes.
 func (h *hub) broadcastSurfaceLayout(seq int, frame []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
-		_ = c.enqueueSurfaceLayout(seq, frame)
+		c.enqueueSurfaceLayout(seq, frame)
 	}
 }
 

@@ -108,11 +108,10 @@ func (c *clientConn) enqueueSurfaceKey(key, seq int, frame []byte) {
 }
 
 // enqueueSurfaceLayout queues a surface re-baseline, discarding the key frames
-// it supersedes. It reports false if a newer re-baseline is already queued, so
-// this one was dropped. Like enqueueSurfaceKey it never fails the connection and
-// must not block.
-func (c *clientConn) enqueueSurfaceLayout(seq int, frame []byte) bool {
-	return c.send.pushSurfaceLayout(seq, frame)
+// it supersedes. Like enqueueSurfaceKey it never fails the connection and must
+// not block.
+func (c *clientConn) enqueueSurfaceLayout(seq int, frame []byte) {
+	c.send.pushSurfaceLayout(seq, frame)
 }
 
 // close requests teardown with a close code and reason. The first call wins and
