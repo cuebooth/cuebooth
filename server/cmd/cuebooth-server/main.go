@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/cuebooth/cuebooth/server/internal/api"
+	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 )
@@ -79,6 +80,23 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 		}, companion.WithSatelliteLogger(logger))
 		opts = append(opts, api.WithSatellite(sat))
 		logger.Info("companion satellite surface enabled", "addr", sc.Addr)
+	}
+
+	// Stream chat, when configured. The server holds the platform credential so
+	// the client never does (see internal/chat); config validation has already
+	// established that an enabled provider is one we implement.
+	if cc := cfg.Chat; !cc.Disabled() {
+		provider, err := chat.NewRestream(chat.RestreamConfig{
+			ClientID:     cc.ClientID,
+			ClientSecret: cc.ClientSecret,
+			RedirectURI:  cc.RedirectURI(),
+			TokenFile:    cc.TokenFile,
+		}, chat.WithRestreamLogger(logger))
+		if err != nil {
+			return err
+		}
+		opts = append(opts, api.WithChat(provider))
+		logger.Info("stream chat enabled", "provider", provider.Name(), "authorized", provider.Authorized())
 	}
 
 	srv := api.NewServer(cfg, comp, opts...)

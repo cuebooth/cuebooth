@@ -26,6 +26,26 @@ cols = 8
 bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256, or 0 for the default)
 
 # ─────────────────────────────────────────────────────────────────────────
+# Stream chat
+#
+# Surfaces the stream's chat inside the client. The server holds the platform
+# credential and mints a chat URL on demand — Restream's OAuth has no PKCE and
+# its token exchange needs a client secret, which a distributed app can't keep.
+# Omit the section (or set provider = "off") to disable the panel.
+#
+# Register an application at https://developers.restream.io/apps/ with the
+# chat.read scope, and add "<public_url>/chat/auth/callback" as a redirect URI.
+# Then browse to <public_url>/chat/auth/start once to authorize; the credential
+# is stored in token_file and refreshed automatically from then on.
+
+# [chat]
+# provider = "restream"
+# client_id = "..."
+# client_secret = "..."             # or set CUEBOOTH_CHAT_CLIENT_SECRET instead
+# public_url = "http://production-pc:7878"  # how clients reach this server
+# token_file = "chat-token.json"    # rotating credential; state, not config
+
+# ─────────────────────────────────────────────────────────────────────────
 # Presets
 #
 # Map the logical names used in slide rules and by the client to a concrete

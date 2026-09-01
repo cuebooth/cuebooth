@@ -4,10 +4,11 @@
 **Transport:** WebSocket, JSON text frames
 **Endpoint:** `/ws` on the server's HTTP listener
 **Meter endpoint:** `/ws/meters` (see [Meter channel](#6-meter-channel))
+**Chat endpoints:** `/chat/*`, plain HTTP on the same listener (see [Chat endpoints](#11-chat-endpoints))
 
 This document is the normative spec for the wire protocol between a CueBooth client (typically the Flutter app) and the cuebooth-server (the Go orchestrator). Server and client implementations should be developed against this spec rather than against each other.
 
-> **Scope:** this covers only the client↔server WebSocket protocol. The PowerPoint sidecar reaches the server over a separate local named pipe (newline-delimited JSON); that channel's payload contract is formalized in CB-041, not here.
+> **Scope:** this covers the client↔server WebSocket protocol, plus the small HTTP surface in §11 that chat needs because its authorization is a browser round-trip. The PowerPoint sidecar reaches the server over a separate local named pipe (newline-delimited JSON); that channel's payload contract is formalized in CB-041, not here.
 
 The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*. This document fills in the details that §3.6 only sketches.
 
@@ -27,12 +28,12 @@ v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + T
 
 ### Versioning
 
-The `hello` frame carries a `proto` field naming the protocol version. The document's "v1" label denotes this protocol's **major** version; the current on-wire `proto` string is `1.0` — so "v1" and `proto: "1.0"` refer to the same protocol. The `proto` string is `MAJOR.MINOR`, where both components are non-negative integers with no leading zeros; the major version is the substring before the first `.`, compared as an integer. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
+The `hello` frame carries a `proto` field naming the protocol version. The document's "v1" label denotes this protocol's **major** version; the current on-wire `proto` string is `1.1` — so "v1" and `proto: "1.1"` refer to the same protocol. The `proto` string is `MAJOR.MINOR`, where both components are non-negative integers with no leading zeros; the major version is the substring before the first `.`, compared as an integer. Clients MUST refuse to operate against a server whose `proto` differs in major version. Minor-version bumps are additive and backwards-compatible (new optional fields, new `type` values clients can safely ignore).
 
 ```json
 {
   "type": "hello",
-  "proto": "1.0",
+  "proto": "1.1",
   "server_version": "0.1.0",
   "server_id": "production-pc"
 }
@@ -170,7 +171,11 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
   },
   "stream": {
     "platform": "restream",
-    "viewers": 12
+    "viewers": 12,
+    "chat": {
+      "provider": "restream",
+      "status": "ready"
+    }
   }
 }
 ```
@@ -178,6 +183,8 @@ Sent once after `hello`, again whenever a client changes its subscription (`subs
 `rev` is a monotonically increasing revision number assigned by the server. It increments on every state change. Clients use it to order updates and detect dropped frames. Every `state` snapshot (including those returned by `get_state` or a subscription change) carries the current `rev`; clients resume gap detection from that value.
 
 Camera `pan`/`tilt` are absolute normalized positions in −1.0..1.0 and `zoom` in 0.0..1.0 — the same scale as the `position` command (see [§5](#5-actions-catalog)), so a client can read state and command the camera back to it. The server maps these to/from device-native units (e.g. VISCA raw) per camera configuration. In single-camera deployments the lone camera is keyed `main` (as in the example above), so a client that omits `camera_id` on its commands reads and writes that one camera; multi-camera deployments key each camera by its `camera_id`.
+
+`stream.chat` describes the chat panel (added in `1.1`). `status` is `ready` when the server can produce a chat URL, or `needs_auth` when an operator must authorize the platform first — the client shows a connect prompt and sends them to `/chat/auth/start` (see [§11](#11-chat-endpoints)). The whole `chat` object is **absent** when no chat provider is configured, which a client displays differently from a provider that is merely unauthorized. The chat URL itself is deliberately not carried here: it embeds a credential and would be re-broadcast to every subscriber each time the server refreshed it, so clients fetch one from `/chat/url` when they need it.
 
 `preset` holds the name of the last recalled preset. Once a subsequent `position`, `pan_tilt`, or `zoom` command moves the camera off it, the server sets `preset` to `""` (empty string = no active preset). It is never set to `null` — `null` is delete-only under the delta rules (see [`state-delta`](#state-delta--partial-update)), so the empty string is the off-preset sentinel.
 
@@ -469,3 +476,49 @@ Presses (or releases) a surface key. A normal tap is a press (`true`) immediatel
 ```
 
 > **Implementation note.** The server speaks the Satellite protocol over TCP (Companion's default port 16622). The surface grid defaults to a Stream Deck XL layout (8 columns × 4 rows, 72px bitmaps), configurable per deployment, and is disabled if no satellite endpoint is configured.
+
+---
+
+## 11. Chat endpoints
+
+Chat is the one part of the client↔server surface that is plain HTTP rather than WebSocket frames. Both ends of the platform's OAuth handshake are browser navigations, and the minted chat URL embeds a credential that has no business being broadcast to every subscriber in a state snapshot.
+
+**The server holds the platform credential; the client never sees one.** Restream's OAuth offers no PKCE and its token exchange requires a client secret, which an application distributed to operators cannot keep. Restream's own documentation directs integrations to keep that secret off user devices and to refresh through a proxy the application provides — the server is that proxy.
+
+These routes exist only when a chat provider is configured. A deployment without one answers `404`, rather than exposing endpoints that could only fail.
+
+### `GET /chat/url`
+
+Mints a chat URL for the client to display. Clients call this each time they need one and MUST NOT cache it: the token inside is the platform's to expire, and minting another is a server-side token refresh rather than an operator re-authorizing.
+
+`200` — a URL to display:
+
+```json
+{ "url": "https://chat.restream.io/embed?token=..." }
+```
+
+`409` — the provider holds no usable credential:
+
+```json
+{ "status": "needs_auth", "auth_start": "/chat/auth/start" }
+```
+
+The response names the *path* that begins authorization rather than a ready-made login URL, because minting one creates server-side state; a client polling an unauthorized server would otherwise leave a pending authorization behind on every request.
+
+`502` — the provider is authorized but the platform did not answer.
+
+### `GET /chat/auth/start`
+
+Redirects (`302`) the operator's browser to the platform's authorize dialog, carrying a single-use `state` parameter that the callback must echo back.
+
+### `GET /chat/auth/callback`
+
+Where the platform redirects once the operator approves or declines. It renders an HTML page, not JSON, because a browser lands on it.
+
+On success the server persists the credential and republishes `stream.chat.status` as `ready`, so a client showing the connect prompt switches over without reconnecting. A callback carrying no `code` parameter is how the platform reports that the operator declined.
+
+> **Implementation note.** Restream rotates the refresh token on every use — the previous pair is invalidated the moment a refresh succeeds — so the server persists each newly issued pair immediately and serializes refreshes. The stored credential is state, not configuration: losing the file costs an operator one re-authorization.
+
+### Not in this protocol: sending messages
+
+Chat is display-only. Restream's chat WebSocket is documented as one-directional ("the server will ignore any incoming messages") and their REST surface exposes no send endpoint — the `reply_*` and `relay_*` actions report replies composed in Restream's own app rather than accepting them. Posting a message is therefore only possible inside the embedded chat UI itself, so CueBooth does not offer a send or canned-message command.

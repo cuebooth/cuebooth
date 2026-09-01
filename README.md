@@ -18,7 +18,9 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 ## Status
 
-Phase 0 — foundation, documentation, and project scaffolding. The design is complete and the server, client, and sidecar skeletons are landing now; feature implementation (Phase 1 onward) has not yet begun. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
+**Phase 1 — server core and Companion integration — is implemented.** The Go server loads a TOML deployment config, drives Bitfocus Companion over its HTTP API, registers a Companion Satellite surface whose buttons the Flutter client renders natively, serves the WebSocket protocol in [`docs/protocol.md`](docs/protocol.md), and surfaces the stream's chat in the client. CI exercises the Satellite integration against real Companion releases; it has not yet been run against a full production rig.
+
+Phases 2 onward are designed but **not** implemented — direct OSC audio control and metering, VISCA camera control, the PowerPoint sidecar and slide-driven automation, HID clicker handling, and video preview relay. Those server packages are placeholders today. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
 ## Repository Layout
 

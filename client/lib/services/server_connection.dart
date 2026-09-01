@@ -64,6 +64,17 @@ class ServerConnection extends ChangeNotifier {
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get messages => _messages.stream;
 
+  /// The server's HTTP root, for the plain-HTTP routes that sit alongside `/ws`
+  /// (protocol.md §11). Null until [connect] has been given a host.
+  ///
+  /// Derived from the WebSocket URI so it always names the same server: `ws`
+  /// maps to `http`, `wss` to `https`.
+  Uri? get httpBase {
+    final uri = _uri;
+    if (uri == null) return null;
+    return uri.replace(scheme: uri.scheme == 'wss' ? 'https' : 'http', path: '');
+  }
+
   /// Open a connection to the given host and port. Calling [connect] while a
   /// connection is open closes the previous one first.
   Future<void> connect(String host, int port) async {

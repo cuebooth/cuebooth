@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
 )
@@ -41,6 +42,10 @@ type Server struct {
 	// surface relays the Companion Satellite button surface to clients; nil when
 	// no satellite is configured (see WithSatellite).
 	surface *surfaceManager
+
+	// chat mints the stream-chat URL clients display; nil when no chat provider
+	// is configured (see WithChat).
+	chat chat.Provider
 
 	pollInterval time.Duration
 	sources      []state.Source
@@ -106,6 +111,15 @@ func WithSatellite(sat satelliteSurface) Option {
 	}
 }
 
+// WithChat enables the stream-chat panel, served by p (see internal/chat).
+func WithChat(p chat.Provider) Option {
+	return func(s *Server) {
+		if p != nil {
+			s.chat = p
+		}
+	}
+}
+
 // NewServer builds the API server. comp is the Companion button presser the
 // command dispatcher routes to (typically *companion.Client).
 func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
@@ -135,6 +149,14 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
 	s.mux.HandleFunc("/ws/meters", s.serveMeters)
+	// Registered only when a provider exists, so a deployment without chat
+	// answers 404 rather than an endpoint that always fails.
+	if s.chat != nil {
+		s.mux.HandleFunc(chatURLPath, s.serveChatURL)
+		s.mux.HandleFunc(chatAuthPath, s.serveChatAuthStart)
+		s.mux.HandleFunc(chatCallbackPath, s.serveChatAuthCallback)
+		s.publishChatStatus()
+	}
 	return s
 }
 

@@ -325,12 +325,18 @@ A single app that consolidates:
 - The Companion button grid, rendered natively from Companion's own Satellite surface (see §3.6.1): every button — camera presets, mute toggles, scene switches, page navigation, live feedback — is whatever Companion is configured with, auto-discovered with nothing defined client-side.
 - OBS program/preview video.
 - Audio meters and fader controls for selected channels.
-- Stream chat (embedded Restream chat or direct API).
+- Stream chat, embedded (see *Chat ownership* below).
 - Slide status indicator (current slide, upcoming automation, confirm button).
 - Stream status (live/offline, viewer count, recording status).
 - Quick-access channel profiles (EQ presets per mic).
 
 **Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web (fallback).
+
+**Chat ownership.** The **server** owns chat authorization and the client owns only rendering. The platform's OAuth offers no PKCE and its token exchange requires a client secret, so an app distributed to operators cannot hold one; the server does the exchange, persists the rotating refresh token, and mints a display URL on demand. The client asks for a URL when it needs one and never sees a credential — which also means chat survives indefinitely without re-authorization, rather than expiring on the operator.
+
+What each side deliberately does *not* do: the client does not cache the chat URL (it embeds a token the platform expires), and neither side offers a send or canned-message path — the platform's chat API is receive-only, so composing a message is only possible inside the embedded UI. The server-side provider interface is the seam for adding YouTube or Twitch later without the client learning a second auth model. See [`protocol.md`](protocol.md) §11.
+
+**Platform coverage.** An embedded webview covers iPad, iPhone, Android, and macOS. Windows, Linux, and Web open chat in the system browser instead — a fallback that costs nothing, because the server hands out an already-authenticated URL. In-app rendering on those platforms is tracked as CB-093.
 
 **Framework:** Flutter (Dart). Compiles to native binaries on all targets — no bridge, no JS runtime. Desktop support (Windows, macOS, Linux) is first-party and stable. Web output uses WASM/Canvas (heavier than typical web apps, but fine for a control surface — not a public site). The widget composition model and reactive state management map well to a real-time control surface with meters, faders, and live video.
 
@@ -516,7 +522,7 @@ Below is a suggested set of GitHub issues organized by phase. Each is scoped to 
 - **CB-014** `client` — Server connection screen: IP/port entry (with Tailscale IP support), connection status
 - **CB-015** `server`+`client` — Main control surface: render Companion's own Satellite surface natively (auto-discovered button grid, no client-side button definitions). Server registers as a Companion Satellite device and relays button bitmaps/presses; client renders the grid. See §3.6.1 and protocol.md §10.
 - **CB-016** `client` — Stream/recording status indicators and start/stop controls
-- **CB-017** `client` — Restream chat integration (embedded webview or direct API)
+- **CB-017** `client` — Restream chat integration (embedded webview, server-held OAuth; see §3.5 *Chat ownership*)
 
 ### Phase 2 — Audio Control (Direct OSC)
 - **CB-020** `server` — XR18 OSC client: connect, subscribe to meters, read/write channel parameters
