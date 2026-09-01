@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/state"
@@ -22,6 +24,13 @@ const (
 	chatCallbackPath = "/chat/auth/callback"
 )
 
+// chatMintDeadline bounds one /chat/url request. A mint can involve a refresh
+// and the webchat call behind it, twice if the first token is refused, so
+// without a ceiling the answer could outlast any client waiting for it. A token
+// exchange already in flight is unaffected: it carries its own detached
+// deadline, so a rotation is still read back after this gives up.
+const chatMintDeadline = 40 * time.Second
+
 // serveChatURL mints a chat URL for a client about to display chat.
 //
 // The client calls this each time it needs one rather than caching: the token
@@ -34,7 +43,10 @@ func (s *Server) serveChatURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatURL, err := s.chat.URL(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), chatMintDeadline)
+	defer cancel()
+
+	chatURL, err := s.chat.URL(ctx)
 	switch {
 	case errors.Is(err, chat.ErrNeedsAuth):
 		// Republished because a credential can be revoked between snapshots: a

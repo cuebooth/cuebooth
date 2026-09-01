@@ -41,10 +41,12 @@ type fakeRestream struct {
 	// unauthorizeWebchatOnce answers the next webchat call 401, as Restream does
 	// when an access token is retired before its stated expiry.
 	unauthorizeWebchatOnce bool
-	// tokenErrorName and tokenErrorMessage override what a rejected token
-	// request reports, so a 400 that is not invalid_grant can be exercised.
+	// tokenErrorName, tokenErrorMessage and tokenErrorStatus override what a
+	// rejected token request reports, so a 400 that is not invalid_grant — and an
+	// invalid_grant that is not a 400 — can both be exercised.
 	tokenErrorName    string
 	tokenErrorMessage string
+	tokenErrorStatus  int
 	// unauthorizeAccess answers 401 for exactly this bearer token, so several
 	// callers holding the same stale one can be made to fail together.
 	unauthorizeAccess string
@@ -64,10 +66,6 @@ type fakeRestream struct {
 	// including chat.read; empty omits the field entirely.
 	scope string
 }
-
-// testAddr stands in for the browser address that started an authorization; the
-// callback must arrive from the same one.
-const testAddr = "192.0.2.10"
 
 func newFakeRestream() *fakeRestream {
 	return &fakeRestream{refreshExpiresIn: 31536000, accessExpiresIn: 3600,
@@ -118,7 +116,11 @@ func (f *fakeRestream) handleToken(w http.ResponseWriter, r *http.Request) {
 			if f.tokenErrorName != "" {
 				name, msg = f.tokenErrorName, f.tokenErrorMessage
 			}
-			writeRestreamErrorNamed(w, http.StatusBadRequest, name, msg)
+			status := http.StatusBadRequest
+			if f.tokenErrorStatus != 0 {
+				status = f.tokenErrorStatus
+			}
+			writeRestreamErrorNamed(w, status, name, msg)
 			return
 		}
 	default:

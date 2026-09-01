@@ -6,11 +6,11 @@ import 'protocol.dart';
 
 /// How long to wait for a chat URL.
 ///
-/// Minting one can involve a token refresh and the webchat call behind it, each
-/// with its own server-side timeout, plus one retry. Giving up sooner than the
-/// server can answer would report a reachable server as unreachable, and every
-/// retry starts another refresh.
-const Duration chatRequestTimeout = Duration(seconds: 45);
+/// Longer than the ceiling the server puts on one mint, so a slow but working
+/// platform is never reported as an unreachable server — and so a retry, which
+/// starts another token rotation, is not offered while the first is still
+/// running.
+const Duration chatRequestTimeout = Duration(seconds: 60);
 
 /// Why a chat URL could not be produced.
 enum ChatUrlError {

@@ -40,6 +40,37 @@ func TestOtherBadRequestsKeepTheCredential(t *testing.T) {
 	}
 }
 
+// The grant is only rejected when the platform says so with the status OAuth
+// requires for it. A gateway echoing the name on a 502 must not cost a
+// year-long credential.
+func TestInvalidGrantOnAnotherStatusKeepsTheCredential(t *testing.T) {
+	fake := newFakeRestream()
+	fake.tokenErrorStatus = 502
+	r, clock, tokenFile := newTestProvider(t, fake)
+	if err := authorize(t, r, "good-code"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	fake.mu.Lock()
+	fake.revoked = true
+	fake.mu.Unlock()
+	clock.advance(2 * time.Hour)
+
+	_, err := r.URL(context.Background())
+	if err == nil {
+		t.Fatal("URL succeeded against a rejecting platform")
+	}
+	if errors.Is(err, ErrNeedsAuth) {
+		t.Error("an invalid_grant on a 502 was reported as needing authorization")
+	}
+	if !r.Authorized() {
+		t.Error("an invalid_grant on a 502 discarded the credential")
+	}
+	if stored := readStoredTokens(t, tokenFile); stored.RefreshToken == "" {
+		t.Error("an invalid_grant on a 502 cleared the stored credential")
+	}
+}
+
 // Restream rotates on receipt, so abandoning a refresh does not abandon the
 // rotation. If the caller's cancellation reached the token request, a client
 // that dropped mid-refresh would leave the stored pair dead and cost the

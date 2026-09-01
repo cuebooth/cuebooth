@@ -599,7 +599,7 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 		// Only the grant being rejected justifies destroying the stored
 		// credential, so the platform's own error name decides it rather than
 		// the status code alone.
-		if name == invalidGrantName {
+		if name == invalidGrantName && resp.StatusCode == http.StatusBadRequest {
 			return tokens{}, fmt.Errorf("%w: %s", errInvalidGrant, message)
 		}
 		return tokens{}, fmt.Errorf("restream token request: %s: %s", resp.Status, message)
