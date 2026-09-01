@@ -26,8 +26,7 @@ func TestSatelliteConfigValidate(t *testing.T) {
 		{"a grid no operator could read", SatelliteConfig{Rows: 64, Cols: 64}, false},
 		{"implausible rows", SatelliteConfig{Rows: 1000, Cols: 8}, false},
 		{"implausible cols", SatelliteConfig{Rows: 4, Cols: 100000}, false},
-		// Their product wraps to a negative, which no ">" check would catch, so
-		// this is rejected on the dimensions before the multiplication happens.
+		// Their product wraps negative, which the ">" check alone would accept.
 		{"dimensions that overflow their product", SatelliteConfig{Rows: math.MaxInt/2 + 1, Cols: 2}, false},
 		{"disabled skips checks", SatelliteConfig{Addr: "off", BitmapSize: 3}, true},
 		{"device_id with space", SatelliteConfig{DeviceID: "cue booth"}, false},

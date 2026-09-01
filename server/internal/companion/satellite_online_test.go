@@ -216,11 +216,10 @@ func TestOnlineSurfaceRegistersAndStreamsKeys(t *testing.T) {
 }
 
 // Companion renders at the BITMAPS size we advertise rather than at any physical
-// device's, which is what makes the bitmap_size knob — and the 256 ceiling
+// device's, which is what makes the bitmap_size knob — and the ceiling
 // config.maxSatelliteBitmapSize puts on it — mean anything. The test above pins
 // 72px; this pins that ceiling, since a client sizes its RGB decode from the
-// surface-layout and a bitmap that does not match decodes to a crop of the
-// button or, if it is short, to nothing at all.
+// surface-layout.
 func TestOnlineBitmapMatchesTheAdvertisedSize(t *testing.T) {
 	addr := liveAddr(t)
 	const rows, cols, size = 2, 2, 256

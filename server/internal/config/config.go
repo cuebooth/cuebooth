@@ -68,18 +68,15 @@ type SatelliteConfig struct {
 
 // maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
 // 32 buttons and the largest rig anyone drives is a few Stream Deck XLs side by
-// side, so this is generous — but past a couple of hundred buttons an operator
-// cannot find the one they want under stage lighting, which is what the surface
-// exists for. It also keeps a mistyped dimension from becoming a huge
-// per-client buffer, since the server caches and queues a bitmap per key.
+// side; past a couple of hundred an operator cannot find the button they want
+// under stage lighting, and the server caches and queues a bitmap for each one.
 const maxSatelliteKeys = 256
 
 // maxSatelliteBitmapSize bounds the button bitmap edge length. Companion renders
 // at whatever size we ask for rather than clamping to a physical device's, so
-// this bound is ours alone to set: a key frame carries bitmap_size² × 3 bytes of
-// pixel data, and the edge length squares into the per-client buffer that rows
-// and cols multiply into. 256 clears the 120px of the largest physical surface
-// with room to spare for a high-DPI client.
+// this bound is ours alone: a key frame carries bitmap_size² × 3 bytes of pixel
+// data, squaring into the per-client buffer that maxSatelliteKeys multiplies.
+// 256 clears the 120px of the largest physical surface.
 const maxSatelliteBitmapSize = 256
 
 // Disabled reports whether the satellite surface is turned off by config.

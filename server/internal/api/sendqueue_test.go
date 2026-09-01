@@ -204,14 +204,12 @@ func TestSendInitialIsAtomicAgainstAReBaseline(t *testing.T) {
 	}
 }
 
-// A client joins the hub before its surface is replayed, so a live key update
-// can reach it first and the first surface frame it sees may be a surface-key.
-// A client has no bitmap size until a surface-layout arrives, so it records
-// such a frame's seq and color but not its image — which is only safe while the
-// layout behind it supersedes the key (protocol.md §10, drop keys at or below
-// the layout's seq). A key that outlived the connect layout would keep the seq
-// that suppresses the replay's copy and sit as a color-only rectangle until
-// Companion next re-rendered that button.
+// A client joins the hub before its surface is replayed, so the first surface
+// frame it sees may be a live surface-key. It has no bitmap size until a
+// surface-layout arrives, so it keeps that frame's seq but not its image — safe
+// only while the layout behind it supersedes the key (protocol.md §10, drop keys
+// at or below the layout's seq). One that outlived the layout would hold a seq
+// that suppresses the replay's copy, leaving the button color-only.
 func TestAKeyRacingTheReplayCannotOutliveItsLayout(t *testing.T) {
 	const rows, cols = 8, 16 // 128 keys: a replay long enough to interleave
 	const raced, updates = 3, 64
