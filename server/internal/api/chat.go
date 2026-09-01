@@ -121,6 +121,9 @@ func (s *Server) publishChatStatus() {
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
+	// The body carries a URL with a credential in it, so no intermediary should
+	// hold a copy.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	// The payloads here are small maps of strings built in this file, so an
 	// encode failure means the connection is already gone.

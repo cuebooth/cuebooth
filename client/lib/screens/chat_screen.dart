@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -56,6 +58,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   ChatUrlResult? _result;
   bool _loading = false;
+  bool _wasReady = false;
 
   bool get _useWebview => widget.useWebview ?? webviewSupported;
 
@@ -65,7 +68,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // The mirrored server state is its own notifier; Session itself only
     // signals connection-level changes.
     widget.session.state.addListener(_onStateChanged);
-    if (widget.session.state.chatReady) {
+    _wasReady = widget.session.state.chatReady;
+    if (_wasReady) {
       _load();
     }
   }
@@ -81,11 +85,17 @@ class _ChatScreenState extends State<ChatScreen> {
   /// the operator reconnecting or reopening this screen.
   void _onStateChanged() {
     if (!mounted) return;
-    // Reloading whenever there is no usable URL — not only before the first
-    // attempt — is what lets the panel recover after the operator authorizes
-    // from an error screen, where a failed result is already held.
-    final needsReload = widget.session.state.chatReady && !(_result?.isReady ?? false);
-    if (needsReload && !_loading) {
+    final ready = widget.session.state.chatReady;
+
+    // Re-mint on every transition into ready, not only when nothing usable is
+    // held. A URL minted before the credential was revoked, or before the
+    // connection dropped, embeds a token that is no longer good — and
+    // protocol.md §11 says a client must not reuse one.
+    final becameReady = ready && !_wasReady;
+    final holdsNothingUsable = ready && !(_result?.isReady ?? false);
+    _wasReady = ready;
+
+    if ((becameReady || holdsNothingUsable) && !_loading) {
       _load();
       return;
     }
@@ -135,6 +145,17 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _body(BuildContext context) {
     final state = widget.session.state;
+    if (!state.hasBaseline) {
+      // State is cleared on disconnect, so "no chat provider" and "we have not
+      // heard from the server yet" look identical from the topic alone. Saying
+      // chat is unconfigured during a dropped connection is a claim about the
+      // server that isn't true.
+      return const _ChatMessage(
+        icon: Icons.cloud_sync_outlined,
+        title: 'Reconnecting',
+        detail: 'Waiting for the server. Chat returns when the connection does.',
+      );
+    }
     if (!state.chatConfigured) {
       return const _ChatMessage(
         icon: Icons.chat_bubble_outline,
@@ -258,7 +279,26 @@ class _ChatWebview extends StatefulWidget {
 class _ChatWebviewState extends State<_ChatWebview> {
   late final WebViewController _controller = WebViewController()
     ..setJavaScriptMode(JavaScriptMode.unrestricted)
+    ..setNavigationDelegate(
+      NavigationDelegate(
+        // A link tapped in chat would otherwise replace the panel with an
+        // arbitrary page, and there is no back control here to return from it.
+        // Chat keeps the panel; anything else goes to the system browser.
+        onNavigationRequest: (request) {
+          if (_isChatHost(request.url)) return NavigationDecision.navigate;
+          unawaited(
+            launchUrl(Uri.parse(request.url), mode: LaunchMode.externalApplication),
+          );
+          return NavigationDecision.prevent;
+        },
+      ),
+    )
     ..loadRequest(Uri.parse(widget.url));
+
+  static bool _isChatHost(String url) {
+    final host = Uri.tryParse(url)?.host ?? '';
+    return host == 'chat.restream.io';
+  }
 
   @override
   void didUpdateWidget(_ChatWebview oldWidget) {

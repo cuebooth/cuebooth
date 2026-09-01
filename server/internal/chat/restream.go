@@ -57,6 +57,17 @@ const (
 	// are small JSON documents; the limit keeps a misdirected endpoint from
 	// streaming into memory.
 	maxTokenBody = 1 << 20
+
+	// tokenRequestTimeout bounds a token exchange or refresh. It replaces the
+	// caller's deadline rather than narrowing it, because the rotation must be
+	// read back even when the client that triggered it has gone.
+	tokenRequestTimeout = 20 * time.Second
+
+	// invalidGrantName is the error Restream reports when the grant itself is
+	// rejected — a retired or revoked refresh token. Other 400s (a rotated
+	// client secret, a bad minute on their gateway) name something else and must
+	// not cost a year-long credential.
+	invalidGrantName = "invalid_grant"
 )
 
 // RestreamConfig is what an operator supplies to enable Restream chat.
@@ -154,7 +165,7 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 		clientSecret: cfg.ClientSecret,
 		redirectURI:  cfg.RedirectURI,
 		apiBase:      defaultRestreamAPI,
-		http:         &http.Client{Timeout: 15 * time.Second},
+		http:         &http.Client{Timeout: 10 * time.Second},
 		logger:       slog.Default(),
 		now:          time.Now,
 		pending:      make(map[string]time.Time),
@@ -269,6 +280,15 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 		// that from a credential that is genuinely spent.
 		chatURL, err = r.mint(ctx, true)
 	}
+	if errors.Is(err, errUnauthorized) {
+		// A token minted moments ago was still refused, so nothing the server
+		// can do unattended will help — most likely the application was
+		// registered without the chat.read scope. Reported as needing
+		// authorization so the operator gets a route to fix it, and so a
+		// permanently failing panel stops rotating the credential per attempt.
+		r.logger.Error("restream refused a freshly refreshed token; check the application's chat.read scope", "err", err)
+		return "", ErrNeedsAuth
+	}
 	return chatURL, err
 }
 
@@ -296,11 +316,12 @@ func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("restream webchat url: %w", err)
 	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return "", fmt.Errorf("%w: %s", errUnauthorized, restreamError(body))
-	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, restreamError(body))
+		_, message := restreamError(body)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", fmt.Errorf("%w: %s", errUnauthorized, message)
+		}
+		return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
 	}
 
 	var payload struct {
@@ -346,6 +367,10 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 			// process holding a copy. Keeping it would leave the provider
 			// reporting itself ready while every mint failed, stranding the
 			// operator on an error with no route back to authorization.
+			//
+			// Logged here because ErrNeedsAuth carries no detail to the client,
+			// and this is the only place the platform says why.
+			r.logger.Error("restream rejected the stored credential; chat needs authorizing again", "err", err)
 			r.discard()
 			return "", ErrNeedsAuth
 		}
@@ -387,7 +412,16 @@ func (r *Restream) adopt(t tokens) {
 // postToken runs one call against Restream's token endpoint. The client
 // credentials go in a Basic Auth header rather than the body, which is what
 // Restream recommends so they cannot end up in an intermediary's logs.
+//
+// The caller's cancellation is deliberately dropped. Restream rotates the pair
+// on receipt, so abandoning the request does not abandon the rotation: the
+// credential is spent either way, and only reading the response recovers the
+// replacement. A client that closes its connection mid-refresh would otherwise
+// leave the stored token dead.
 func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenRequestTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokens{}, err
@@ -406,11 +440,15 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 	if err != nil {
 		return tokens{}, fmt.Errorf("restream token request: %w", err)
 	}
-	if resp.StatusCode == http.StatusBadRequest {
-		return tokens{}, fmt.Errorf("%w: %s", errInvalidGrant, restreamError(body))
-	}
 	if resp.StatusCode != http.StatusOK {
-		return tokens{}, fmt.Errorf("restream token request: %s: %s", resp.Status, restreamError(body))
+		name, message := restreamError(body)
+		// Only the grant being rejected justifies destroying the stored
+		// credential, so the platform's own error name decides it rather than
+		// the status code alone.
+		if name == invalidGrantName {
+			return tokens{}, fmt.Errorf("%w: %s", errInvalidGrant, message)
+		}
+		return tokens{}, fmt.Errorf("restream token request: %s: %s", resp.Status, message)
 	}
 
 	var payload struct {
@@ -466,21 +504,23 @@ func (r *Restream) evictOldestPendingLocked() {
 	delete(r.pending, oldest)
 }
 
-// restreamError pulls the message out of Restream's error envelope, falling
-// back to the raw body when it does not match.
-func restreamError(body []byte) string {
+// restreamError pulls the error name and message out of Restream's envelope.
+// The name is empty when the body does not match it, which keeps an
+// unrecognized error off the destructive path.
+func restreamError(body []byte) (name, message string) {
 	var envelope struct {
 		Error struct {
+			Name    string `json:"name"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
-		return envelope.Error.Message
+		return envelope.Error.Name, envelope.Error.Message
 	}
 	if len(body) > 200 {
 		body = body[:200]
 	}
-	return strings.TrimSpace(string(body))
+	return "", strings.TrimSpace(string(body))
 }
 
 func randomState() (string, error) {

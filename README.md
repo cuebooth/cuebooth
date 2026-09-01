@@ -18,7 +18,7 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 ## Status
 
-**Phase 1 — server core and Companion integration — is implemented.** The Go server loads a TOML deployment config, drives Bitfocus Companion over its HTTP API, registers a Companion Satellite surface whose buttons the Flutter client renders natively, serves the WebSocket protocol in [`docs/protocol.md`](docs/protocol.md), and surfaces the stream's chat in the client. CI exercises the Satellite integration against real Companion releases; it has not yet been run against a full production rig.
+**Phase 1 — server core and Companion integration — is implemented.** The Go server loads a TOML deployment config, drives Bitfocus Companion over its HTTP API, registers a Companion Satellite surface whose buttons the Flutter client renders natively, serves the WebSocket protocol in [`docs/protocol.md`](docs/protocol.md), and surfaces the stream's chat. Chat renders inside the app on iPad, iPhone, Android, and macOS; on Windows, Linux, and Web it opens in the system browser instead, because Flutter has no first-party webview for those platforms. CI exercises the Satellite integration against real Companion releases; none of it has yet been run against a full production rig.
 
 Phases 2 onward are designed but **not** implemented — direct OSC audio control and metering, VISCA camera control, the PowerPoint sidecar and slide-driven automation, HID clicker handling, and video preview relay. Those server packages are placeholders today. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
@@ -46,7 +46,7 @@ Every CueBooth component that runs on Windows is intended to ship as a real Wind
 - [WebSocket protocol](docs/protocol.md) — client/server wire spec
 - [Sample deployment](docs/sample-deployment.md) — worked end-to-end example tying the docs together
 
-Sample configuration files will be added as the implementation phases land.
+A documented example configuration lives at [`server/configs/cuebooth.example.toml`](server/configs/cuebooth.example.toml); sections for phases that aren't implemented yet are sketched there as comments.
 
 ## License
 

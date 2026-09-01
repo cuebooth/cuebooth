@@ -4,6 +4,14 @@ import 'package:http/http.dart' as http;
 
 import 'protocol.dart';
 
+/// How long to wait for a chat URL.
+///
+/// Minting one can involve a token refresh and the webchat call behind it, each
+/// with its own server-side timeout, plus one retry. Giving up sooner than the
+/// server can answer would report a reachable server as unreachable, and every
+/// retry starts another refresh.
+const Duration chatRequestTimeout = Duration(seconds: 45);
+
 /// Why a chat URL could not be produced.
 enum ChatUrlError {
   /// The server has no usable credential; an operator must authorize first.
@@ -54,7 +62,7 @@ class ChatService {
     try {
       response = await _client
           .get(serverBase.replace(path: chatURLPath))
-          .timeout(const Duration(seconds: 10));
+          .timeout(chatRequestTimeout);
     } catch (_) {
       return const ChatUrlResult.failed(ChatUrlError.unreachable);
     }

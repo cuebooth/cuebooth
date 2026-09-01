@@ -153,6 +153,8 @@ public_url = "http://production-pc:7878"
 }
 
 // An absolute path is the operator's explicit choice and must be left alone.
+// The path goes in a TOML literal string: a Windows temp directory contains
+// backslashes, which a basic string would read as escape sequences.
 func TestChatTokenFileAbsolutePathIsUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cuebooth.toml")
@@ -169,7 +171,7 @@ provider = "restream"
 client_id = "id"
 client_secret = "secret"
 public_url = "http://production-pc:7878"
-token_file = "` + absolute + `"
+token_file = '` + absolute + `'
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

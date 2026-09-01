@@ -41,6 +41,10 @@ type fakeRestream struct {
 	// unauthorizeWebchatOnce answers the next webchat call 401, as Restream does
 	// when an access token is retired before its stated expiry.
 	unauthorizeWebchatOnce bool
+	// tokenErrorName and tokenErrorMessage override what a rejected token
+	// request reports, so a 400 that is not invalid_grant can be exercised.
+	tokenErrorName    string
+	tokenErrorMessage string
 }
 
 func newFakeRestream() *fakeRestream {
@@ -80,7 +84,11 @@ func (f *fakeRestream) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	case "refresh_token":
 		if f.revoked || r.Form.Get("refresh_token") != f.refresh {
-			writeRestreamError(w, http.StatusBadRequest, "Invalid grant: refresh token is invalid")
+			name, msg := "invalid_grant", "Invalid grant: refresh token is invalid"
+			if f.tokenErrorName != "" {
+				name, msg = f.tokenErrorName, f.tokenErrorMessage
+			}
+			writeRestreamErrorNamed(w, http.StatusBadRequest, name, msg)
 			return
 		}
 	default:
@@ -129,10 +137,14 @@ func (f *fakeRestream) handleWebchat(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeRestreamError(w http.ResponseWriter, code int, msg string) {
+	writeRestreamErrorNamed(w, code, "invalid_grant", msg)
+}
+
+func writeRestreamErrorNamed(w http.ResponseWriter, code int, name, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{"statusCode": code, "message": msg, "name": "invalid_grant"},
+		"error": map[string]any{"statusCode": code, "message": msg, "name": name},
 	})
 }
 
@@ -501,7 +513,10 @@ func TestCompleteRejectsAnEmptyCode(t *testing.T) {
 
 func TestPlatformErrorMessageReachesTheCaller(t *testing.T) {
 	fake := newFakeRestream()
-	fake.webchatStatus = http.StatusUnauthorized
+	// A server-side failure rather than a 401: an access token the platform
+	// refuses is classified as needing authorization, which deliberately
+	// carries no platform detail to the caller.
+	fake.webchatStatus = http.StatusInternalServerError
 	r, _, _ := newTestProvider(t, fake)
 	if err := authorize(t, r, "good-code"); err != nil {
 		t.Fatalf("Complete: %v", err)

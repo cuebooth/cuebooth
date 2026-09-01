@@ -269,6 +269,106 @@ void main() {
     expect(find.text('Open chat in your browser'), findsOneWidget);
   });
 
+  // protocol.md §11: a client must not reuse a minted URL. One minted before a
+  // revocation embeds a token that is no longer good, so returning to ready
+  // has to re-mint rather than re-display.
+  testWidgets('re-mints when the server returns to ready', (tester) async {
+    final inbound = StreamController<Map<String, dynamic>>();
+    final session = Session(inbound: inbound.stream, outbound: (_) => true);
+    addTearDown(() async {
+      session.dispose();
+      await inbound.close();
+    });
+
+    Future<void> feed(Map<String, dynamic> frame) async {
+      await tester.runAsync(() async {
+        inbound.add(frame);
+        await Future<void>.delayed(Duration.zero);
+      });
+      await tester.pump();
+    }
+
+    await feed({
+      'type': 'hello',
+      'proto': '1.1',
+      'server_version': '0',
+      'server_id': 'p',
+    });
+    await feed({
+      'type': 'state',
+      'rev': 1,
+      'stream': {
+        'chat': {'provider': 'restream', 'status': 'ready'},
+      },
+    });
+
+    var mints = 0;
+    final chat = ChatService(
+      serverBase: base,
+      client: MockClient((_) async {
+        mints++;
+        return http.Response(
+          jsonEncode({'url': 'https://chat.restream.io/embed?token=mint$mints'}),
+          200,
+        );
+      }),
+    );
+
+    await pumpChat(tester, session: session, chat: chat);
+    expect(mints, 1);
+
+    // The credential is revoked and re-granted while the panel stays open.
+    await feed({
+      'type': 'state-delta',
+      'rev': 2,
+      'patch': {
+        'stream': {
+          'chat': {'status': 'needs_auth'},
+        },
+      },
+    });
+    await feed({
+      'type': 'state-delta',
+      'rev': 3,
+      'patch': {
+        'stream': {
+          'chat': {'status': 'ready'},
+        },
+      },
+    });
+    await tester.pumpAndSettle();
+
+    expect(mints, 2, reason: 'the panel re-displayed a URL minted before the revocation');
+  });
+
+  // State is cleared on disconnect, so an unconfigured server and a dropped
+  // connection look alike from the topic alone. Saying chat is not set up
+  // during a Wi-Fi hiccup is a claim about the server that isn't true.
+  testWidgets('a dropped connection reads as reconnecting, not unconfigured', (
+    tester,
+  ) async {
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'needs_auth',
+    });
+
+    await pumpChat(
+      tester,
+      session: session,
+      chat: serviceReturning(() => http.Response('{}', 409)),
+    );
+    expect(find.text('Connect restream'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      session.state.reset();
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.text('Reconnecting'), findsOneWidget);
+    expect(find.text('Chat is not set up'), findsNothing);
+  });
+
   // protocol.md §1 requires a client to keep working against a newer minor
   // version. An unknown status must not leave a spinner with no way out.
   testWidgets('an unrecognised status shows a message, not a spinner', (
