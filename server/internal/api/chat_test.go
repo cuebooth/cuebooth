@@ -124,6 +124,31 @@ func TestChatURLReportsNeedsAuthWithAStartPath(t *testing.T) {
 	}
 }
 
+// A credential can be revoked between snapshots. Without republishing, a client
+// holding an older "ready" would render a platform error behind a Try again
+// that can never succeed, with nothing in the UI reaching authorization.
+func TestChatURLRepublishesNeedsAuthWhenTheCredentialDies(t *testing.T) {
+	provider := &fakeChat{authorized: true, url: "https://chat.restream.io/embed?token=abc"}
+	srv, hs, client := chatTestServer(t, provider)
+
+	if got := chatStatusInState(t, srv); got != string(chat.StatusReady) {
+		t.Fatalf("status = %q, want ready before revocation", got)
+	}
+
+	provider.authorized = false
+	code, payload := getJSON(t, client, hs.URL+chatURLPath)
+
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", code)
+	}
+	if got := payload["auth_start"]; got != chatAuthPath {
+		t.Errorf("auth_start = %v, want %q", got, chatAuthPath)
+	}
+	if got := chatStatusInState(t, srv); got != string(chat.StatusNeedsAuth) {
+		t.Errorf("published status = %q, want needs_auth", got)
+	}
+}
+
 func TestChatURLSurfacesProviderFailure(t *testing.T) {
 	_, hs, client := chatTestServer(t, &fakeChat{authorized: true, urlErr: errors.New("platform down")})
 

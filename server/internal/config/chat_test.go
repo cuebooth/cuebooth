@@ -119,6 +119,71 @@ public_url = "http://production-pc:7878"
 	}
 }
 
+// An SCM-launched service runs with cwd C:\Windows\System32, so a token_file
+// resolved against the working directory would put the credential somewhere no
+// operator backs up — and, on Windows, somewhere world-readable.
+func TestChatTokenFileResolvesAgainstTheConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cuebooth.toml")
+	body := `
+[server]
+listen = "127.0.0.1:7878"
+
+[companion]
+base_url = "http://localhost:8000"
+
+[chat]
+provider = "restream"
+client_id = "id"
+client_secret = "secret"
+public_url = "http://production-pc:7878"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join(dir, "chat-token.json")
+	if cfg.Chat.TokenFile != want {
+		t.Errorf("token file = %q, want %q", cfg.Chat.TokenFile, want)
+	}
+}
+
+// An absolute path is the operator's explicit choice and must be left alone.
+func TestChatTokenFileAbsolutePathIsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cuebooth.toml")
+	absolute := filepath.Join(t.TempDir(), "elsewhere", "token.json")
+	body := `
+[server]
+listen = "127.0.0.1:7878"
+
+[companion]
+base_url = "http://localhost:8000"
+
+[chat]
+provider = "restream"
+client_id = "id"
+client_secret = "secret"
+public_url = "http://production-pc:7878"
+token_file = "` + absolute + `"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Chat.TokenFile != absolute {
+		t.Errorf("token file = %q, want the configured %q", cfg.Chat.TokenFile, absolute)
+	}
+}
+
 // A secret in the file wins, so an operator who set both is not surprised by a
 // stale environment variable from another deployment.
 func TestChatSecretInFileWinsOverEnvironment(t *testing.T) {

@@ -76,17 +76,29 @@ class ChatService {
 
   void dispose() => _client.close();
 
+  /// Decodes the documented `{"url": ...}` body, returning null for anything
+  /// else.
+  ///
+  /// The URL is parsed here rather than at the point of display: a webview
+  /// builds its controller during `build`, where a `FormatException` from an
+  /// unparseable URL would escape as a framework error instead of the panel's
+  /// own "could not reach" message.
   static String? _decodeUrl(String body) {
     try {
       final decoded = jsonDecode(body);
-      if (decoded is Map<String, dynamic>) {
-        final url = decoded['url'];
-        if (url is String && url.isNotEmpty) return url;
+      if (decoded is! Map<String, dynamic>) return null;
+      final url = decoded['url'];
+      if (url is! String || url.isEmpty) return null;
+
+      final parsed = Uri.parse(url);
+      if (!parsed.isAbsolute || (parsed.scheme != 'http' && parsed.scheme != 'https')) {
+        return null;
       }
+      return url;
     } on FormatException {
       // Falls through to null: a body that isn't the documented shape is
       // indistinguishable from an unreachable server as far as the UI goes.
+      return null;
     }
-    return null;
   }
 }

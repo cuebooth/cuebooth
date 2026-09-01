@@ -35,6 +35,12 @@ type fakeRestream struct {
 	accessExpiresIn int
 	// webchatStatus overrides the webchat response code when non-zero.
 	webchatStatus int
+	// revoked makes every refresh fail the way Restream reports a retired or
+	// revoked token: a 400 invalid_grant.
+	revoked bool
+	// unauthorizeWebchatOnce answers the next webchat call 401, as Restream does
+	// when an access token is retired before its stated expiry.
+	unauthorizeWebchatOnce bool
 }
 
 func newFakeRestream() *fakeRestream {
@@ -73,7 +79,7 @@ func (f *fakeRestream) handleToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "refresh_token":
-		if r.Form.Get("refresh_token") != f.refresh {
+		if f.revoked || r.Form.Get("refresh_token") != f.refresh {
 			writeRestreamError(w, http.StatusBadRequest, "Invalid grant: refresh token is invalid")
 			return
 		}
@@ -105,6 +111,11 @@ func (f *fakeRestream) handleWebchat(w http.ResponseWriter, r *http.Request) {
 
 	if f.webchatStatus != 0 {
 		writeRestreamError(w, f.webchatStatus, "Invalid token: access token is invalid")
+		return
+	}
+	if f.unauthorizeWebchatOnce {
+		f.unauthorizeWebchatOnce = false
+		writeRestreamError(w, http.StatusUnauthorized, "Invalid token: access token is invalid")
 		return
 	}
 	if r.Header.Get("Authorization") != "Bearer "+f.access {

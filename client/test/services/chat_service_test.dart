@@ -78,6 +78,27 @@ void main() {
       }
     });
 
+    // A webview builds its controller during build(), where a FormatException
+    // from an unparseable URL escapes as a framework error instead of the
+    // panel's own message. Parsing here keeps it on the error path.
+    test('rejects a url that is not an absolute http(s) URL', () async {
+      for (final url in [
+        'http://[bad',
+        'not-a-url',
+        '/chat/embed',
+        'javascript:alert(1)',
+        'ftp://example.test/chat',
+      ]) {
+        final service = serviceReturning(
+          (_) => http.Response(jsonEncode({'url': url}), 200),
+        );
+        final result = await service.fetchUrl();
+
+        expect(result.isReady, isFalse, reason: 'url: $url');
+        expect(result.error, ChatUrlError.unreachable, reason: 'url: $url');
+      }
+    });
+
     test('reports unreachable on an unexpected status', () async {
       final service = serviceReturning((_) => http.Response('nope', 404));
 

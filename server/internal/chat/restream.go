@@ -20,6 +20,18 @@ import (
 // authorize through LoginURL before chat can be shown.
 var ErrNeedsAuth = errors.New("chat provider is not authorized")
 
+// errInvalidGrant reports that the platform rejected the grant itself — a
+// refresh token it has retired or an operator has revoked. Only a fresh
+// authorization recovers, so it is handled apart from transport failures, which
+// a later attempt may well survive. OAuth 2.0 requires a 400 for this case
+// (RFC 6749 §5.2), which is what distinguishes it on the wire.
+var errInvalidGrant = errors.New("restream rejected the grant")
+
+// errUnauthorized reports that an access token was refused. It can mean the
+// token was retired before the expiry Restream stated, which one refresh
+// resolves.
+var errUnauthorized = errors.New("restream refused the access token")
+
 const (
 	// defaultRestreamAPI is Restream's API root. Tests point this at an httptest
 	// server; the login, token, and webchat endpoints all hang off it.
@@ -33,6 +45,13 @@ const (
 	// authorization stays acceptable, capping how long a leaked state parameter
 	// is worth anything.
 	loginStateTTL = 10 * time.Minute
+
+	// maxPendingLogins bounds authorizations started but never finished. The
+	// route that creates them is an unauthenticated GET, so without a ceiling
+	// any page the operator's browser visits could grow this map for the whole
+	// loginStateTTL. An operator has one browser and one tab open at a time;
+	// this leaves room for retries and abandoned attempts.
+	maxPendingLogins = 64
 
 	// maxTokenBody caps how much of a token or webchat response is read. These
 	// are small JSON documents; the limit keeps a misdirected endpoint from
@@ -149,7 +168,14 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 
 	tok, err := r.store.load()
 	if err != nil {
-		return nil, err
+		// Chat is one panel; the operator still needs the button surface, the
+		// slide status, and everything else. Refusing to start would take the
+		// whole control surface down over an accessory's state file — and under
+		// the Windows SCM there is no console to explain why. Start
+		// unauthorized instead, which puts a Connect button in front of them.
+		r.logger.Error("could not read the stored chat credential; chat will need authorizing again",
+			"err", err, "path", cfg.TokenFile)
+		tok = tokens{}
 	}
 	r.tok = tok
 	return r, nil
@@ -178,6 +204,9 @@ func (r *Restream) LoginURL() (string, error) {
 	now := r.now()
 	r.mu.Lock()
 	r.prunePendingLocked(now)
+	for len(r.pending) >= maxPendingLogins {
+		r.evictOldestPendingLocked()
+	}
 	r.pending[state] = now.Add(loginStateTTL)
 	r.mu.Unlock()
 
@@ -213,8 +242,17 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	form.Set("redirect_uri", r.redirectURI)
 	form.Set("code", code)
 
+	// Held for the same reason a refresh holds it: an exchange landing beside an
+	// in-flight refresh could have its freshly authorized pair overwritten by
+	// the older one.
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
 	tok, err := r.postToken(ctx, form)
 	if err != nil {
+		// A rejected code says nothing about the credential already held, so an
+		// operator who mistypes their way through a re-authorization does not
+		// lose a working one.
 		return err
 	}
 	r.adopt(tok)
@@ -224,7 +262,19 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 // URL mints a chat URL to display. The token embedded in it is Restream's to
 // expire, so this is called each time a client needs one rather than cached.
 func (r *Restream) URL(ctx context.Context) (string, error) {
-	token, err := r.accessToken(ctx)
+	chatURL, err := r.mint(ctx, false)
+	if errors.Is(err, errUnauthorized) {
+		// Restream retired the access token before the expiry it stated —
+		// a revoked session, or a reset on their side. One refresh separates
+		// that from a credential that is genuinely spent.
+		chatURL, err = r.mint(ctx, true)
+	}
+	return chatURL, err
+}
+
+// mint fetches a chat URL, optionally forcing a token refresh first.
+func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) {
+	token, err := r.accessToken(ctx, forceRefresh)
 	if err != nil {
 		return "", err
 	}
@@ -246,6 +296,9 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("restream webchat url: %w", err)
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("%w: %s", errUnauthorized, restreamError(body))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, restreamError(body))
 	}
@@ -264,7 +317,7 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 
 // accessToken returns a usable bearer token, refreshing when the held one is
 // spent or close enough to expiry that a request could outlive it.
-func (r *Restream) accessToken(ctx context.Context) (string, error) {
+func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, error) {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
@@ -278,7 +331,7 @@ func (r *Restream) accessToken(ctx context.Context) (string, error) {
 	if !tok.valid(now) {
 		return "", ErrNeedsAuth
 	}
-	if tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
+	if !forceRefresh && tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
 		return tok.AccessToken, nil
 	}
 
@@ -288,10 +341,30 @@ func (r *Restream) accessToken(ctx context.Context) (string, error) {
 
 	fresh, err := r.postToken(ctx, form)
 	if err != nil {
+		if errors.Is(err, errInvalidGrant) {
+			// The stored pair is dead — revoked, or rotated away by another
+			// process holding a copy. Keeping it would leave the provider
+			// reporting itself ready while every mint failed, stranding the
+			// operator on an error with no route back to authorization.
+			r.discard()
+			return "", ErrNeedsAuth
+		}
 		return "", err
 	}
 	r.adopt(fresh)
 	return fresh.AccessToken, nil
+}
+
+// discard drops a credential the platform has rejected, so Authorized stops
+// claiming chat is ready.
+func (r *Restream) discard() {
+	r.mu.Lock()
+	r.tok = tokens{}
+	r.mu.Unlock()
+
+	if err := r.store.save(tokens{}); err != nil {
+		r.logger.Error("could not clear the rejected chat credential", "err", err)
+	}
 }
 
 // adopt takes a newly issued pair as the live credential and persists it.
@@ -332,6 +405,9 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenBody))
 	if err != nil {
 		return tokens{}, fmt.Errorf("restream token request: %w", err)
+	}
+	if resp.StatusCode == http.StatusBadRequest {
+		return tokens{}, fmt.Errorf("%w: %s", errInvalidGrant, restreamError(body))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return tokens{}, fmt.Errorf("restream token request: %s: %s", resp.Status, restreamError(body))
@@ -374,6 +450,20 @@ func (r *Restream) prunePendingLocked(now time.Time) {
 			delete(r.pending, state)
 		}
 	}
+}
+
+// evictOldestPendingLocked drops the authorization closest to expiry, keeping
+// the map bounded when starts arrive faster than they are completed. Callers
+// hold r.mu.
+func (r *Restream) evictOldestPendingLocked() {
+	var oldest string
+	var deadline time.Time
+	for state, d := range r.pending {
+		if oldest == "" || d.Before(deadline) {
+			oldest, deadline = state, d
+		}
+	}
+	delete(r.pending, oldest)
 }
 
 // restreamError pulls the message out of Restream's error envelope, falling

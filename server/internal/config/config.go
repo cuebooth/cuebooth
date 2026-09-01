@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -155,6 +156,14 @@ func Load(path string) (*Config, error) {
 	// environment isn't rejected for omitting it from the file.
 	if cfg.Chat.ClientSecret == "" {
 		cfg.Chat.ClientSecret = os.Getenv(ChatSecretEnv)
+	}
+
+	// A relative token_file resolves against the config file's directory, not
+	// the process's working directory. An SCM-launched service runs with cwd
+	// C:\Windows\System32 (see cmd/cuebooth-server/service_windows.go), where
+	// the credential would land somewhere no operator backs up or uninstalls.
+	if tf := cfg.Chat.TokenFile; tf != "" && !filepath.IsAbs(tf) {
+		cfg.Chat.TokenFile = filepath.Join(filepath.Dir(path), tf)
 	}
 
 	// Warn (rather than reject) on unrecognized keys so a typo like "listenn"

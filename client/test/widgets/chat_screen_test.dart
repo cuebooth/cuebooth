@@ -159,6 +159,136 @@ void main() {
     expect(launched.single, Uri.parse('$base/chat/auth/start'));
   });
 
+  // Authorization happens in a browser and the server republishes `ready` —
+  // but if state was already `ready`, no delta is broadcast. The panel must not
+  // strand the operator on the error screen with no way back.
+  testWidgets('the reconnect screen also offers a retry', (tester) async {
+    var calls = 0;
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'ready',
+    });
+    final chat = ChatService(
+      serverBase: base,
+      client: MockClient((_) async {
+        calls++;
+        return calls == 1
+            ? http.Response('{}', 409)
+            : http.Response(
+                jsonEncode({'url': 'https://chat.restream.io/embed?token=k'}),
+                200,
+              );
+      }),
+    );
+
+    await pumpChat(tester, session: session, chat: chat);
+    expect(find.text('Chat needs reconnecting'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Try again'));
+    await tester.pumpAndSettle();
+
+    expect(calls, 2);
+    expect(find.text('Open chat in your browser'), findsOneWidget);
+  });
+
+  // The full recovery path: a mint fails, the server republishes needs_auth,
+  // the operator authorizes in a browser, and the server publishes ready again.
+  // The panel must reload even though it is already holding a failed result.
+  testWidgets('recovers when the server republishes ready after a failure', (
+    tester,
+  ) async {
+    final inbound = StreamController<Map<String, dynamic>>();
+    final session = Session(inbound: inbound.stream, outbound: (_) => true);
+    addTearDown(() async {
+      session.dispose();
+      await inbound.close();
+    });
+
+    Future<void> feed(Map<String, dynamic> frame) async {
+      await tester.runAsync(() async {
+        inbound.add(frame);
+        await Future<void>.delayed(Duration.zero);
+      });
+      await tester.pump();
+    }
+
+    await feed({
+      'type': 'hello',
+      'proto': '1.1',
+      'server_version': '0',
+      'server_id': 'p',
+    });
+    await feed({
+      'type': 'state',
+      'rev': 1,
+      'stream': {
+        'chat': {'provider': 'restream', 'status': 'ready'},
+      },
+    });
+
+    var calls = 0;
+    final chat = ChatService(
+      serverBase: base,
+      client: MockClient((_) async {
+        calls++;
+        return calls == 1
+            ? http.Response('{}', 409)
+            : http.Response(
+                jsonEncode({'url': 'https://chat.restream.io/embed?token=r'}),
+                200,
+              );
+      }),
+    );
+
+    await pumpChat(tester, session: session, chat: chat);
+    expect(find.text('Chat needs reconnecting'), findsOneWidget);
+
+    // The server saw the same 409 and republished, then the operator authorized.
+    await feed({
+      'type': 'state-delta',
+      'rev': 2,
+      'patch': {
+        'stream': {
+          'chat': {'status': 'needs_auth'},
+        },
+      },
+    });
+    await feed({
+      'type': 'state-delta',
+      'rev': 3,
+      'patch': {
+        'stream': {
+          'chat': {'status': 'ready'},
+        },
+      },
+    });
+    await tester.pumpAndSettle();
+
+    expect(calls, 2);
+    expect(find.text('Chat needs reconnecting'), findsNothing);
+    expect(find.text('Open chat in your browser'), findsOneWidget);
+  });
+
+  // protocol.md §1 requires a client to keep working against a newer minor
+  // version. An unknown status must not leave a spinner with no way out.
+  testWidgets('an unrecognised status shows a message, not a spinner', (
+    tester,
+  ) async {
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'something-a-future-server-sends',
+    });
+
+    await pumpChat(
+      tester,
+      session: session,
+      chat: serviceReturning(() => http.Response('{}', 409)),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('Chat is unavailable'), findsOneWidget);
+  });
+
   // Separate tests rather than a loop in one: pumping a second ChatScreen at
   // the same position reuses the first one's State, so the stale result would
   // still be on screen.

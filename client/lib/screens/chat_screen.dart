@@ -81,7 +81,11 @@ class _ChatScreenState extends State<ChatScreen> {
   /// the operator reconnecting or reopening this screen.
   void _onStateChanged() {
     if (!mounted) return;
-    if (widget.session.state.chatReady && _result == null && !_loading) {
+    // Reloading whenever there is no usable URL — not only before the first
+    // attempt — is what lets the panel recover after the operator authorizes
+    // from an error screen, where a failed result is already held.
+    final needsReload = widget.session.state.chatReady && !(_result?.isReady ?? false);
+    if (needsReload && !_loading) {
       _load();
       return;
     }
@@ -152,8 +156,21 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
-    if (_loading || _result == null) {
+    if (_loading) {
       return const Center(child: CircularProgressIndicator());
+    }
+    if (_result == null) {
+      // Reached when the server reports a status this client does not know —
+      // a newer minor protocol version, which §1 requires us to keep working
+      // against. Nothing has been requested, so say so rather than spin.
+      return _ChatMessage(
+        icon: Icons.help_outline,
+        title: 'Chat is unavailable',
+        detail:
+            'The server reported a chat state this version of CueBooth does not '
+            'recognize. Updating the client should resolve it.',
+        action: _retryButton(),
+      );
     }
 
     final result = _result!;
@@ -173,10 +190,22 @@ class _ChatScreenState extends State<ChatScreen> {
           icon: Icons.link_off,
           title: 'Chat needs reconnecting',
           detail: 'CueBooth\'s access to chat has ended. Reconnect once in your browser.',
-          action: FilledButton.icon(
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('Reconnect'),
-            onPressed: () => _open(widget.chat.authStartUrl),
+          // Try again sits beside Reconnect so an operator who authorized in
+          // another window is not stranded here waiting for a state change.
+          action: Wrap(
+            spacing: 12,
+            children: [
+              FilledButton.icon(
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Reconnect'),
+                onPressed: () => _open(widget.chat.authStartUrl),
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.refresh),
+                label: const Text('Try again'),
+                onPressed: _load,
+              ),
+            ],
           ),
         );
       case ChatUrlError.platformUnavailable:

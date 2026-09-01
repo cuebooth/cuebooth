@@ -35,6 +35,10 @@ func (s *Server) serveChatURL(w http.ResponseWriter, r *http.Request) {
 	url, err := s.chat.URL(r.Context())
 	switch {
 	case errors.Is(err, chat.ErrNeedsAuth):
+		// Republished because a credential can be revoked between snapshots: a
+		// client still showing "ready" from an older one would otherwise render
+		// a platform error with no route back to authorization.
+		s.publishChatStatus()
 		// The start path is returned rather than a minted login URL so that a
 		// client polling an unauthorized server doesn't accumulate one pending
 		// authorization state per request.

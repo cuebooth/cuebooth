@@ -101,5 +101,15 @@ func (s *tokenStore) save(t tokens) error {
 	if err := os.Rename(tmpName, s.path); err != nil {
 		return fmt.Errorf("replace chat token file %s: %w", s.path, err)
 	}
+
+	// Sync the directory so the rename itself survives a power cut, not just the
+	// bytes it published. Without it the entry can revert to the previous file,
+	// whose refresh token the platform retired the moment this one was issued.
+	// Windows cannot open a directory as a file, so a failure here is not fatal:
+	// the credential is already written and recoverable by re-authorizing.
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		dirFile.Close()
+	}
 	return nil
 }
