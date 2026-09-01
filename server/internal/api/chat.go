@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"net"
 	"net/http"
 
 	"github.com/cuebooth/cuebooth/server/internal/chat"
@@ -63,7 +64,7 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginURL, err := s.chat.LoginURL()
+	loginURL, err := s.chat.LoginURL(requesterAddr(r))
 	if err != nil {
 		s.logger.Error("could not build chat login url", "provider", s.chat.Name(), "err", err)
 		http.Error(w, "could not start chat authorization", http.StatusInternalServerError)
@@ -89,7 +90,7 @@ func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state")); err != nil {
+	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state"), requesterAddr(r)); err != nil {
 		s.logger.Error("chat authorization failed", "provider", s.chat.Name(), "err", err)
 		s.renderChatCallback(w, http.StatusBadRequest, "Authorization failed",
 			"CueBooth could not complete the sign-in. Close this tab and start again from the client.")
@@ -117,6 +118,17 @@ func (s *Server) publishChatStatus() {
 	}); err != nil {
 		s.logger.Error("could not publish chat status", "err", err)
 	}
+}
+
+// requesterAddr is the host an HTTP request came from, without its port. The
+// port changes between the two legs of the OAuth handshake even from the same
+// browser, so only the host can bind them.
+func requesterAddr(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {

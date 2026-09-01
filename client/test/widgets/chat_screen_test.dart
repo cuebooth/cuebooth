@@ -341,6 +341,140 @@ void main() {
     expect(mints, 2, reason: 'the panel re-displayed a URL minted before the revocation');
   });
 
+  // Every state change notifies the panel — viewer counts, scenes, meters — and
+  // each mint costs the server a token rotation. Only a transition into ready
+  // may re-fetch.
+  testWidgets('unrelated state changes do not re-mint', (tester) async {
+    final inbound = StreamController<Map<String, dynamic>>();
+    final session = Session(inbound: inbound.stream, outbound: (_) => true);
+    addTearDown(() async {
+      session.dispose();
+      await inbound.close();
+    });
+
+    Future<void> feed(Map<String, dynamic> frame) async {
+      await tester.runAsync(() async {
+        inbound.add(frame);
+        await Future<void>.delayed(Duration.zero);
+      });
+      await tester.pump();
+    }
+
+    await feed({
+      'type': 'hello',
+      'proto': '1.1',
+      'server_version': '0',
+      'server_id': 'p',
+    });
+    await feed({
+      'type': 'state',
+      'rev': 1,
+      'obs': {'scene': 'a', 'streaming': true, 'recording': false},
+      'stream': {
+        'chat': {'provider': 'restream', 'status': 'ready'},
+      },
+    });
+
+    // The first mint fails, so the panel holds a failed result while the server
+    // still says ready — the state in which re-fetching on every notification
+    // turns into one token rotation per unrelated delta.
+    var mints = 0;
+    final chat = ChatService(
+      serverBase: base,
+      client: MockClient((_) async {
+        mints++;
+        return http.Response('{}', 409);
+      }),
+    );
+
+    await pumpChat(tester, session: session, chat: chat);
+    expect(mints, 1);
+
+    for (var rev = 2; rev <= 11; rev++) {
+      await feed({
+        'type': 'state-delta',
+        'rev': rev,
+        'patch': {
+          'obs': {'uptime_seconds': rev * 10},
+        },
+      });
+    }
+    await tester.pumpAndSettle();
+
+    expect(mints, 1, reason: 'unrelated deltas triggered $mints mints, each a token rotation');
+  });
+
+  group('chatNavigationStaysInPanel', () {
+    const panel = 'https://chat.restream.io/embed?token=abc';
+
+    test('keeps navigations on the panel host', () {
+      expect(
+        chatNavigationStaysInPanel(
+          requestUrl: 'https://chat.restream.io/embed?token=def',
+          panelUrl: panel,
+          isMainFrame: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('sends a link to another host out to the browser', () {
+      expect(
+        chatNavigationStaysInPanel(
+          requestUrl: 'https://example.test/some-link',
+          panelUrl: panel,
+          isMainFrame: true,
+        ),
+        isFalse,
+      );
+    });
+
+    // WKWebView reports subframes through the same callback. Diverting them
+    // breaks the embedded analytics and reCAPTCHA frames chat pages load, and
+    // throws the operator into a browser mid-service.
+    test('never diverts a subframe, whatever its host', () {
+      for (final url in [
+        'https://www.google.com/recaptcha/api2/anchor',
+        'about:blank',
+        'https://cdn.segment.com/analytics.js',
+      ]) {
+        expect(
+          chatNavigationStaysInPanel(
+            requestUrl: url,
+            panelUrl: panel,
+            isMainFrame: false,
+          ),
+          isTrue,
+          reason: url,
+        );
+      }
+    });
+
+    // The host comes from the minted URL, so a second provider is not thrown
+    // out of the panel the moment it loads.
+    test('follows the panel URL rather than a fixed host', () {
+      expect(
+        chatNavigationStaysInPanel(
+          requestUrl: 'https://chat.example-platform.test/embed',
+          panelUrl: 'https://chat.example-platform.test/embed?token=x',
+          isMainFrame: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('a hostless main-frame url does not stay', () {
+      expect(
+        chatNavigationStaysInPanel(
+          requestUrl: 'about:blank',
+          panelUrl: panel,
+          isMainFrame: true,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   // State is cleared on disconnect, so an unconfigured server and a dropped
   // connection look alike from the topic alone. Saying chat is not set up
   // during a Wi-Fi hiccup is a claim about the server that isn't true.

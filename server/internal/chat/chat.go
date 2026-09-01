@@ -40,11 +40,12 @@ type Provider interface {
 
 	// LoginURL is where an operator authorizes this provider in a browser. The
 	// returned URL carries a single-use state token that Complete requires back.
-	LoginURL() (string, error)
+	// addr identifies who asked; the callback must come from the same place.
+	LoginURL(addr string) (string, error)
 
 	// Complete finishes authorization from the platform's redirect, persisting
-	// whatever credential it yields.
-	Complete(ctx context.Context, code, state string) error
+	// whatever credential it yields. addr is where the callback arrived from.
+	Complete(ctx context.Context, code, state, addr string) error
 }
 
 // StatusOf reports what a client should render for p. A nil Provider means no

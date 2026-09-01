@@ -60,8 +60,18 @@ const (
 
 	// tokenRequestTimeout bounds a token exchange or refresh. It replaces the
 	// caller's deadline rather than narrowing it, because the rotation must be
-	// read back even when the client that triggered it has gone.
+	// read back even when the client that triggered it has gone. The HTTP client
+	// carries no Timeout of its own, which would cap this one invisibly.
 	tokenRequestTimeout = 20 * time.Second
+
+	// webchatTimeout bounds a webchat URL fetch. Unlike a token request this one
+	// may be abandoned freely — nothing is consumed by asking.
+	webchatTimeout = 10 * time.Second
+
+	// refusalCooldown is how long a token the platform refused immediately after
+	// a refresh is treated as unusable. Nothing the server does unattended will
+	// change that answer, so retrying only spends another rotation.
+	refusalCooldown = 5 * time.Minute
 
 	// invalidGrantName is the error Restream reports when the grant itself is
 	// rejected — a retired or revoked refresh token. Other 400s (a rotated
@@ -105,10 +115,25 @@ type Restream struct {
 	refreshMu sync.Mutex
 
 	mu sync.Mutex
-	// tok is the live credential; pending holds the state parameters of
-	// authorizations that have been started but not yet completed.
+	// tok is the live credential; pending maps the state parameter of each
+	// started-but-unfinished authorization to its deadline and the address that
+	// began it.
 	tok     tokens
-	pending map[string]time.Time
+	pending map[string]pendingLogin
+	// refusedUntil holds off further attempts after the platform refused a
+	// freshly refreshed token, so a panel left open on a misconfigured
+	// application does not rotate the credential once per state change.
+	refusedUntil time.Time
+}
+
+// pendingLogin is an authorization the operator has started in a browser.
+type pendingLogin struct {
+	deadline time.Time
+	// addr is the address that asked for the login URL. The callback must come
+	// from it: without in-protocol auth (protocol.md §1) that binding is what
+	// stops another host on the network completing an authorization of its own
+	// and replacing the operator's credential with it.
+	addr string
 }
 
 // RestreamOption adjusts a Restream provider at construction.
@@ -165,10 +190,13 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 		clientSecret: cfg.ClientSecret,
 		redirectURI:  cfg.RedirectURI,
 		apiBase:      defaultRestreamAPI,
-		http:         &http.Client{Timeout: 10 * time.Second},
-		logger:       slog.Default(),
-		now:          time.Now,
-		pending:      make(map[string]time.Time),
+		// No client-level Timeout: each call sets its own deadline, and a shared
+		// one would silently cap the token request's, which must outlive the
+		// caller so a rotation is read back.
+		http:    &http.Client{},
+		logger:  slog.Default(),
+		now:     time.Now,
+		pending: make(map[string]pendingLogin),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -195,18 +223,21 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 // Name identifies the platform on the wire.
 func (r *Restream) Name() string { return "restream" }
 
-// Authorized reports whether a refresh token that has not lapsed is held.
+// Authorized reports whether a credential is held that could currently mint a
+// chat URL. A token the platform has just refused counts as unusable for the
+// cooldown, so the status clients render matches what a request would get.
 func (r *Restream) Authorized() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.tok.valid(r.now())
+	now := r.now()
+	return r.tok.valid(now) && !now.Before(r.refusedUntil)
 }
 
 // LoginURL builds Restream's authorize dialog URL and records the state
 // parameter Complete will require back. Restream takes no scope parameter —
 // scopes are selected per application in their dashboard, and chat.read is the
 // one the webchat endpoint needs.
-func (r *Restream) LoginURL() (string, error) {
+func (r *Restream) LoginURL(addr string) (string, error) {
 	state, err := randomState()
 	if err != nil {
 		return "", err
@@ -218,7 +249,7 @@ func (r *Restream) LoginURL() (string, error) {
 	for len(r.pending) >= maxPendingLogins {
 		r.evictOldestPendingLocked()
 	}
-	r.pending[state] = now.Add(loginStateTTL)
+	r.pending[state] = pendingLogin{deadline: now.Add(loginStateTTL), addr: addr}
 	r.mu.Unlock()
 
 	q := url.Values{}
@@ -232,7 +263,7 @@ func (r *Restream) LoginURL() (string, error) {
 // Complete exchanges an authorization code for a token pair. state must be one
 // LoginURL issued and has not been used: it is consumed here whether or not the
 // exchange succeeds, so a replayed callback cannot re-run the exchange.
-func (r *Restream) Complete(ctx context.Context, code, state string) error {
+func (r *Restream) Complete(ctx context.Context, code, state, addr string) error {
 	if code == "" {
 		return errors.New("restream callback carried no authorization code")
 	}
@@ -240,12 +271,15 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	now := r.now()
 	r.mu.Lock()
 	r.prunePendingLocked(now)
-	deadline, ok := r.pending[state]
+	login, ok := r.pending[state]
 	delete(r.pending, state)
 	r.mu.Unlock()
 
-	if !ok || now.After(deadline) {
+	if !ok || now.After(login.deadline) {
 		return errors.New("restream callback state is unknown or expired")
+	}
+	if login.addr != addr {
+		return errors.New("restream callback came from a different address than the one that started it")
 	}
 
 	form := url.Values{}
@@ -283,10 +317,13 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 	if errors.Is(err, errUnauthorized) {
 		// A token minted moments ago was still refused, so nothing the server
 		// can do unattended will help — most likely the application was
-		// registered without the chat.read scope. Reported as needing
-		// authorization so the operator gets a route to fix it, and so a
-		// permanently failing panel stops rotating the credential per attempt.
+		// registered without the chat.read scope. Held off for a while so a
+		// panel left open cannot rotate the credential once per attempt, and
+		// reported as needing authorization so the operator gets a route to it.
 		r.logger.Error("restream refused a freshly refreshed token; check the application's chat.read scope", "err", err)
+		r.mu.Lock()
+		r.refusedUntil = r.now().Add(refusalCooldown)
+		r.mu.Unlock()
 		return "", ErrNeedsAuth
 	}
 	return chatURL, err
@@ -298,6 +335,9 @@ func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) 
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, webchatTimeout)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBase+"/v2/user/webchat/url", nil)
 	if err != nil {
@@ -349,7 +389,7 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 	r.mu.Unlock()
 
 	now := r.now()
-	if !tok.valid(now) {
+	if !tok.valid(now) || now.Before(r.refusalDeadline()) {
 		return "", ErrNeedsAuth
 	}
 	if !forceRefresh && tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
@@ -380,6 +420,12 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 	return fresh.AccessToken, nil
 }
 
+func (r *Restream) refusalDeadline() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refusedUntil
+}
+
 // discard drops a credential the platform has rejected, so Authorized stops
 // claiming chat is ready.
 func (r *Restream) discard() {
@@ -402,6 +448,8 @@ func (r *Restream) discard() {
 func (r *Restream) adopt(t tokens) {
 	r.mu.Lock()
 	r.tok = t
+	// A fresh authorization is exactly what a refusal was waiting for.
+	r.refusedUntil = time.Time{}
 	r.mu.Unlock()
 
 	if err := r.store.save(t); err != nil {
@@ -483,8 +531,8 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 // prunePendingLocked drops authorization states that were never completed.
 // Callers hold r.mu.
 func (r *Restream) prunePendingLocked(now time.Time) {
-	for state, deadline := range r.pending {
-		if now.After(deadline) {
+	for state, login := range r.pending {
+		if now.After(login.deadline) {
 			delete(r.pending, state)
 		}
 	}
@@ -496,9 +544,9 @@ func (r *Restream) prunePendingLocked(now time.Time) {
 func (r *Restream) evictOldestPendingLocked() {
 	var oldest string
 	var deadline time.Time
-	for state, d := range r.pending {
-		if oldest == "" || d.Before(deadline) {
-			oldest, deadline = state, d
+	for state, login := range r.pending {
+		if oldest == "" || login.deadline.Before(deadline) {
+			oldest, deadline = state, login.deadline
 		}
 	}
 	delete(r.pending, oldest)

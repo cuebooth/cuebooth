@@ -37,6 +37,16 @@ bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256,
 # chat.read scope, and add "<public_url>/chat/auth/callback" as a redirect URI.
 # Then browse to <public_url>/chat/auth/start once to authorize; the credential
 # is stored in token_file and refreshed automatically from then on.
+#
+# public_url must be reachable by the *operator's browser*, not just by the
+# server: it is where Restream sends them back. If they authorize from a tablet
+# on Tailscale, use the Tailscale name — a LAN-only name leaves the approval
+# redirecting somewhere that device cannot load, and nothing completes.
+#
+# token_file holds a live credential. A relative path resolves against this
+# file's directory, which is also where client_secret lives — so restrict that
+# directory's permissions. On Windows the file inherits the directory's ACL;
+# the 0600 the server sets has no effect there.
 
 # [chat]
 # provider = "restream"

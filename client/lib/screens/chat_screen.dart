@@ -28,6 +28,31 @@ bool get webviewSupported {
   }
 }
 
+/// Whether a webview navigation to [requestUrl] stays in the chat panel.
+///
+/// Anything else is handed to the system browser: a link tapped in chat would
+/// otherwise replace the panel with an arbitrary page, and there is no back
+/// control here to return from it.
+///
+/// Subframes always stay. WKWebView reports them through the same callback as
+/// main-frame navigations, and chat pages embed third-party frames — analytics,
+/// reCAPTCHA — whose loads must not be diverted into a browser.
+///
+/// The host comes from [panelUrl] rather than a fixed name so a second provider,
+/// which is the point of the server's provider seam, is not thrown out of the
+/// panel on its first load.
+bool chatNavigationStaysInPanel({
+  required String requestUrl,
+  required String panelUrl,
+  required bool isMainFrame,
+}) {
+  if (!isMainFrame) return true;
+  final target = Uri.tryParse(requestUrl)?.host;
+  final panel = Uri.tryParse(panelUrl)?.host;
+  if (target == null || panel == null) return false;
+  return target.isNotEmpty && target == panel;
+}
+
 /// The stream chat panel (CB-017).
 ///
 /// The server owns the platform credential and mints a URL per request, so this
@@ -87,15 +112,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     final ready = widget.session.state.chatReady;
 
-    // Re-mint on every transition into ready, not only when nothing usable is
-    // held. A URL minted before the credential was revoked, or before the
-    // connection dropped, embeds a token that is no longer good — and
-    // protocol.md §11 says a client must not reuse one.
+    // Only a transition into ready re-mints. Every state change notifies this
+    // listener — a viewer count, a scene, a meter — and each mint costs the
+    // server a token rotation, so reloading on anything else would rotate the
+    // credential at the rate the rest of the state changes.
     final becameReady = ready && !_wasReady;
-    final holdsNothingUsable = ready && !(_result?.isReady ?? false);
     _wasReady = ready;
 
-    if ((becameReady || holdsNothingUsable) && !_loading) {
+    if (becameReady && !_loading) {
       _load();
       return;
     }
@@ -281,11 +305,14 @@ class _ChatWebviewState extends State<_ChatWebview> {
     ..setJavaScriptMode(JavaScriptMode.unrestricted)
     ..setNavigationDelegate(
       NavigationDelegate(
-        // A link tapped in chat would otherwise replace the panel with an
-        // arbitrary page, and there is no back control here to return from it.
-        // Chat keeps the panel; anything else goes to the system browser.
         onNavigationRequest: (request) {
-          if (_isChatHost(request.url)) return NavigationDecision.navigate;
+          if (chatNavigationStaysInPanel(
+            requestUrl: request.url,
+            panelUrl: widget.url,
+            isMainFrame: request.isMainFrame,
+          )) {
+            return NavigationDecision.navigate;
+          }
           unawaited(
             launchUrl(Uri.parse(request.url), mode: LaunchMode.externalApplication),
           );
@@ -294,11 +321,6 @@ class _ChatWebviewState extends State<_ChatWebview> {
       ),
     )
     ..loadRequest(Uri.parse(widget.url));
-
-  static bool _isChatHost(String url) {
-    final host = Uri.tryParse(url)?.host ?? '';
-    return host == 'chat.restream.io';
-  }
 
   @override
   void didUpdateWidget(_ChatWebview oldWidget) {

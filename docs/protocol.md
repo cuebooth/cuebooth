@@ -487,6 +487,10 @@ Chat is the one part of the client↔server surface that is plain HTTP rather th
 
 These routes exist only when a chat provider is configured. A deployment without one answers `404`, rather than exposing endpoints that could only fail.
 
+**These routes inherit §1's posture: there is no in-protocol auth.** Anything that can reach the listener can ask for a chat URL, which is a live credential for the operator's chat account — a step up from the button presses the rest of v1 exposes, and another reason the listener belongs on a trusted network. The authorization handshake is bound to the address that began it, so a second host cannot complete an authorization of its own and replace the operator's credential; that binding is not a substitute for the network isolation §1 assumes.
+
+`public_url` in the server's config must be reachable by the **operator's browser**, since the OAuth redirect is derived from it, and it must match a redirect URI registered on the platform. A server addressed over a VPN needs the VPN name here, not a LAN-only one.
+
 ### `GET /chat/url`
 
 Mints a chat URL for the client to display. Clients call this each time they need one and MUST NOT cache it: the token inside is the platform's to expire, and minting another is a server-side token refresh rather than an operator re-authorizing.

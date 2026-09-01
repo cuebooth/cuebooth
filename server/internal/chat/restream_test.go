@@ -47,6 +47,10 @@ type fakeRestream struct {
 	tokenErrorMessage string
 }
 
+// testAddr stands in for the browser address that started an authorization; the
+// callback must arrive from the same one.
+const testAddr = "192.0.2.10"
+
 func newFakeRestream() *fakeRestream {
 	return &fakeRestream{refreshExpiresIn: 31536000, accessExpiresIn: 3600}
 }
@@ -188,7 +192,7 @@ func newTestProvider(t *testing.T, fake *fakeRestream) (*Restream, *testClock, s
 // authorize runs the browser half of the handshake the way the API handlers do.
 func authorize(t *testing.T, r *Restream, code string) error {
 	t.Helper()
-	loginURL, err := r.LoginURL()
+	loginURL, err := r.LoginURL(testAddr)
 	if err != nil {
 		t.Fatalf("LoginURL: %v", err)
 	}
@@ -196,7 +200,17 @@ func authorize(t *testing.T, r *Restream, code string) error {
 	if err != nil {
 		t.Fatalf("parse login url: %v", err)
 	}
-	return r.Complete(context.Background(), code, u.Query().Get("state"))
+	return r.Complete(context.Background(), code, u.Query().Get("state"), testAddr)
+}
+
+// stateFrom pulls the state parameter out of a login URL.
+func stateFrom(t *testing.T, loginURL string) string {
+	t.Helper()
+	u, err := url.Parse(loginURL)
+	if err != nil {
+		t.Fatalf("parse login url: %v", err)
+	}
+	return u.Query().Get("state")
 }
 
 func readStoredTokens(t *testing.T, path string) tokens {
@@ -215,7 +229,7 @@ func readStoredTokens(t *testing.T, path string) tokens {
 func TestLoginURLCarriesTheDocumentedParameters(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
-	loginURL, err := r.LoginURL()
+	loginURL, err := r.LoginURL(testAddr)
 	if err != nil {
 		t.Fatalf("LoginURL: %v", err)
 	}
@@ -462,17 +476,17 @@ func TestAbsentRefreshLifetimeIsTreatedAsUsable(t *testing.T) {
 func TestCallbackStateIsSingleUse(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
-	loginURL, err := r.LoginURL()
+	loginURL, err := r.LoginURL(testAddr)
 	if err != nil {
 		t.Fatalf("LoginURL: %v", err)
 	}
 	u, _ := url.Parse(loginURL)
 	state := u.Query().Get("state")
 
-	if err := r.Complete(context.Background(), "good-code", state); err != nil {
+	if err := r.Complete(context.Background(), "good-code", state, testAddr); err != nil {
 		t.Fatalf("first Complete: %v", err)
 	}
-	if err := r.Complete(context.Background(), "good-code", state); err == nil {
+	if err := r.Complete(context.Background(), "good-code", state, testAddr); err == nil {
 		t.Error("a replayed callback state was accepted a second time")
 	}
 }
@@ -480,7 +494,7 @@ func TestCallbackStateIsSingleUse(t *testing.T) {
 func TestUnknownCallbackStateIsRejected(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
-	if err := r.Complete(context.Background(), "good-code", "not-a-state-we-issued"); err == nil {
+	if err := r.Complete(context.Background(), "good-code", "not-a-state-we-issued", testAddr); err == nil {
 		t.Fatal("Complete accepted a state it never issued")
 	}
 	if r.Authorized() {
@@ -491,14 +505,14 @@ func TestUnknownCallbackStateIsRejected(t *testing.T) {
 func TestExpiredCallbackStateIsRejected(t *testing.T) {
 	r, clock, _ := newTestProvider(t, newFakeRestream())
 
-	loginURL, err := r.LoginURL()
+	loginURL, err := r.LoginURL(testAddr)
 	if err != nil {
 		t.Fatalf("LoginURL: %v", err)
 	}
 	u, _ := url.Parse(loginURL)
 
 	clock.advance(loginStateTTL + time.Minute)
-	if err := r.Complete(context.Background(), "good-code", u.Query().Get("state")); err == nil {
+	if err := r.Complete(context.Background(), "good-code", u.Query().Get("state"), testAddr); err == nil {
 		t.Error("Complete accepted a state past its lifetime")
 	}
 }
@@ -506,7 +520,7 @@ func TestExpiredCallbackStateIsRejected(t *testing.T) {
 func TestCompleteRejectsAnEmptyCode(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
-	if err := r.Complete(context.Background(), "", "whatever"); err == nil {
+	if err := r.Complete(context.Background(), "", "whatever", testAddr); err == nil {
 		t.Error("Complete accepted an empty authorization code")
 	}
 }

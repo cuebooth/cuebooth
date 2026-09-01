@@ -37,14 +37,14 @@ func (f *fakeChat) URL(context.Context) (string, error) {
 	return f.url, nil
 }
 
-func (f *fakeChat) LoginURL() (string, error) {
+func (f *fakeChat) LoginURL(string) (string, error) {
 	if f.loginErr != nil {
 		return "", f.loginErr
 	}
 	return f.loginURL, nil
 }
 
-func (f *fakeChat) Complete(_ context.Context, code, state string) error {
+func (f *fakeChat) Complete(_ context.Context, code, state, addr string) error {
 	f.completes++
 	if f.completeErr != nil {
 		return f.completeErr
