@@ -571,6 +571,10 @@ void main() {
 
       expect(find.text(title), findsOneWidget);
       expect(find.widgetWithText(FilledButton, 'Try again'), findsOneWidget);
+      // Both of these can persist for reasons only re-authorizing clears — a
+      // revoked application, a missing scope — so a retry must not be the
+      // operator's only option.
+      expect(find.widgetWithText(OutlinedButton, 'Reconnect'), findsOneWidget);
     });
   }
 

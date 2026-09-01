@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,7 +34,7 @@ func (s *Server) serveChatURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url, err := s.chat.URL(r.Context())
+	chatURL, err := s.chat.URL(r.Context())
 	switch {
 	case errors.Is(err, chat.ErrNeedsAuth):
 		// Republished because a credential can be revoked between snapshots: a
@@ -53,7 +52,11 @@ func (s *Server) serveChatURL(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("could not mint chat url", "provider", s.chat.Name(), "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "chat provider unavailable"})
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"url": url})
+		// Republished on success too: a refusal cooldown that has since lapsed
+		// leaves the last published status at needs_auth, which would keep the
+		// connect prompt in front of an operator whose chat is working.
+		s.publishChatStatus()
+		writeJSON(w, http.StatusOK, map[string]any{"url": chatURL})
 	}
 }
 
@@ -76,7 +79,7 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginURL, err := s.chat.LoginURL(requesterAddr(r))
+	loginURL, err := s.chat.LoginURL()
 	if err != nil {
 		s.logger.Error("could not build chat login url", "provider", s.chat.Name(), "err", err)
 		http.Error(w, "could not start chat authorization", http.StatusInternalServerError)
@@ -102,19 +105,15 @@ func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state"), requesterAddr(r)); err != nil {
+	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state")); err != nil {
 		s.logger.Error("chat authorization failed", "provider", s.chat.Name(), "err", err)
-		// The three failures an operator can act on differently, so the page says
-		// which one happened rather than sending them round the same loop.
+		// A missing scope is the one failure the operator can act on directly, so
+		// the page names it rather than sending them round the same loop.
 		switch {
 		case errors.Is(err, chat.ErrMissingScope):
 			s.renderChatCallback(w, http.StatusBadRequest, "Missing permission",
 				"The account signed in, but the application was not granted permission to read chat. "+
 					"Add the chat.read scope to it at developers.restream.io, then try again.")
-		case errors.Is(err, chat.ErrAuthAddressMismatch):
-			s.renderChatCallback(w, http.StatusBadRequest, "Authorization came back elsewhere",
-				"Sign-in started at one address and returned to another, so CueBooth could not match them. "+
-					"Check that the server's public_url is the address you reach it at.")
 		default:
 			s.renderChatCallback(w, http.StatusBadRequest, "Authorization failed",
 				"CueBooth could not complete the sign-in. Close this tab and start again from the client.")
@@ -164,17 +163,6 @@ func (s *Server) chatAuthPublicRedirect(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return public + chatAuthPath + "?" + chatAuthViaPublic + "=1", true
-}
-
-// requesterAddr is the host an HTTP request came from, without its port. The
-// port changes between the two legs of the OAuth handshake even from the same
-// browser, so only the host can bind them.
-func requesterAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {

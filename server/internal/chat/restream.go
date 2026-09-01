@@ -33,6 +33,11 @@ var errInvalidGrant = errors.New("restream rejected the grant")
 // resolves.
 var errUnauthorized = errors.New("restream refused the access token")
 
+// errForbidden reports a token the platform accepts but will not serve this
+// endpoint with — its insufficient_scope. A refresh reissues the same
+// permissions, so no unattended retry changes the answer.
+var errForbidden = errors.New("restream refused the request as out of scope")
+
 const (
 	// defaultRestreamAPI is Restream's API root. Tests point this at an httptest
 	// server; the login, token, and webchat endpoints all hang off it.
@@ -130,21 +135,19 @@ type Restream struct {
 	// started-but-unfinished authorization to its deadline and the address that
 	// began it.
 	tok     tokens
-	pending map[string]pendingLogin
+	pending map[string]time.Time
 	// refusedUntil holds off further attempts after the platform refused a
 	// freshly refreshed token, so a panel left open on a misconfigured
 	// application does not rotate the credential once per state change.
 	refusedUntil time.Time
-}
+	// gen counts authorizations completed. An attempt carries the value it
+	// started with, so its answer cannot hold off a credential authorized since.
+	gen uint64
 
-// pendingLogin is an authorization the operator has started in a browser.
-type pendingLogin struct {
-	deadline time.Time
-	// addr is the address that asked for the login URL. The callback must come
-	// from it: without in-protocol auth (protocol.md §1) that binding is what
-	// stops another host on the network completing an authorization of its own
-	// and replacing the operator's credential with it.
-	addr string
+	// tokenCalls tracks token requests in flight. They must be read back to
+	// capture the rotation the platform has already performed, so shutdown waits
+	// for them rather than exiting mid-exchange.
+	tokenCalls sync.WaitGroup
 }
 
 // RestreamOption adjusts a Restream provider at construction.
@@ -207,13 +210,15 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 		http:    &http.Client{},
 		logger:  slog.Default(),
 		now:     time.Now,
-		pending: make(map[string]pendingLogin),
+		pending: make(map[string]time.Time),
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
 	if cfg.TokenFile != "" {
 		r.store = &tokenStore{path: cfg.TokenFile}
+	} else {
+		r.logger.Warn("no chat token_file configured; chat will need authorizing again after every restart")
 	}
 
 	tok, err := r.store.load()
@@ -248,7 +253,7 @@ func (r *Restream) Authorized() bool {
 // parameter Complete will require back. Restream takes no scope parameter —
 // scopes are selected per application in their dashboard, and chat.read is the
 // one the webchat endpoint needs.
-func (r *Restream) LoginURL(addr string) (string, error) {
+func (r *Restream) LoginURL() (string, error) {
 	state, err := randomState()
 	if err != nil {
 		return "", err
@@ -260,7 +265,7 @@ func (r *Restream) LoginURL(addr string) (string, error) {
 	for len(r.pending) >= maxPendingLogins {
 		r.evictOldestPendingLocked()
 	}
-	r.pending[state] = pendingLogin{deadline: now.Add(loginStateTTL), addr: addr}
+	r.pending[state] = now.Add(loginStateTTL)
 	r.mu.Unlock()
 
 	q := url.Values{}
@@ -274,7 +279,7 @@ func (r *Restream) LoginURL(addr string) (string, error) {
 // Complete exchanges an authorization code for a token pair. state must be one
 // LoginURL issued and has not been used: it is consumed here whether or not the
 // exchange succeeds, so a replayed callback cannot re-run the exchange.
-func (r *Restream) Complete(ctx context.Context, code, state, addr string) error {
+func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	if code == "" {
 		return errors.New("restream callback carried no authorization code")
 	}
@@ -282,15 +287,12 @@ func (r *Restream) Complete(ctx context.Context, code, state, addr string) error
 	now := r.now()
 	r.mu.Lock()
 	r.prunePendingLocked(now)
-	login, ok := r.pending[state]
+	deadline, ok := r.pending[state]
 	delete(r.pending, state)
 	r.mu.Unlock()
 
-	if !ok || now.After(login.deadline) {
+	if !ok || now.After(deadline) {
 		return errors.New("restream callback state is unknown or expired")
-	}
-	if login.addr != addr {
-		return fmt.Errorf("%w: started from %s, returned to %s", ErrAuthAddressMismatch, login.addr, addr)
 	}
 
 	form := url.Values{}
@@ -315,16 +317,25 @@ func (r *Restream) Complete(ctx context.Context, code, state, addr string) error
 	// chat.read the credential authorizes nothing this feature can use, and
 	// every later attempt would 401 — a loop that only re-registering the
 	// application escapes, which the operator has to be told.
-	if tok.Scope != "" && !slices.Contains(strings.Fields(tok.Scope), webchatScope) {
+	if tok.Scope != "" && !slices.Contains(scopeList(tok.Scope), webchatScope) {
 		return fmt.Errorf("%w: granted %q, needs %s", ErrMissingScope, tok.Scope, webchatScope)
 	}
 	r.adopt(tok)
+	r.mu.Lock()
+	// Bumped only here, not on refresh: it marks an operator having authorized,
+	// which is the one event that should outrank an attempt already in flight.
+	r.gen++
+	r.mu.Unlock()
 	return nil
 }
 
 // URL mints a chat URL to display. The token embedded in it is Restream's to
 // expire, so this is called each time a client needs one rather than cached.
 func (r *Restream) URL(ctx context.Context) (string, error) {
+	// Captured before the attempt so a credential authorized while this one was
+	// in flight is not held off by its stale answer.
+	gen := r.generation()
+
 	chatURL, err := r.mint(ctx, false)
 	if errors.Is(err, errUnauthorized) {
 		// Restream retired the access token before the expiry it stated —
@@ -332,19 +343,35 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 		// that from a credential that is genuinely spent.
 		chatURL, err = r.mint(ctx, true)
 	}
-	if errors.Is(err, errUnauthorized) {
-		// A token minted moments ago was still refused, so nothing the server
-		// can do unattended will help — most likely the application was
-		// registered without the chat.read scope. Held off for a while so a
-		// panel left open cannot rotate the credential once per attempt, and
-		// reported as needing authorization so the operator gets a route to it.
-		r.logger.Error("restream refused a freshly refreshed token; check the application's chat.read scope", "err", err)
-		r.mu.Lock()
-		r.refusedUntil = r.now().Add(refusalCooldown)
-		r.mu.Unlock()
+	if errors.Is(err, errUnauthorized) || errors.Is(err, errForbidden) {
+		// Either a token minted moments ago was still refused, or the platform
+		// accepted it and refused the permission. Neither improves unattended —
+		// most often the application was registered without chat.read. Held off
+		// for a while so a panel left open cannot rotate the credential once per
+		// attempt, and reported as needing authorization so the operator has a
+		// route to it.
+		r.logger.Error("restream will not serve chat with this credential; check the application's chat.read scope", "err", err)
+		r.holdOff(gen)
 		return "", ErrNeedsAuth
 	}
 	return chatURL, err
+}
+
+// holdOff suppresses further attempts for a while, unless the credential has
+// been replaced since gen was taken.
+func (r *Restream) holdOff(gen uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gen != gen {
+		return
+	}
+	r.refusedUntil = r.now().Add(refusalCooldown)
+}
+
+func (r *Restream) generation() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen
 }
 
 // mint fetches a chat URL, optionally forcing a token refresh first.
@@ -376,10 +403,17 @@ func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) 
 	}
 	if resp.StatusCode != http.StatusOK {
 		_, message := restreamError(body)
-		if resp.StatusCode == http.StatusUnauthorized {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
 			return "", fmt.Errorf("%w: %s", errUnauthorized, message)
+		case http.StatusForbidden:
+			// The token is accepted but not permitted — Restream's
+			// insufficient_scope. A refresh reissues the same permissions, so
+			// only re-registering the application and authorizing again helps.
+			return "", fmt.Errorf("%w: %s", errForbidden, message)
+		default:
+			return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
 		}
-		return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
 	}
 
 	var payload struct {
@@ -438,6 +472,22 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 	return fresh.AccessToken, nil
 }
 
+// Drain waits for token requests already issued, so a rotation the platform has
+// performed is read back and persisted before the process exits. It returns
+// when they finish or ctx is done.
+func (r *Restream) Drain(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		r.tokenCalls.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		r.logger.Warn("exiting with a chat token request in flight; chat may need authorizing again")
+	}
+}
+
 func (r *Restream) refusalDeadline() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -466,7 +516,7 @@ func (r *Restream) discard() {
 func (r *Restream) adopt(t tokens) {
 	r.mu.Lock()
 	r.tok = t
-	// A fresh authorization is exactly what a refusal was waiting for.
+	// A fresh credential is exactly what a refusal was waiting for.
 	r.refusedUntil = time.Time{}
 	r.mu.Unlock()
 
@@ -487,6 +537,9 @@ func (r *Restream) adopt(t tokens) {
 func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenRequestTimeout)
 	defer cancel()
+
+	r.tokenCalls.Add(1)
+	defer r.tokenCalls.Done()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -557,8 +610,8 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 // prunePendingLocked drops authorization states that were never completed.
 // Callers hold r.mu.
 func (r *Restream) prunePendingLocked(now time.Time) {
-	for state, login := range r.pending {
-		if now.After(login.deadline) {
+	for state, deadline := range r.pending {
+		if now.After(deadline) {
 			delete(r.pending, state)
 		}
 	}
@@ -570,9 +623,9 @@ func (r *Restream) prunePendingLocked(now time.Time) {
 func (r *Restream) evictOldestPendingLocked() {
 	var oldest string
 	var deadline time.Time
-	for state, login := range r.pending {
-		if oldest == "" || login.deadline.Before(deadline) {
-			oldest, deadline = state, login.deadline
+	for state, d := range r.pending {
+		if oldest == "" || d.Before(deadline) {
+			oldest, deadline = state, d
 		}
 	}
 	delete(r.pending, oldest)
@@ -595,6 +648,15 @@ func restreamError(body []byte) (name, message string) {
 		body = body[:200]
 	}
 	return "", strings.TrimSpace(string(body))
+}
+
+// scopeList splits a granted-scope string. Restream's token response separates
+// them with spaces, and their capture-the-code documentation describes the same
+// value as comma-separated, so both are accepted.
+func scopeList(scope string) []string {
+	return strings.FieldsFunc(scope, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
 }
 
 func randomState() (string, error) {

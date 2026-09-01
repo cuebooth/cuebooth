@@ -17,12 +17,6 @@ import (
 	"errors"
 )
 
-// ErrAuthAddressMismatch reports a callback that arrived from a different
-// address than the one that began the authorization. Distinct from an unknown
-// state because the operator can act on it — the two legs have to land on the
-// same address — where an expired state just means starting again.
-var ErrAuthAddressMismatch = errors.New("chat callback came from a different address than the one that started it")
-
 // ErrMissingScope reports that the platform granted the authorization but not
 // the permission chat needs, which no retry of the same application will fix.
 var ErrMissingScope = errors.New("chat platform did not grant the permission chat needs")
@@ -53,12 +47,27 @@ type Provider interface {
 
 	// LoginURL is where an operator authorizes this provider in a browser. The
 	// returned URL carries a single-use state token that Complete requires back.
-	// addr identifies who asked; the callback must come from the same place.
-	LoginURL(addr string) (string, error)
+	LoginURL() (string, error)
 
 	// Complete finishes authorization from the platform's redirect, persisting
-	// whatever credential it yields. addr is where the callback arrived from.
-	Complete(ctx context.Context, code, state, addr string) error
+	// whatever credential it yields.
+	Complete(ctx context.Context, code, state string) error
+}
+
+// Draining is implemented by providers holding work that must finish before the
+// process exits. A token exchange is the case that matters: the platform
+// rotates the credential on receipt, so abandoning the response loses the
+// replacement and costs the operator a re-authorization.
+type Draining interface {
+	Drain(ctx context.Context)
+}
+
+// Drain waits for p's in-flight work if it has any, and returns immediately
+// otherwise.
+func Drain(ctx context.Context, p Provider) {
+	if d, ok := p.(Draining); ok {
+		d.Drain(ctx)
+	}
 }
 
 // StatusOf reports what a client should render for p. A nil Provider means no

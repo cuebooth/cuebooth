@@ -26,6 +26,12 @@ import (
 // shutdownTimeout bounds graceful HTTP shutdown.
 const shutdownTimeout = 5 * time.Second
 
+// chatDrainTimeout bounds the wait for a chat token exchange still in flight at
+// shutdown. It exceeds the provider's own request deadline, because the platform
+// rotates the credential on receipt: exiting before the response is read loses
+// the replacement and costs an operator a re-authorization.
+const chatDrainTimeout = 25 * time.Second
+
 // Server is the WebSocket API server.
 type Server struct {
 	cfg        *config.Config
@@ -215,6 +221,11 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		err := s.httpServer.Shutdown(sctx)
 		s.hub.closeAll("server shutting down")
 		s.waitConns(sctx)
+		if s.chat != nil {
+			dctx, dcancel := context.WithTimeout(context.Background(), chatDrainTimeout)
+			chat.Drain(dctx, s.chat)
+			dcancel()
+		}
 		return err
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {

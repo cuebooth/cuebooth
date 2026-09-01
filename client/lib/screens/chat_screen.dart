@@ -272,19 +272,21 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         );
+      // Both of these can persist for reasons only re-authorizing clears, so
+      // neither leaves the operator with a retry as their sole option.
       case ChatUrlError.platformUnavailable:
         return _ChatMessage(
           icon: Icons.cloud_off,
           title: 'Chat platform is not responding',
           detail: 'The server reached out but got no answer. Streaming is unaffected.',
-          action: _retryButton(),
+          action: _retryAndReconnect(),
         );
       case ChatUrlError.unreachable:
         return _ChatMessage(
           icon: Icons.wifi_off,
           title: 'Could not reach the server',
           detail: 'CueBooth could not ask the server for a chat link.',
-          action: _retryButton(),
+          action: _retryAndReconnect(),
         );
     }
   }
@@ -293,6 +295,18 @@ class _ChatScreenState extends State<ChatScreen> {
     icon: const Icon(Icons.refresh),
     label: const Text('Try again'),
     onPressed: _load,
+  );
+
+  Widget _retryAndReconnect() => Wrap(
+    spacing: 12,
+    children: [
+      _retryButton(),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.open_in_new),
+        label: const Text('Reconnect'),
+        onPressed: () => _open(widget.chat.authStartUrl),
+      ),
+    ],
   );
 
   Widget _openInBrowser(String url) => _ChatMessage(

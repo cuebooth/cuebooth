@@ -78,7 +78,7 @@ func TestPendingAuthorizationsAreBounded(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
 	for range maxPendingLogins * 4 {
-		if _, err := r.LoginURL(testAddr); err != nil {
+		if _, err := r.LoginURL(); err != nil {
 			t.Fatalf("LoginURL: %v", err)
 		}
 	}

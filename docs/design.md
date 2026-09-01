@@ -183,6 +183,7 @@ The orchestration and automation daemon running on the sanctuary PC. It does NOT
 - **Orchestration:** Coordinate actions across Companion, direct OSC, and direct VISCA into unified workflows.
 - **Client API:** Serve a WebSocket API that the Flutter client connects to, providing a single control surface.
 - **Direct hardware (where needed):** OSC for audio meters/faders/automation, VISCA for joystick PTZ, OBS WebSocket for video relay.
+- **Credential broker:** Hold the third-party credentials the client must not — currently the stream platform's chat OAuth — and hand out only what a client needs to render.
 
 **Why Go:**
 - Compiled, single binary deployment — no runtime to install or manage.
@@ -272,6 +273,12 @@ The automation brain. When a slide change is detected:
 4. Route immediate actions to the appropriate path (Companion HTTP for presets/scenes, direct OSC for audio, etc.).
 5. Hold the deferred actions as the slide's pending set (replacing any prior un-confirmed pending) and signal the client (and/or clicker).
 
+#### Chat Credential Broker
+
+The one subsystem that holds a credential for someone else's service. The stream platform's OAuth has no PKCE and its token exchange needs a client secret, so an app distributed to operators cannot do this; the platform's own guidance is to keep the secret off devices and refresh through a proxy the application provides.
+
+The server therefore owns the whole authorization lifecycle — the browser handshake, the rotating refresh token on disk, and minting a display URL per request — and adds a small browser-facing HTTP surface for it, distinct from the client's WebSocket API (see [`protocol.md`](protocol.md) §11). Providers sit behind one interface so a second platform can be added without the client learning a second auth model. What the client gets is a URL to render and a status to display, never a credential.
+
 ### 3.4 Slide Rule Format
 
 Rules are embedded in PowerPoint slide notes. Format is a simple DSL. Rules reference **logical preset names** defined in the server config, which map to Companion button IDs and/or direct OSC commands.
@@ -332,7 +339,7 @@ A single app that consolidates:
 
 **Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web (fallback).
 
-**Chat ownership.** The **server** owns chat authorization and the client owns only rendering. The platform's OAuth offers no PKCE and its token exchange requires a client secret, so an app distributed to operators cannot hold one; the server does the exchange, persists the rotating refresh token, and mints a display URL on demand. The client asks for a URL when it needs one and never sees a credential — which also means chat survives indefinitely without re-authorization, rather than expiring on the operator.
+**Chat ownership.** The **server** owns chat authorization (see §3.3 *Chat Credential Broker*) and the client owns only rendering. The platform's OAuth offers no PKCE and its token exchange requires a client secret, so an app distributed to operators cannot hold one; the server does the exchange, persists the rotating refresh token, and mints a display URL on demand. The client asks for a URL when it needs one and never sees a credential — which also means chat survives indefinitely without re-authorization, rather than expiring on the operator.
 
 What each side deliberately does *not* do: the client does not cache the chat URL (it embeds a token the platform expires), and neither side offers a send or canned-message path — the platform's chat API is receive-only, so composing a message is only possible inside the embedded UI. The server-side provider interface is the seam for adding YouTube or Twitch later without the client learning a second auth model. See [`protocol.md`](protocol.md) §11.
 

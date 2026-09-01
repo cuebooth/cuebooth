@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -31,8 +32,7 @@ func TestSlowTokenResponseIsStillReadBack(t *testing.T) {
 	fake := newFakeRestream()
 	base := fake.server(t)
 
-	// Sits in front of the fake, delaying only the token endpoint by longer than
-	// any client-level timeout this package used to carry.
+	// Sits in front of the fake, delaying only the token endpoint.
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/oauth/token" {
 			time.Sleep(1500 * time.Millisecond)
@@ -143,31 +143,6 @@ func TestAuthorizingClearsARefusal(t *testing.T) {
 	}
 }
 
-// The callback must come from the address that started the authorization.
-// Without in-protocol auth (protocol.md §1), that binding is what stops another
-// host completing an authorization of its own and replacing the operator's.
-func TestCallbackFromAnotherAddressIsRejected(t *testing.T) {
-	fake := newFakeRestream()
-	r, _, _ := newTestProvider(t, fake)
-	if err := authorize(t, r, "good-code"); err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-	before := r.Authorized()
-
-	loginURL, err := r.LoginURL(testAddr)
-	if err != nil {
-		t.Fatalf("LoginURL: %v", err)
-	}
-	state := stateFrom(t, loginURL)
-
-	if err := r.Complete(context.Background(), "good-code", state, "198.51.100.7"); err == nil {
-		t.Fatal("a callback from a different address was accepted")
-	}
-	if r.Authorized() != before {
-		t.Error("a rejected callback changed the stored authorization")
-	}
-}
-
 func proxyTo(t *testing.T, base string, w http.ResponseWriter, req *http.Request) {
 	t.Helper()
 	outbound, err := http.NewRequest(req.Method, base+req.URL.Path, req.Body)
@@ -188,7 +163,5 @@ func proxyTo(t *testing.T, base string, w http.ResponseWriter, req *http.Request
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	buf := make([]byte, maxTokenBody)
-	n, _ := resp.Body.Read(buf)
-	_, _ = w.Write(buf[:n])
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, maxTokenBody))
 }

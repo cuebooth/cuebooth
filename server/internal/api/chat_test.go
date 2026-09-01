@@ -38,14 +38,14 @@ func (f *fakeChat) URL(context.Context) (string, error) {
 	return f.url, nil
 }
 
-func (f *fakeChat) LoginURL(string) (string, error) {
+func (f *fakeChat) LoginURL() (string, error) {
 	if f.loginErr != nil {
 		return "", f.loginErr
 	}
 	return f.loginURL, nil
 }
 
-func (f *fakeChat) Complete(_ context.Context, code, state, addr string) error {
+func (f *fakeChat) Complete(_ context.Context, code, state string) error {
 	f.completes++
 	if f.completeErr != nil {
 		return f.completeErr
@@ -321,19 +321,6 @@ func TestChatCallbackNamesAMissingScope(t *testing.T) {
 	// application that can never work.
 	if !strings.Contains(body, "chat.read") {
 		t.Errorf("page did not name the missing scope: %q", body)
-	}
-}
-
-func TestChatCallbackNamesAnAddressMismatch(t *testing.T) {
-	provider := &fakeChat{completeErr: chat.ErrAuthAddressMismatch}
-	_, hs, client := chatTestServer(t, provider)
-
-	body, code := getText(t, client, hs.URL+chatCallbackPath+"?code=abc&state=xyz")
-	if code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", code)
-	}
-	if !strings.Contains(body, "public_url") {
-		t.Errorf("page did not point at the address mismatch: %q", body)
 	}
 }
 
