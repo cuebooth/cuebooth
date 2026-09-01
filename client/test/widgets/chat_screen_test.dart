@@ -404,6 +404,33 @@ void main() {
     expect(mints, 1, reason: 'unrelated deltas triggered $mints mints, each a token rotation');
   });
 
+  // The Linux and Windows launchers throw rather than returning false, and
+  // those are exactly the platforms that can only reach chat through a browser.
+  // An uncaught throw leaves the tap looking like it did nothing.
+  testWidgets('a launcher that throws still reports failure', (tester) async {
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'needs_auth',
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatScreen(
+          session: session,
+          chat: serviceReturning(() => http.Response('{}', 409)),
+          useWebview: false,
+          launch: (_) async => throw Exception('no browser available'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Connect'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Could not open a browser.'), findsOneWidget);
+  });
+
   group('chatNavigationStaysInPanel', () {
     const panel = 'https://chat.restream.io/embed?token=abc';
 

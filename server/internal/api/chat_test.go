@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cuebooth/cuebooth/server/internal/chat"
+	"github.com/cuebooth/cuebooth/server/internal/config"
 )
 
 // fakeChat is a chat.Provider whose every answer the test dictates.
@@ -218,16 +219,121 @@ func TestChatCallbackWithoutCodeReportsCancellation(t *testing.T) {
 	}
 }
 
-func TestChatCallbackRejectsAFailedExchange(t *testing.T) {
-	provider := &fakeChat{completeErr: errors.New("state is unknown or expired")}
+// The provider starts authorized so the published status is `ready`: a handler
+// that republished on the failure path would flip it, and starting from
+// needs_auth could not tell the two behaviours apart.
+func TestChatCallbackRejectsAFailedExchangeWithoutDisturbingState(t *testing.T) {
+	provider := &fakeChat{
+		authorized:  true,
+		url:         "https://chat.restream.io/embed?token=abc",
+		completeErr: errors.New("state is unknown or expired"),
+	}
 	srv, hs, client := chatTestServer(t, provider)
+
+	if got := chatStatusInState(t, srv); got != string(chat.StatusReady) {
+		t.Fatalf("status = %q before the callback, want ready", got)
+	}
 
 	_, code := getText(t, client, hs.URL+chatCallbackPath+"?code=abc&state=forged")
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
 	}
-	if got := chatStatusInState(t, srv); got != string(chat.StatusNeedsAuth) {
-		t.Errorf("status = %q after a failed exchange, want needs_auth", got)
+	if got := chatStatusInState(t, srv); got != string(chat.StatusReady) {
+		t.Errorf("status = %q after a failed exchange, want the unchanged ready", got)
+	}
+}
+
+// The two legs of the handshake must land on the same address, because the
+// authorization is bound to it. A start that arrived elsewhere — a LAN address
+// where public_url names a VPN host — is sent to the public URL first, before
+// anything is recorded.
+func TestChatAuthStartRedirectsToThePublicURLFirst(t *testing.T) {
+	provider := &fakeChat{loginURL: "https://api.restream.io/login?state=xyz"}
+	cfg := testConfig()
+	cfg.Chat = config.ChatConfig{
+		Provider: "restream", ClientID: "id", ClientSecret: "s",
+		PublicURL: "http://production-pc.tailnet.test:7878",
+	}
+	srv := NewServer(cfg, &fakePresser{}, WithChat(provider))
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	resp, err := client.Get(hs.URL + chatAuthPath)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	got := resp.Header.Get("Location")
+	want := "http://production-pc.tailnet.test:7878" + chatAuthPath + "?" + chatAuthViaPublic + "=1"
+	if got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+
+	// Arriving with the marker must not bounce again, whatever the Host, or a
+	// proxy that rewrites it would loop the browser forever.
+	marked, err := client.Get(hs.URL + chatAuthPath + "?" + chatAuthViaPublic + "=1")
+	if err != nil {
+		t.Fatalf("GET marked: %v", err)
+	}
+	marked.Body.Close()
+	if loc := marked.Header.Get("Location"); loc != provider.loginURL {
+		t.Errorf("marked request redirected to %q, want the platform login %q", loc, provider.loginURL)
+	}
+}
+
+// A server reached at its configured public URL must not be redirected at all.
+func TestChatAuthStartDoesNotRedirectWhenAlreadyPublic(t *testing.T) {
+	provider := &fakeChat{loginURL: "https://api.restream.io/login?state=xyz"}
+	srv := NewServer(testConfig(), &fakePresser{}, WithChat(provider))
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+
+	// testConfig leaves chat.public_url empty, which is the "nothing to compare
+	// against" case; the handler must proceed rather than build a bare path.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(hs.URL + chatAuthPath)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if loc := resp.Header.Get("Location"); loc != provider.loginURL {
+		t.Errorf("Location = %q, want the platform login %q", loc, provider.loginURL)
+	}
+}
+
+func TestChatCallbackNamesAMissingScope(t *testing.T) {
+	provider := &fakeChat{completeErr: chat.ErrMissingScope}
+	_, hs, client := chatTestServer(t, provider)
+
+	body, code := getText(t, client, hs.URL+chatCallbackPath+"?code=abc&state=xyz")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+	// Without naming the scope the operator re-authorizes forever against an
+	// application that can never work.
+	if !strings.Contains(body, "chat.read") {
+		t.Errorf("page did not name the missing scope: %q", body)
+	}
+}
+
+func TestChatCallbackNamesAnAddressMismatch(t *testing.T) {
+	provider := &fakeChat{completeErr: chat.ErrAuthAddressMismatch}
+	_, hs, client := chatTestServer(t, provider)
+
+	body, code := getText(t, client, hs.URL+chatCallbackPath+"?code=abc&state=xyz")
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
+	}
+	if !strings.Contains(body, "public_url") {
+		t.Errorf("page did not point at the address mismatch: %q", body)
 	}
 }
 

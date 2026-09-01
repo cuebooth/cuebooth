@@ -12,7 +12,20 @@
 // a proxy the application provides, which is what this package is.
 package chat
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrAuthAddressMismatch reports a callback that arrived from a different
+// address than the one that began the authorization. Distinct from an unknown
+// state because the operator can act on it — the two legs have to land on the
+// same address — where an expired state just means starting again.
+var ErrAuthAddressMismatch = errors.New("chat callback came from a different address than the one that started it")
+
+// ErrMissingScope reports that the platform granted the authorization but not
+// the permission chat needs, which no retry of the same application will fix.
+var ErrMissingScope = errors.New("chat platform did not grant the permission chat needs")
 
 // Status tells a client whether to render chat or prompt the operator to
 // authorize it. It is carried in state as stream.chat.status (protocol.md §4).

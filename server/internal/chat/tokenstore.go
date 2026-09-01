@@ -16,6 +16,9 @@ type tokens struct {
 	RefreshToken  string    `json:"refresh_token"`
 	AccessExpiry  time.Time `json:"access_expiry"`
 	RefreshExpiry time.Time `json:"refresh_expiry"`
+	// Scope is what the platform reported granting, used to catch an application
+	// registered without the permission chat needs.
+	Scope string `json:"scope,omitempty"`
 }
 
 // valid reports whether the pair can still produce an access token: the refresh

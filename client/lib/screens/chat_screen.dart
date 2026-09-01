@@ -84,6 +84,7 @@ class _ChatScreenState extends State<ChatScreen> {
   ChatUrlResult? _result;
   bool _loading = false;
   bool _wasReady = false;
+  bool _reloadWhenIdle = false;
 
   bool get _useWebview => widget.useWebview ?? webviewSupported;
 
@@ -119,9 +120,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final becameReady = ready && !_wasReady;
     _wasReady = ready;
 
-    if (becameReady && !_loading) {
-      _load();
-      return;
+    if (becameReady) {
+      if (_loading) {
+        // The in-flight request predates this status, so its answer is already
+        // stale. Reload once it lands rather than pinning the panel to it.
+        _reloadWhenIdle = true;
+      } else {
+        _load();
+        return;
+      }
     }
     setState(() {});
   }
@@ -134,11 +141,23 @@ class _ChatScreenState extends State<ChatScreen> {
       _result = result;
       _loading = false;
     });
+    if (_reloadWhenIdle) {
+      _reloadWhenIdle = false;
+      await _load();
+    }
   }
 
   Future<void> _open(Uri url) async {
     final launcher = widget.launch ?? _launchExternal;
-    final ok = await launcher(url);
+    // The Linux and Windows launchers throw rather than returning false, and
+    // those are the platforms that can only reach chat through a browser — an
+    // uncaught throw would leave the tap looking like it did nothing.
+    bool ok;
+    try {
+      ok = await launcher(url);
+    } catch (_) {
+      ok = false;
+    }
     if (!ok && mounted) {
       ScaffoldMessenger.of(
         context,

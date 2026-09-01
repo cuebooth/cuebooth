@@ -6,6 +6,8 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/state"
@@ -64,6 +66,16 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The callback lands on the configured public URL, and the authorization is
+	// bound to the address that started it. A client connected by some other
+	// route — a LAN address where public_url names a VPN host, say — would begin
+	// the handshake at one address and return to another, so it is sent to the
+	// public URL before anything is recorded.
+	if target, ok := s.chatAuthPublicRedirect(r); ok {
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+
 	loginURL, err := s.chat.LoginURL(requesterAddr(r))
 	if err != nil {
 		s.logger.Error("could not build chat login url", "provider", s.chat.Name(), "err", err)
@@ -92,8 +104,21 @@ func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state"), requesterAddr(r)); err != nil {
 		s.logger.Error("chat authorization failed", "provider", s.chat.Name(), "err", err)
-		s.renderChatCallback(w, http.StatusBadRequest, "Authorization failed",
-			"CueBooth could not complete the sign-in. Close this tab and start again from the client.")
+		// The three failures an operator can act on differently, so the page says
+		// which one happened rather than sending them round the same loop.
+		switch {
+		case errors.Is(err, chat.ErrMissingScope):
+			s.renderChatCallback(w, http.StatusBadRequest, "Missing permission",
+				"The account signed in, but the application was not granted permission to read chat. "+
+					"Add the chat.read scope to it at developers.restream.io, then try again.")
+		case errors.Is(err, chat.ErrAuthAddressMismatch):
+			s.renderChatCallback(w, http.StatusBadRequest, "Authorization came back elsewhere",
+				"Sign-in started at one address and returned to another, so CueBooth could not match them. "+
+					"Check that the server's public_url is the address you reach it at.")
+		default:
+			s.renderChatCallback(w, http.StatusBadRequest, "Authorization failed",
+				"CueBooth could not complete the sign-in. Close this tab and start again from the client.")
+		}
 		return
 	}
 
@@ -118,6 +143,27 @@ func (s *Server) publishChatStatus() {
 	}); err != nil {
 		s.logger.Error("could not publish chat status", "err", err)
 	}
+}
+
+// chatAuthViaPublic marks a start request that has already been sent to the
+// public URL, so a Host that still doesn't match cannot loop.
+const chatAuthViaPublic = "via_public"
+
+// chatAuthPublicRedirect reports where to send a start request that arrived at
+// an address other than the configured public URL, and whether to send it.
+func (s *Server) chatAuthPublicRedirect(r *http.Request) (string, bool) {
+	if r.URL.Query().Get(chatAuthViaPublic) != "" {
+		return "", false
+	}
+	public := strings.TrimRight(s.cfg.Chat.PublicURL, "/")
+	if public == "" {
+		return "", false
+	}
+	u, err := url.Parse(public)
+	if err != nil || u.Host == "" || strings.EqualFold(u.Host, r.Host) {
+		return "", false
+	}
+	return public + chatAuthPath + "?" + chatAuthViaPublic + "=1", true
 }
 
 // requesterAddr is the host an HTTP request came from, without its port. The

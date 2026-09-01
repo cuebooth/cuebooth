@@ -86,8 +86,8 @@ func TestPersistentlyRefusedTokenReportsNeedsAuth(t *testing.T) {
 		t.Fatalf("URL error = %v, want ErrNeedsAuth", err)
 	}
 
-	// One refresh for the retry, and no more: a panel left open on a
-	// misconfigured application must not rotate the credential per attempt.
+	// Further attempts must spend nothing: the refusal cooldown answers them
+	// without going near the token endpoint.
 	fake.mu.Lock()
 	after := fake.tokenCalls
 	fake.mu.Unlock()
@@ -98,7 +98,7 @@ func TestPersistentlyRefusedTokenReportsNeedsAuth(t *testing.T) {
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if grew := fake.tokenCalls - after; grew > 3 {
-		t.Errorf("token endpoint called %d more times over 3 attempts, want at most one rotation each", grew)
+	if grew := fake.tokenCalls - after; grew != 0 {
+		t.Errorf("token endpoint called %d more times over 3 attempts, want 0", grew)
 	}
 }

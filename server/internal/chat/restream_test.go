@@ -45,6 +45,9 @@ type fakeRestream struct {
 	// request reports, so a 400 that is not invalid_grant can be exercised.
 	tokenErrorName    string
 	tokenErrorMessage string
+	// scope is what the token response reports granting. Defaults to a set
+	// including chat.read; empty omits the field entirely.
+	scope string
 }
 
 // testAddr stands in for the browser address that started an authorization; the
@@ -52,7 +55,8 @@ type fakeRestream struct {
 const testAddr = "192.0.2.10"
 
 func newFakeRestream() *fakeRestream {
-	return &fakeRestream{refreshExpiresIn: 31536000, accessExpiresIn: 3600}
+	return &fakeRestream{refreshExpiresIn: 31536000, accessExpiresIn: 3600,
+		scope: "profile.read channels.read chat.read stream.read"}
 }
 
 func (f *fakeRestream) server(t *testing.T) string {
@@ -108,6 +112,9 @@ func (f *fakeRestream) handleToken(w http.ResponseWriter, r *http.Request) {
 		"access_token":  f.access,
 		"refresh_token": f.refresh,
 		"expires_in":    f.accessExpiresIn,
+	}
+	if f.scope != "" {
+		payload["scope"] = f.scope
 	}
 	if f.refreshExpiresIn > 0 {
 		payload["refreshTokenExpiresIn"] = f.refreshExpiresIn

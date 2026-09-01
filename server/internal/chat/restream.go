@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,10 @@ const (
 	// carries no Timeout of its own, which would cap this one invisibly.
 	tokenRequestTimeout = 20 * time.Second
 
+	// assumedAccessLifetime stands in when the platform states no access-token
+	// lifetime. It matches Restream's documented hour.
+	assumedAccessLifetime = time.Hour
+
 	// webchatTimeout bounds a webchat URL fetch. Unlike a token request this one
 	// may be abandoned freely — nothing is consumed by asking.
 	webchatTimeout = 10 * time.Second
@@ -72,6 +77,12 @@ const (
 	// a refresh is treated as unusable. Nothing the server does unattended will
 	// change that answer, so retrying only spends another rotation.
 	refusalCooldown = 5 * time.Minute
+
+	// webchatScope is the permission the webchat endpoint requires. Restream
+	// selects scopes per application rather than per authorization request, so an
+	// application registered without it yields a credential that can never mint a
+	// chat URL.
+	webchatScope = "chat.read"
 
 	// invalidGrantName is the error Restream reports when the grant itself is
 	// rejected — a retired or revoked refresh token. Other 400s (a rotated
@@ -279,7 +290,7 @@ func (r *Restream) Complete(ctx context.Context, code, state, addr string) error
 		return errors.New("restream callback state is unknown or expired")
 	}
 	if login.addr != addr {
-		return errors.New("restream callback came from a different address than the one that started it")
+		return fmt.Errorf("%w: started from %s, returned to %s", ErrAuthAddressMismatch, login.addr, addr)
 	}
 
 	form := url.Values{}
@@ -299,6 +310,13 @@ func (r *Restream) Complete(ctx context.Context, code, state, addr string) error
 		// operator who mistypes their way through a re-authorization does not
 		// lose a working one.
 		return err
+	}
+	// Restream names the granted scopes in the exchange response. Without
+	// chat.read the credential authorizes nothing this feature can use, and
+	// every later attempt would 401 — a loop that only re-registering the
+	// application escapes, which the operator has to be told.
+	if tok.Scope != "" && !slices.Contains(strings.Fields(tok.Scope), webchatScope) {
+		return fmt.Errorf("%w: granted %q, needs %s", ErrMissingScope, tok.Scope, webchatScope)
 	}
 	r.adopt(tok)
 	return nil
@@ -504,6 +522,7 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 		RefreshToken     string `json:"refresh_token"`
 		ExpiresIn        int    `json:"expires_in"`
 		RefreshExpiresIn int    `json:"refreshTokenExpiresIn"`
+		Scope            string `json:"scope"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return tokens{}, fmt.Errorf("restream token request: parse response: %w", err)
@@ -517,6 +536,13 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 		AccessToken:  payload.AccessToken,
 		RefreshToken: payload.RefreshToken,
 		AccessExpiry: now.Add(time.Duration(payload.ExpiresIn) * time.Second),
+		Scope:        payload.Scope,
+	}
+	// An absent lifetime would leave the token instantly stale, refreshing on
+	// every mint — and each rotation is another chance to lose the credential.
+	// Restream documents an hour; assume it, and let a 401 correct the guess.
+	if payload.ExpiresIn <= 0 {
+		tok.AccessExpiry = now.Add(assumedAccessLifetime)
 	}
 	// Restream documents a one-year refresh lifetime and restarts that clock on
 	// every refresh, but only sends it in the camelCase field. Leaving the
