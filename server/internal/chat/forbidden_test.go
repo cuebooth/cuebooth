@@ -51,6 +51,30 @@ func TestForbiddenDoesNotRefresh(t *testing.T) {
 	}
 }
 
+// A proxy or rate limiter in front of Restream also answers 403. Telling the
+// operator to fix a scope that is already correct sends them round a loop
+// nothing can end, so only the platform's own insufficient_scope counts.
+func TestForbiddenFromSomethingElseStaysTransient(t *testing.T) {
+	fake := newFakeRestream()
+	fake.webchatStatus = http.StatusForbidden
+	fake.webchatErrorName = "rate_limited"
+	r, _, _ := newTestProvider(t, fake)
+	if err := authorize(t, r, "good-code"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	_, err := r.URL(context.Background())
+	if err == nil {
+		t.Fatal("URL succeeded against a refusing intermediary")
+	}
+	if errors.Is(err, ErrNeedsAuth) {
+		t.Error("a 403 that is not insufficient_scope was reported as needing authorization")
+	}
+	if !r.Authorized() {
+		t.Error("a 403 from an intermediary marked the credential unusable")
+	}
+}
+
 // A 5xx is transient and must stay a platform error, or a bad minute at
 // Restream would send the operator to a browser for nothing.
 func TestServerErrorStaysATransientFailure(t *testing.T) {
@@ -117,6 +141,47 @@ func TestAuthorizationOutranksAnAttemptInFlight(t *testing.T) {
 	}
 	if _, err := r.URL(context.Background()); err != nil {
 		t.Errorf("URL after re-authorizing: %v", err)
+	}
+}
+
+// Several callers can hit the same retired access token at once. Each retry
+// forcing its own refresh would spend one rotation per caller, and every
+// rotation is another chance to lose the credential.
+func TestConcurrentRetriesShareOneRefresh(t *testing.T) {
+	fake := newFakeRestream()
+	r, _, _ := newTestProvider(t, fake)
+	if err := authorize(t, r, "good-code"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	// The token every caller is holding is the one the platform now refuses.
+	fake.mu.Lock()
+	fake.unauthorizeAccess = "access-1"
+	afterExchange := fake.tokenCalls
+	fake.mu.Unlock()
+
+	const callers = 8
+	errs := make(chan error, callers)
+	var start sync.WaitGroup
+	start.Add(1)
+	for range callers {
+		go func() {
+			start.Wait()
+			_, err := r.URL(context.Background())
+			errs <- err
+		}()
+	}
+	start.Done()
+	for range callers {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent URL: %v", err)
+		}
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if grew := fake.tokenCalls - afterExchange; grew != 1 {
+		t.Errorf("token endpoint called %d times for %d concurrent retries, want 1", grew, callers)
 	}
 }
 

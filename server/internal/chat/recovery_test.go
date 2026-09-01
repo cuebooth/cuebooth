@@ -77,6 +77,12 @@ func TestFailedReauthorizationKeepsTheExistingCredential(t *testing.T) {
 func TestPendingAuthorizationsAreBounded(t *testing.T) {
 	r, _, _ := newTestProvider(t, newFakeRestream())
 
+	firstURL, err := r.LoginURL()
+	if err != nil {
+		t.Fatalf("LoginURL: %v", err)
+	}
+	first := stateFrom(t, firstURL)
+
 	for range maxPendingLogins * 4 {
 		if _, err := r.LoginURL(); err != nil {
 			t.Fatalf("LoginURL: %v", err)
@@ -90,10 +96,13 @@ func TestPendingAuthorizationsAreBounded(t *testing.T) {
 		t.Errorf("pending authorizations = %d, want at most %d", pending, maxPendingLogins)
 	}
 
-	// The most recent start must still be usable, or eviction has thrown away
-	// the authorization the operator is in the middle of.
+	// Eviction takes the oldest, so the earliest start is gone while one made
+	// after the flood still completes.
+	if err := r.Complete(context.Background(), "good-code", first); err == nil {
+		t.Error("the oldest pending authorization survived a flood past the cap")
+	}
 	if err := authorize(t, r, "good-code"); err != nil {
-		t.Errorf("the newest authorization was evicted: %v", err)
+		t.Errorf("a fresh authorization could not complete after a flood: %v", err)
 	}
 }
 

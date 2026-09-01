@@ -206,6 +206,18 @@ class _ChatScreenState extends State<ChatScreen> {
         detail: 'No chat provider is configured on the server.',
       );
     }
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    // A URL in hand outranks the published status: holding one is proof chat
+    // works, and the server's republished `ready` may not have arrived yet.
+    final held = _result;
+    if (held != null && held.isReady) {
+      final url = held.url!;
+      return _useWebview ? _ChatWebview(url: url) : _openInBrowser(url);
+    }
+
     if (state.chatNeedsAuth) {
       return _ChatMessage(
         icon: Icons.link,
@@ -213,17 +225,27 @@ class _ChatScreenState extends State<ChatScreen> {
         detail:
             'Authorize CueBooth once in your browser. It stays connected from '
             'then on — you should not have to sign in again.',
-        action: FilledButton.icon(
-          icon: const Icon(Icons.open_in_new),
-          label: const Text('Connect'),
-          onPressed: () => _open(widget.chat.authStartUrl),
+        // Try again sits beside Connect because this state is also reached
+        // after a transient refusal: once the server's cooldown lapses, one
+        // request restores chat without an operator leaving the app.
+        action: Wrap(
+          spacing: 12,
+          children: [
+            FilledButton.icon(
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Connect'),
+              onPressed: () => _open(widget.chat.authStartUrl),
+            ),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try again'),
+              onPressed: _load,
+            ),
+          ],
         ),
       );
     }
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_result == null) {
+    if (held == null) {
       // Reached when the server reports a status this client does not know —
       // a newer minor protocol version, which §1 requires us to keep working
       // against. Nothing has been requested, so say so rather than spin.
@@ -236,13 +258,7 @@ class _ChatScreenState extends State<ChatScreen> {
         action: _retryButton(),
       );
     }
-
-    final result = _result!;
-    if (!result.isReady) {
-      return _errorBody(result.error!);
-    }
-    final url = result.url!;
-    return _useWebview ? _ChatWebview(url: url) : _openInBrowser(url);
+    return _errorBody(held.error!);
   }
 
   Widget _errorBody(ChatUrlError error) {

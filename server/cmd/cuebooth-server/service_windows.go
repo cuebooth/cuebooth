@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/windows/svc"
+
+	"github.com/cuebooth/cuebooth/server/internal/api"
 )
 
 // serviceName is what the binary registers itself as with the Windows SCM.
@@ -83,7 +85,10 @@ func (h *serviceHandler) Execute(args []string, requests <-chan svc.ChangeReques
 			case svc.Interrogate:
 				status <- req.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				status <- svc.Status{State: svc.StopPending}
+				// The SCM marks a service hung if it stops reporting progress.
+				// Draining a chat token exchange can hold the stop well past a
+				// default expectation, so the hint covers the whole budget.
+				status <- svc.Status{State: svc.StopPending, WaitHint: uint32(api.StopBudget().Milliseconds())}
 				cancel()
 				return h.stopped(status, <-errCh)
 			}

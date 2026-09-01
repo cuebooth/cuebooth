@@ -69,11 +69,10 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The callback lands on the configured public URL, and the authorization is
-	// bound to the address that started it. A client connected by some other
-	// route — a LAN address where public_url names a VPN host, say — would begin
-	// the handshake at one address and return to another, so it is sent to the
-	// public URL before anything is recorded.
+	// The callback lands on the configured public URL, so a start that arrived
+	// anywhere else is sent there first. It keeps the whole handshake on one
+	// address, and surfaces a public_url the operator's browser cannot reach at
+	// the point they are standing in front of it.
 	if target, ok := s.chatAuthPublicRedirect(r); ok {
 		http.Redirect(w, r, target, http.StatusFound)
 		return

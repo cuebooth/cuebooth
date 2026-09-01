@@ -64,12 +64,14 @@ func TestOnlineWebchatURLIsEmbeddable(t *testing.T) {
 		t.Fatalf("URL: %v", err)
 	}
 	if !strings.HasPrefix(url, "https://chat.restream.io/embed") {
-		t.Errorf("webchat url = %q, want a https://chat.restream.io/embed URL", url)
+		// Reported by shape, not value: the URL carries a live token, and a test
+		// log outlives the terminal it scrolls past.
+		t.Errorf("webchat url does not start with https://chat.restream.io/embed (got %d chars)", len(url))
 	}
 	// Without a token the page has nothing to authenticate as, so an embed URL
 	// that carries none would render a signed-out chat.
 	if !strings.Contains(url, "token=") && !strings.Contains(url, "guestToken=") {
-		t.Errorf("webchat url = %q, want it to carry a token parameter", url)
+		t.Error("webchat url carries no token parameter")
 	}
 }
 
@@ -107,6 +109,6 @@ func TestOnlineRefreshRotatesTheStoredCredential(t *testing.T) {
 		t.Fatalf("load stored tokens: %v", err)
 	}
 	if stored.RefreshToken != after {
-		t.Errorf("stored refresh token = %q, want the rotated %q — a restart would need re-authorization", stored.RefreshToken, after)
+		t.Error("the stored refresh token is not the rotated one; a restart would need re-authorization")
 	}
 }

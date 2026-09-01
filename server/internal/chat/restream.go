@@ -78,6 +78,10 @@ const (
 	// may be abandoned freely — nothing is consumed by asking.
 	webchatTimeout = 10 * time.Second
 
+	// drainPollInterval is how often shutdown re-checks for token requests still
+	// in flight. Short enough not to add noticeable delay to a clean stop.
+	drainPollInterval = 20 * time.Millisecond
+
 	// refusalCooldown is how long a token the platform refused immediately after
 	// a refresh is treated as unusable. Nothing the server does unattended will
 	// change that answer, so retrying only spends another rotation.
@@ -88,6 +92,11 @@ const (
 	// application registered without it yields a credential that can never mint a
 	// chat URL.
 	webchatScope = "chat.read"
+
+	// insufficientScopeName is what Restream reports when a token is valid but
+	// the application lacks the permission. Anything else answering 403 is
+	// something in front of them, which a later attempt may survive.
+	insufficientScopeName = "insufficient_scope"
 
 	// invalidGrantName is the error Restream reports when the grant itself is
 	// rejected — a retired or revoked refresh token. Other 400s (a rotated
@@ -132,8 +141,7 @@ type Restream struct {
 
 	mu sync.Mutex
 	// tok is the live credential; pending maps the state parameter of each
-	// started-but-unfinished authorization to its deadline and the address that
-	// began it.
+	// started-but-unfinished authorization to its deadline.
 	tok     tokens
 	pending map[string]time.Time
 	// refusedUntil holds off further attempts after the platform refused a
@@ -144,10 +152,10 @@ type Restream struct {
 	// started with, so its answer cannot hold off a credential authorized since.
 	gen uint64
 
-	// tokenCalls tracks token requests in flight. They must be read back to
+	// tokenCalls counts token requests in flight. They must be read back to
 	// capture the rotation the platform has already performed, so shutdown waits
 	// for them rather than exiting mid-exchange.
-	tokenCalls sync.WaitGroup
+	tokenCalls int
 }
 
 // RestreamOption adjusts a Restream provider at construction.
@@ -320,12 +328,7 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	if tok.Scope != "" && !slices.Contains(scopeList(tok.Scope), webchatScope) {
 		return fmt.Errorf("%w: granted %q, needs %s", ErrMissingScope, tok.Scope, webchatScope)
 	}
-	r.adopt(tok)
-	r.mu.Lock()
-	// Bumped only here, not on refresh: it marks an operator having authorized,
-	// which is the one event that should outrank an attempt already in flight.
-	r.gen++
-	r.mu.Unlock()
+	r.adopt(tok, true)
 	return nil
 }
 
@@ -336,12 +339,14 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 	// in flight is not held off by its stale answer.
 	gen := r.generation()
 
-	chatURL, err := r.mint(ctx, false)
+	chatURL, used, err := r.mint(ctx, "")
 	if errors.Is(err, errUnauthorized) {
 		// Restream retired the access token before the expiry it stated —
 		// a revoked session, or a reset on their side. One refresh separates
-		// that from a credential that is genuinely spent.
-		chatURL, err = r.mint(ctx, true)
+		// that from a credential that is genuinely spent. The retry retires the
+		// token this attempt actually used, so callers that were refused
+		// together share one rotation rather than taking one each.
+		chatURL, _, err = r.mint(ctx, used)
 	}
 	if errors.Is(err, errUnauthorized) || errors.Is(err, errForbidden) {
 		// Either a token minted moments ago was still refused, or the platform
@@ -374,11 +379,16 @@ func (r *Restream) generation() uint64 {
 	return r.gen
 }
 
-// mint fetches a chat URL, optionally forcing a token refresh first.
-func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) {
-	token, err := r.accessToken(ctx, forceRefresh)
+// mint fetches a chat URL and reports the access token it used. A retry needs
+// that token in order to retire exactly the one that was refused, so callers
+// refused together share one rotation rather than taking one each.
+//
+// retire names a token the caller already saw refused; it forces a refresh only
+// while that token is still the one held.
+func (r *Restream) mint(ctx context.Context, retire string) (chatURL, used string, err error) {
+	token, err := r.accessToken(ctx, retire)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, webchatTimeout)
@@ -386,33 +396,37 @@ func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBase+"/v2/user/webchat/url", nil)
 	if err != nil {
-		return "", err
+		return "", token, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("restream webchat url: %w", err)
+		return "", token, fmt.Errorf("restream webchat url: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenBody))
 	if err != nil {
-		return "", fmt.Errorf("restream webchat url: %w", err)
+		return "", token, fmt.Errorf("restream webchat url: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		_, message := restreamError(body)
+		name, message := restreamError(body)
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
-			return "", fmt.Errorf("%w: %s", errUnauthorized, message)
+			return "", token, fmt.Errorf("%w: %s", errUnauthorized, message)
 		case http.StatusForbidden:
-			// The token is accepted but not permitted — Restream's
-			// insufficient_scope. A refresh reissues the same permissions, so
-			// only re-registering the application and authorizing again helps.
-			return "", fmt.Errorf("%w: %s", errForbidden, message)
+			// Only the platform's own insufficient_scope means the permission is
+			// wrong; a proxy or rate limiter in front of it also answers 403, and
+			// telling an operator to fix a scope that is already correct sends
+			// them round a loop nothing can end.
+			if name == insufficientScopeName {
+				return "", token, fmt.Errorf("%w: %s", errForbidden, message)
+			}
+			return "", token, fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
 		default:
-			return "", fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
+			return "", token, fmt.Errorf("restream webchat url: %s: %s", resp.Status, message)
 		}
 	}
 
@@ -420,17 +434,17 @@ func (r *Restream) mint(ctx context.Context, forceRefresh bool) (string, error) 
 		WebchatURL string `json:"webchatUrl"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("restream webchat url: parse response: %w", err)
+		return "", token, fmt.Errorf("restream webchat url: parse response: %w", err)
 	}
 	if payload.WebchatURL == "" {
-		return "", errors.New("restream webchat url: response carried no webchatUrl")
+		return "", token, errors.New("restream webchat url: response carried no webchatUrl")
 	}
-	return payload.WebchatURL, nil
+	return payload.WebchatURL, token, nil
 }
 
 // accessToken returns a usable bearer token, refreshing when the held one is
 // spent or close enough to expiry that a request could outlive it.
-func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, error) {
+func (r *Restream) accessToken(ctx context.Context, retire string) (string, error) {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
@@ -444,7 +458,11 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 	if !tok.valid(now) || now.Before(r.refusalDeadline()) {
 		return "", ErrNeedsAuth
 	}
-	if !forceRefresh && tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
+	// retire names a token the caller saw refused. If it is no longer the one
+	// held, a caller ahead of this one already replaced it, and refreshing again
+	// would spend a rotation per concurrent failure.
+	forced := retire != "" && retire == tok.AccessToken
+	if !forced && tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
 		return tok.AccessToken, nil
 	}
 
@@ -468,7 +486,7 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 		}
 		return "", err
 	}
-	r.adopt(fresh)
+	r.adopt(fresh, false)
 	return fresh.AccessToken, nil
 }
 
@@ -476,15 +494,21 @@ func (r *Restream) accessToken(ctx context.Context, forceRefresh bool) (string, 
 // performed is read back and persisted before the process exits. It returns
 // when they finish or ctx is done.
 func (r *Restream) Drain(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		r.tokenCalls.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		r.logger.Warn("exiting with a chat token request in flight; chat may need authorizing again")
+	tick := time.NewTicker(drainPollInterval)
+	defer tick.Stop()
+	for {
+		r.mu.Lock()
+		inFlight := r.tokenCalls
+		r.mu.Unlock()
+		if inFlight == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			r.logger.Warn("exiting with a chat token request in flight; chat may need authorizing again")
+			return
+		case <-tick.C:
+		}
 	}
 }
 
@@ -513,11 +537,16 @@ func (r *Restream) discard() {
 // on disk is the only thing that survives a restart. A failed write is logged
 // rather than propagated — the process still holds a working token, and failing
 // chat outright would turn a storage problem into an outage.
-func (r *Restream) adopt(t tokens) {
+func (r *Restream) adopt(t tokens, authorized bool) {
 	r.mu.Lock()
 	r.tok = t
 	// A fresh credential is exactly what a refusal was waiting for.
 	r.refusedUntil = time.Time{}
+	if authorized {
+		// Bumped with the credential, not after it: an attempt that started
+		// earlier must not see the new token and the old generation.
+		r.gen++
+	}
 	r.mu.Unlock()
 
 	if err := r.store.save(t); err != nil {
@@ -538,8 +567,14 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenRequestTimeout)
 	defer cancel()
 
-	r.tokenCalls.Add(1)
-	defer r.tokenCalls.Done()
+	r.mu.Lock()
+	r.tokenCalls++
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.tokenCalls--
+		r.mu.Unlock()
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {

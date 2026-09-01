@@ -94,6 +94,42 @@ void main() {
     expect(launched.single, Uri.parse('$base/chat/auth/start'));
   });
 
+  // The server reports needs_auth for a transient refusal too, and clears it
+  // after a cooldown. Without a retry here the operator's only way back is a
+  // full browser sign-in for a credential that was never actually broken.
+  testWidgets('the connect prompt can retry without re-authorizing', (
+    tester,
+  ) async {
+    var calls = 0;
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'needs_auth',
+    });
+    // The server's cooldown has lapsed, so the next request succeeds even
+    // though the last published status still says needs_auth.
+    final chat = ChatService(
+      serverBase: base,
+      client: MockClient((_) async {
+        calls++;
+        return http.Response(
+          jsonEncode({'url': 'https://chat.restream.io/embed?token=c'}),
+          200,
+        );
+      }),
+    );
+
+    await pumpChat(tester, session: session, chat: chat);
+    expect(find.text('Connect restream'), findsOneWidget);
+    // Nothing is fetched while the status says needs_auth.
+    expect(calls, 0);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Try again'));
+    await tester.pumpAndSettle();
+
+    expect(calls, 1);
+    expect(find.text('Open chat in your browser'), findsOneWidget);
+  });
+
   testWidgets('says so when no provider is configured', (tester) async {
     final session = await sessionWithChat(tester, null);
 

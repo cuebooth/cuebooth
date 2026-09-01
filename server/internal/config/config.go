@@ -270,6 +270,11 @@ func (c ChatConfig) validate() error {
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("chat.public_url must be an absolute http:// or https:// URL, e.g. http://production-pc:7878")
 	}
+	// The callback route is appended to this, so a path here would send the
+	// platform's redirect somewhere the server does not serve.
+	if u.Path != "" {
+		return fmt.Errorf("chat.public_url must not include a path (got %q)", u.Path)
+	}
 	return nil
 }
 

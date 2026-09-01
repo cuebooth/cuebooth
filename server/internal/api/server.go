@@ -26,6 +26,10 @@ import (
 // shutdownTimeout bounds graceful HTTP shutdown.
 const shutdownTimeout = 5 * time.Second
 
+// StopBudget is the longest a graceful shutdown can take, for callers that must
+// declare it — the Windows SCM expects a wait hint covering the whole stop.
+func StopBudget() time.Duration { return shutdownTimeout + chatDrainTimeout }
+
 // chatDrainTimeout bounds the wait for a chat token exchange still in flight at
 // shutdown. It exceeds the provider's own request deadline, because the platform
 // rotates the credential on receipt: exiting before the response is read loses

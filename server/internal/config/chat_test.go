@@ -43,6 +43,9 @@ func TestChatConfigValidate(t *testing.T) {
 		{"public url without a scheme", complete(func(c *ChatConfig) { c.PublicURL = "production-pc:7878" }), false},
 		{"public url with the wrong scheme", complete(func(c *ChatConfig) { c.PublicURL = "ws://pc:7878" }), false},
 		{"public url with no host", complete(func(c *ChatConfig) { c.PublicURL = "http://" }), false},
+		// The callback route is appended to this, so a path would send the
+		// platform's redirect somewhere the server does not serve.
+		{"public url with a path", complete(func(c *ChatConfig) { c.PublicURL = "http://pc:7878/cuebooth" }), false},
 	}
 
 	for _, tc := range cases {

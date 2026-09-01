@@ -45,6 +45,12 @@ type fakeRestream struct {
 	// request reports, so a 400 that is not invalid_grant can be exercised.
 	tokenErrorName    string
 	tokenErrorMessage string
+	// unauthorizeAccess answers 401 for exactly this bearer token, so several
+	// callers holding the same stale one can be made to fail together.
+	unauthorizeAccess string
+	// webchatErrorName overrides the error name a failed webchat call reports,
+	// so a 403 from something other than the platform itself is exercisable.
+	webchatErrorName string
 	// forbidStaleToken answers a request carrying anything but the current access
 	// token with 403 rather than 401, standing in for a permission the platform
 	// will not serve regardless of how fresh the token is.
@@ -152,7 +158,18 @@ func (f *fakeRestream) handleWebchat(w http.ResponseWriter, r *http.Request) {
 	f.webchatCalls++
 
 	if f.webchatStatus != 0 {
-		writeRestreamError(w, f.webchatStatus, "Invalid token: access token is invalid")
+		name, msg := "invalid_token", "Invalid token: access token is invalid"
+		if f.webchatStatus == http.StatusForbidden {
+			name, msg = "insufficient_scope", "Insufficient scope: authorized scope is insufficient"
+		}
+		if f.webchatErrorName != "" {
+			name = f.webchatErrorName
+		}
+		writeRestreamErrorNamed(w, f.webchatStatus, name, msg)
+		return
+	}
+	if f.unauthorizeAccess != "" && r.Header.Get("Authorization") == "Bearer "+f.unauthorizeAccess {
+		writeRestreamError(w, http.StatusUnauthorized, "Invalid token: access token is invalid")
 		return
 	}
 	if f.unauthorizeWebchatOnce {
