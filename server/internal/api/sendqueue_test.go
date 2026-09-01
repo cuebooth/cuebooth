@@ -204,6 +204,78 @@ func TestSendInitialIsAtomicAgainstAReBaseline(t *testing.T) {
 	}
 }
 
+// A client joins the hub before its surface is replayed, so the first surface
+// frame it sees may be a live surface-key. It has no bitmap size until a
+// surface-layout arrives, so it keeps that frame's seq but not its image — safe
+// only while the layout behind it supersedes the key (protocol.md §10, drop keys
+// at or below the layout's seq). One that outlived the layout would hold a seq
+// that suppresses the replay's copy, leaving the button color-only.
+func TestAKeyRacingTheReplayCannotOutliveItsLayout(t *testing.T) {
+	const rows, cols = 8, 16 // 128 keys: a replay long enough to interleave
+	const raced, updates = 3, 64
+	newest := fmt.Sprintf("cmVuZGVy%d", updates-1)
+	for range 50 {
+		sat := &fakeSat{rows: rows, cols: cols, bm: 72}
+		hub := newHub()
+		m := newSurfaceManager(sat, hub)
+		for k := range rows * cols {
+			sat.onKey(companion.SatelliteKey{Key: k, Type: "BUTTON", BitmapBase64: "b2xk"})
+		}
+
+		c := newTestClient()
+		hub.add(c)
+		stop := drainConcurrently(c)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); m.sendInitial(c) }()
+		go func() {
+			defer wg.Done()
+			for i := range updates {
+				sat.onKey(companion.SatelliteKey{
+					Key:          raced,
+					Type:         "BUTTON",
+					BitmapBase64: fmt.Sprintf("cmVuZGVy%d", i),
+				})
+			}
+		}()
+		wg.Wait()
+		frames := stop()
+
+		layout := -1
+		for i, f := range frames {
+			if f["type"] == typeSurfaceLayout {
+				layout = i
+				break
+			}
+		}
+		if layout < 0 {
+			t.Fatal("no layout was delivered")
+		}
+		layoutSeq := int(frames[layout]["seq"].(float64))
+		for _, f := range frames[:layout] {
+			if f["type"] != typeSurfaceKey {
+				continue
+			}
+			if seq := int(f["seq"].(float64)); seq > layoutSeq {
+				t.Fatalf("key %v at seq %d reached the client ahead of the layout at seq %d, which does not supersede it",
+					f["key"], seq, layoutSeq)
+			}
+		}
+		// The newest render still arrives afterwards, so the button isn't left
+		// waiting on Companion's next re-render for an image.
+		last := ""
+		for _, f := range frames[layout+1:] {
+			if f["type"] == typeSurfaceKey && int(f["key"].(float64)) == raced {
+				last, _ = f["bitmap"].(string)
+			}
+		}
+		if last != newest {
+			t.Fatalf("raced key's bitmap after the layout = %q, want %q", last, newest)
+		}
+	}
+}
+
 // State and command traffic is a stream, not a projection: an overflow can only
 // be answered by failing the connection, so the cap has to still bite.
 func TestSendQueueOtherOverflows(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -80,6 +81,46 @@ func drainFrames(c *clientConn) []map[string]any {
 		if err := json.Unmarshal(raw, &m); err == nil {
 			out = append(out, m)
 		}
+	}
+}
+
+// drainConcurrently drains c's send queue in the background, as the write loop
+// does once a connection is running, and returns a function that stops it and
+// yields the frames in delivery order. Once a frame is taken it is on the wire
+// and no later push can supersede it, so a test that races producers has to
+// drain as they run rather than collecting the queue afterwards.
+func drainConcurrently(c *clientConn) (stop func() []map[string]any) {
+	done := make(chan struct{})
+	out := make(chan []map[string]any, 1)
+	go func() {
+		var frames []map[string]any
+		// Once done is closed every producer has finished, so one more empty
+		// pop — which synchronizes on the queue's mutex — proves it is drained.
+		stopping := false
+		for {
+			raw, ok := c.send.pop()
+			if !ok {
+				if stopping {
+					out <- frames
+					return
+				}
+				select {
+				case <-done:
+					stopping = true
+				default:
+					runtime.Gosched()
+				}
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err == nil {
+				frames = append(frames, m)
+			}
+		}
+	}()
+	return func() []map[string]any {
+		close(done)
+		return <-out
 	}
 }
 

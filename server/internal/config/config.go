@@ -66,10 +66,18 @@ type SatelliteConfig struct {
 	BitmapSize int `toml:"bitmap_size"`
 }
 
-// maxSatelliteDimension bounds a single grid dimension. The largest surface
-// anyone drives is a couple of Stream Deck XLs wide; this only exists to keep a
-// mistyped value from becoming a huge per-client buffer.
-const maxSatelliteDimension = 64
+// maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
+// 32 buttons and the largest rig anyone drives is a few Stream Deck XLs side by
+// side; past a couple of hundred an operator cannot find the button they want
+// under stage lighting, and the server caches and queues a bitmap for each one.
+const maxSatelliteKeys = 256
+
+// maxSatelliteBitmapSize bounds the button bitmap edge length. Companion renders
+// at whatever size we ask for rather than clamping to a physical device's, so
+// this bound is ours alone: a key frame carries bitmap_size² × 3 bytes of pixel
+// data, squaring into the per-client buffer that maxSatelliteKeys multiplies.
+// 256 clears the 120px of the largest physical surface.
+const maxSatelliteBitmapSize = 256
 
 // Disabled reports whether the satellite surface is turned off by config.
 func (s SatelliteConfig) Disabled() bool {
@@ -184,14 +192,19 @@ func (s SatelliteConfig) validate() error {
 	if s.Rows < 0 || s.Cols < 0 {
 		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must not be negative")
 	}
-	if s.Rows > maxSatelliteDimension || s.Cols > maxSatelliteDimension {
-		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must be at most %d", maxSatelliteDimension)
+	// Each dimension is checked before their product so a pair large enough to
+	// overflow the multiplication cannot wrap into a small, passing key count.
+	if s.Rows > maxSatelliteKeys || s.Cols > maxSatelliteKeys || s.Rows*s.Cols > maxSatelliteKeys {
+		return fmt.Errorf("companion.satellite.rows × companion.satellite.cols must be at most %d keys", maxSatelliteKeys)
 	}
 	// Companion silently coerces a BITMAPS size below 5 to its 72px default, so a
 	// 1–4 value would make us advertise the wrong dimensions to clients (corrupt
 	// renders). Reject it; 0 selects the default.
 	if s.BitmapSize < 0 || (s.BitmapSize > 0 && s.BitmapSize < 5) {
 		return fmt.Errorf("companion.satellite.bitmap_size must be 0 (default) or >= 5")
+	}
+	if s.BitmapSize > maxSatelliteBitmapSize {
+		return fmt.Errorf("companion.satellite.bitmap_size must be at most %d", maxSatelliteBitmapSize)
 	}
 	return nil
 }

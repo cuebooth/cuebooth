@@ -25,6 +25,11 @@ type satelliteSurface interface {
 // Companion via the satellite. Surface frames bypass the state/delta machinery
 // (see protocol.md §10): button bitmaps are large and change often, so diffing
 // them through the state store would be wasteful.
+//
+// onKey, onLayout and onClear are raised from the satellite's reader, never
+// concurrently with one another, so each may broadcast after releasing mu.
+// sendInitial is the only concurrent producer; it runs on a client's own read
+// goroutine, at connect and again on each subscribe or unsubscribe.
 type surfaceManager struct {
 	sat satelliteSurface
 	hub *hub
