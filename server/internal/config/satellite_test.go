@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestSatelliteConfigValidate(t *testing.T) {
 	cases := []struct {
@@ -17,9 +20,15 @@ func TestSatelliteConfigValidate(t *testing.T) {
 		{"implausible bitmap", SatelliteConfig{BitmapSize: 7200}, false},
 		{"negative bitmap", SatelliteConfig{BitmapSize: -1}, false},
 		{"negative rows", SatelliteConfig{Rows: -1}, false},
-		{"rows at the cap", SatelliteConfig{Rows: 64, Cols: 64}, true},
+		{"a wall of Stream Deck XLs", SatelliteConfig{Rows: 4, Cols: 32}, true},
+		{"grid at the key cap", SatelliteConfig{Rows: 16, Cols: 16}, true},
+		{"grid one key past the cap", SatelliteConfig{Rows: 16, Cols: 17}, false},
+		{"a grid no operator could read", SatelliteConfig{Rows: 64, Cols: 64}, false},
 		{"implausible rows", SatelliteConfig{Rows: 1000, Cols: 8}, false},
 		{"implausible cols", SatelliteConfig{Rows: 4, Cols: 100000}, false},
+		// Their product wraps to a negative, which no ">" check would catch, so
+		// this is rejected on the dimensions before the multiplication happens.
+		{"dimensions that overflow their product", SatelliteConfig{Rows: math.MaxInt/2 + 1, Cols: 2}, false},
 		{"disabled skips checks", SatelliteConfig{Addr: "off", BitmapSize: 3}, true},
 		{"device_id with space", SatelliteConfig{DeviceID: "cue booth"}, false},
 		{"device_id with equals", SatelliteConfig{DeviceID: "cue=booth"}, false},

@@ -66,10 +66,13 @@ type SatelliteConfig struct {
 	BitmapSize int `toml:"bitmap_size"`
 }
 
-// maxSatelliteDimension bounds a single grid dimension. The largest surface
-// anyone drives is a couple of Stream Deck XLs wide; this only exists to keep a
-// mistyped value from becoming a huge per-client buffer.
-const maxSatelliteDimension = 64
+// maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
+// 32 buttons and the largest rig anyone drives is a few Stream Deck XLs side by
+// side, so this is generous — but past a couple of hundred buttons an operator
+// cannot find the one they want under stage lighting, which is what the surface
+// exists for. It also keeps a mistyped dimension from becoming a huge
+// per-client buffer, since the server caches and queues a bitmap per key.
+const maxSatelliteKeys = 256
 
 // maxSatelliteBitmapSize bounds the button bitmap edge length. Companion renders
 // at whatever size we ask for rather than clamping to a physical device's, so
@@ -192,8 +195,10 @@ func (s SatelliteConfig) validate() error {
 	if s.Rows < 0 || s.Cols < 0 {
 		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must not be negative")
 	}
-	if s.Rows > maxSatelliteDimension || s.Cols > maxSatelliteDimension {
-		return fmt.Errorf("companion.satellite.rows and companion.satellite.cols must be at most %d", maxSatelliteDimension)
+	// Each dimension is checked before their product so a pair large enough to
+	// overflow the multiplication cannot wrap into a small, passing key count.
+	if s.Rows > maxSatelliteKeys || s.Cols > maxSatelliteKeys || s.Rows*s.Cols > maxSatelliteKeys {
+		return fmt.Errorf("companion.satellite.rows × companion.satellite.cols must be at most %d keys", maxSatelliteKeys)
 	}
 	// Companion silently coerces a BITMAPS size below 5 to its 72px default, so a
 	// 1–4 value would make us advertise the wrong dimensions to clients (corrupt
