@@ -238,6 +238,11 @@ scripts/devstack.sh down      # stop both; Companion's config is kept
 
 **One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
 
+Faster, if you have a `.companionconfig` export from a real installation: drop it on **Import/Export → Import**. Exports back to Companion 2.x are accepted — 3.x upgrades them on the way in — so an old backup still works. Two things to know before importing a production export:
+
+- **It carries credentials.** Module passwords (OBS, for one) travel in the export and are readable in Companion's admin UI, which this stack publishes on your tailnet without authentication. Blank them in the JSON first unless you need them, or expect anyone on the tailnet to be able to read them.
+- **Connections will sit in an error state**, because they point at the real deployment's hosts. Buttons still render and presses still route, so the surface is fully exercisable; feedback-driven colours that depend on a live mixer or OBS will not be.
+
 Then, from a laptop on the same tailnet:
 
 ```sh
