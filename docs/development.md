@@ -43,6 +43,8 @@ The server *declares* the surface shape to Companion from the `[companion.satell
 
 If you want to exercise the server and client **without** Companion, you only need something that speaks the Satellite host side of the protocol on 16622 — a small mock is enough for development.
 
+If you have no Companion install to point at, [§8](#8-dev-stack-the-whole-server-side-on-one-host) starts a real one in a container alongside the server, reachable from a laptop over Tailscale.
+
 ---
 
 ## 3. CueBooth server (`server/`)
@@ -209,7 +211,7 @@ CI runs this same script against both versions (see the workflows README), so a 
 
 ## 7. A minimal end-to-end run
 
-On a Mac or Windows laptop, to see the control surface working against your real Companion:
+On a Mac or Windows laptop, to see the control surface working against your real Companion. (To do the same with no hardware and no local Companion install, use the dev stack in [§8](#8-dev-stack-the-whole-server-side-on-one-host) instead.)
 
 1. Enable Companion's Satellite API (§2) and have a page ready to assign.
 2. `cd server && cp configs/cuebooth.example.toml configs/cuebooth.toml`, point `[companion]` at your Companion, then `./bin/cuebooth-server -config configs/cuebooth.toml` (after `make build`) or `make run`.
@@ -217,3 +219,52 @@ On a Mac or Windows laptop, to see the control surface working against your real
 4. `cd client && flutter run -d <your-platform>`, and connect to the server's `host:7878`.
 
 The buttons that appear are whatever page Companion has assigned to the surface — discovered live, nothing defined in the client.
+
+---
+
+## 8. Dev stack: the whole server side on one host
+
+`scripts/devstack.sh` runs Companion and cuebooth-server together on a development machine and publishes them on that machine's Tailscale address, so a real client on a laptop can drive the real thing without the production PC.
+
+```sh
+scripts/devstack.sh up        # start both; prints where to point a client
+scripts/devstack.sh status    # what is up, and whether the surface registered
+scripts/devstack.sh logs server        # or: logs companion
+scripts/devstack.sh restart   # rebuild and restart the server only
+scripts/devstack.sh down      # stop both; Companion's config is kept
+```
+
+`up` pulls a pinned Companion image, starts it with its config directory bound to `.devstack/companion/`, generates `.devstack/cuebooth.toml`, builds the server from the working tree, and starts it detached — the stack outlives the shell that launched it. Everything it writes lives under `.devstack/`, which is gitignored.
+
+**One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
+
+Then, from a laptop on the same tailnet:
+
+```sh
+cd client && flutter run -d macos      # or windows, chrome, or a device
+```
+
+…and connect to the `host:7878` that `status` prints.
+
+### What it binds, and what it doesn't
+
+Services are published on **loopback and the Tailscale address only** — never `0.0.0.0`. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+
+Nothing needs to be reachable from the public internet. That holds even for the Restream chat authorization (CB-017): the OAuth callback is a redirect the *operator's browser* follows, not a connection Restream makes inbound, so tailnet reachability is enough — no `tailscale funnel`.
+
+### Knobs
+
+| Variable | Default | |
+|---|---|---|
+| `DEVSTACK_COMPANION_VERSION` | `v3.4.1` | Companion image tag — match the production PC |
+| `DEVSTACK_BIND` | this host's Tailscale IPv4 | extra address to publish on |
+| `DEVSTACK_HOST` | this host's Tailscale DNS name | name printed in connect instructions |
+| `DEVSTACK_DIR` | `<repo>/.devstack` | where local state lives |
+| `DEVSTACK_REGENERATE` | unset | `1` rewrites `.devstack/cuebooth.toml`, discarding edits |
+| `CONTAINER_ENGINE` | podman, else docker | |
+
+### What it is not
+
+It is not CI, and it does not replace [`scripts/companion-live-test.sh`](../scripts/companion-live-test.sh) (§6) — that pins protocol behaviour against specific Companion versions and runs headless. This is a fixture for driving the system by hand.
+
+The mixer is out of scope: an XR18 has no emulator worth using, so Phase 2 audio work still needs the hardware in front of you.

@@ -87,3 +87,9 @@ server/configs/cuebooth.toml
 # of it belongs in the public repo. Anonymized samples derived from it
 # may later be checked into docs/.
 private/
+
+# ─── Dev stack (scripts/devstack.sh) ────────────────────────────────────
+# Companion's config, the generated server config, the built binary, logs
+# and pidfile. All of it is local state for a machine-specific fixture, and
+# the Companion directory holds whatever credentials its modules are given.
+.devstack/
