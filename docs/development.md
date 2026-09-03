@@ -242,9 +242,11 @@ scripts/devstack.sh restart   # rebuild and restart the server only
 scripts/devstack.sh down      # stop both; Companion's config is kept
 ```
 
-`up` pulls a pinned Companion image, starts it with its config directory bound to `.devstack/companion/`, generates `.devstack/cuebooth.toml`, builds the server from the working tree, and starts it detached — the stack outlives the shell that launched it. Everything it writes lives under `.devstack/`, which is gitignored.
+`up` pulls a pinned Companion image, starts it with somewhere to keep its config, generates `.devstack/cuebooth.toml`, builds the server from the working tree, and starts it detached — the stack outlives the shell that launched it. Everything the script itself writes lives under `.devstack/`, which is gitignored.
 
-`up` leaves a running server alone; it does not rebuild one. After editing server code, use `restart`, which builds first and only stops the running server once the build succeeds.
+Where Companion's own config lives depends on the engine. Under **podman** it is bind-mounted to `.devstack/companion/`, readable and backup-able on the host. Under **docker** it is in a managed volume named `cuebooth-devstack-config`, because docker has no equivalent of `--userns keep-id` and the image runs as uid 1000. `down` prints whichever applies.
+
+`up` leaves a running server and a running Companion alone; it does not rebuild either. After editing server code, use `restart`, which builds first and only stops the running server once the build succeeds. Changing `DEVSTACK_COMPANION_VERSION` does recreate the container — `up` compares the running container's image, not just its name — but changing `DEVSTACK_BIND` does not, since the addresses a container publishes are fixed when it is created; `up` warns and `down` then `up` republishes.
 
 **One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
 
@@ -263,7 +265,7 @@ cd client && flutter run -d macos      # or windows, chrome, or a device
 
 ### What it binds, and what it doesn't
 
-Nothing is published on `0.0.0.0`. Companion's admin UI and Satellite port are published on **loopback and the Tailscale address**; the CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+By default nothing is published on `0.0.0.0` — `DEVSTACK_BIND` is the escape hatch, and setting it to a wildcard address is taken at face value. Companion's admin UI is published on **loopback and the Tailscale address**; its Satellite port is published on **loopback only**, since the server reaches it over `127.0.0.1` and nothing off this host needs it. The CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
 
 The generated `.devstack/cuebooth.toml` is kept across runs, so a Tailscale address that changes leaves it naming an address this host no longer has. `up` warns when the two disagree; `DEVSTACK_REGENERATE=1` rewrites the file.
 

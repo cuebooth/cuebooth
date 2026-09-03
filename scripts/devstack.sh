@@ -21,14 +21,15 @@
 # scripts/companion-live-test.sh, which pins versions and runs headless.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 STATE_DIR="${DEVSTACK_DIR:-$REPO_ROOT/.devstack}"
-# Absolute, because SERVER_BIN below is compared against the image path of a
-# running process, which the kernel always reports absolute.
+# Physical, not logical: SERVER_BIN below is compared against the image path of
+# a running process, which the kernel reports with every symlink resolved. A
+# checkout reached through a symlinked directory would otherwise never match.
 if [[ -d "$STATE_DIR" ]]; then
-  STATE_DIR="$(cd "$STATE_DIR" && pwd)"
+  STATE_DIR="$(cd "$STATE_DIR" && pwd -P)"
 elif [[ "$STATE_DIR" != /* ]]; then
-  STATE_DIR="$PWD/$STATE_DIR"
+  STATE_DIR="$(pwd -P)/$STATE_DIR"
 fi
 COMPANION_DIR="$STATE_DIR/companion"
 CONFIG_FILE="$STATE_DIR/cuebooth.toml"
@@ -129,11 +130,29 @@ check_config_bind() {
   [[ -n "$listed" ]] || return 0
   [[ "$listed" == "${bind}:${SERVER_PORT}" ]] && return 0
   echo "==> warning: $CONFIG_FILE listens on ${listed}, but this host binds ${bind}:${SERVER_PORT}" >&2
-  echo "    if the server fails to start, DEVSTACK_REGENERATE=1 rewrites the config" >&2
+  echo "    a server already running is on ${listed}; a new one will fail to bind" >&2
+  echo "    DEVSTACK_REGENERATE=1 rewrites the config, then restart" >&2
 }
 
 companion_running() {
-  [[ -n "$("$(engine)" ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null)" ]]
+  [[ -n "$(companion_field '{{.Names}}')" ]]
+}
+
+# companion_field reads one field of the running container, or nothing if there
+# is none.
+companion_field() {
+  "$(engine)" ps --filter "name=^${CONTAINER}$" --format "$1" 2>/dev/null | head -1
+}
+
+# companion_is_current reports whether the running container came from the image
+# this run wants. Matching on the name alone would leave a container built from
+# an older DEVSTACK_COMPANION_VERSION serving, which is the difference between
+# testing an upgrade and believing you have.
+companion_is_current() {
+  local running
+  running="$(companion_field '{{.Image}}')"
+  [[ -n "$running" ]] || return 1
+  [[ "$running" == "$IMAGE" || "$running" == "docker.io/$IMAGE" ]]
 }
 
 # server_running is true only when the pidfile names a live process that is
@@ -153,22 +172,22 @@ server_running() {
 # script builds. A rebuild replaces that file by rename, so the kernel reports
 # the old path with " (deleted)" appended while the process still runs.
 server_pid_matches() {
-  local pid="$1" exe
-  if [[ -d "/proc/$pid" ]]; then
-    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-    exe="${exe% (deleted)}"
-    [[ -n "$exe" && "$exe" == "$SERVER_BIN" ]]
-    return
-  fi
-  ps -p "$pid" -o args= 2>/dev/null | grep -qF -- "$SERVER_BIN"
+  local exe
+  exe="$(readlink "/proc/$1/exe" 2>/dev/null || true)"
+  exe="${exe% (deleted)}"
+  [[ -n "$exe" && "$exe" == "$SERVER_BIN" ]]
 }
 
 start_companion() {
   local bind="$1" eng
   eng="$(engine)"
   if companion_running; then
-    echo "==> companion already running"
-    return
+    if companion_is_current; then
+      companion_publishes "$bind" || echo "==> warning: companion is published on $(companion_field '{{.Ports}}'), not ${bind} — 'down' then 'up' to republish" >&2
+      echo "==> companion already running"
+      return
+    fi
+    echo "==> companion is running $(companion_field '{{.Image}}'), not $IMAGE — recreating"
   fi
   # Pull before removing anything: a pull that fails on an offline machine
   # would otherwise leave no container and no way to start one.
@@ -179,8 +198,7 @@ start_companion() {
     echo "==> pull failed; using the local copy of $IMAGE"
   fi
 
-  # Removed rather than restarted: a container left from an older image tag
-  # would otherwise silently keep serving.
+  "$eng" stop -t 15 "$CONTAINER" >/dev/null 2>&1 || true
   "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$COMPANION_DIR"
 
@@ -202,11 +220,11 @@ start_companion() {
     -p "127.0.0.1:${ADMIN_PORT}:8000" \
     -p "${bind}:${ADMIN_PORT}:8000" \
     -p "127.0.0.1:${SAT_PORT}:16622" \
-    -p "${bind}:${SAT_PORT}:16622" \
     "$IMAGE" >/dev/null
 
   echo -n "==> waiting for companion's satellite port"
-  for _ in $(seq 1 60); do
+  local deadline=$((SECONDS + 90))
+  while ((SECONDS < deadline)); do
     if companion_ready; then
       echo " ok"
       return
@@ -215,7 +233,15 @@ start_companion() {
     sleep 1
   done
   echo
-  die "companion did not answer on ${SAT_PORT} — check: $eng logs $CONTAINER"
+  die "companion did not answer on ${SAT_PORT} within 90s — check: $eng logs $CONTAINER"
+}
+
+# companion_publishes reports whether the running container publishes on addr.
+# `up` recomputes the bind address every run, but a running container keeps the
+# one it was created with, so the connect instructions can name an address
+# nothing is listening on.
+companion_publishes() {
+  companion_field '{{.Ports}}' | grep -qF -- "$1:"
 }
 
 # companion_ready reports whether Companion is answering on the Satellite port,
@@ -230,7 +256,9 @@ companion_ready() {
   # redirect before applying a 2>/dev/null on the same command, so a refused
   # connection would print on every poll.
   { exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}"; } 2>/dev/null || return 1
-  read -r -t 5 greeting <&3 || true
+  # Companion greets as soon as it accepts, so a second is generous; a longer
+  # wait here would make the caller's timeout mean something other than it says.
+  read -r -t 1 greeting <&3 || true
   { exec 3>&-; } 2>/dev/null || true
   { exec 3<&-; } 2>/dev/null || true
   [[ "$greeting" == BEGIN* ]]
@@ -256,9 +284,29 @@ launch_server() {
 # stop_server does not return until the process is gone. Removing the pidfile
 # while the server still holds the port leaves nothing pointing at it, and the
 # next `up` starts a second one that cannot bind.
+# unrecognised_server prints the pid when the pidfile names a live process that
+# is not this stack's server — a server started by hand, or one left by a
+# different checkout. It is neither "running" nor a stale pidfile, and treating
+# it as the latter loses the only handle to a process holding the port.
+unrecognised_server() {
+  local pid
+  server_running && return 1
+  pid="$(cat "$SERVER_PID" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  echo "$pid"
+}
+
 stop_server() {
   local pid
-  server_running || { rm -f "$SERVER_PID"; return 0; }
+  if ! server_running; then
+    if pid="$(unrecognised_server)"; then
+      echo "==> $SERVER_PID names live pid $pid, which is not $SERVER_BIN — leaving both alone" >&2
+      return 0
+    fi
+    rm -f "$SERVER_PID"
+    return 0
+  fi
   pid="$(cat "$SERVER_PID")"
   echo "==> stopping server (pid $pid)"
   kill "$pid" 2>/dev/null || true
@@ -345,10 +393,14 @@ cmd_down() {
   eng="$(engine)"
   stop_server
   echo "==> removing companion (config kept in $(config_home))"
+  # Stopped before removal: Companion writes its config on a timer, and
+  # `docker rm -f` is an immediate SIGKILL with no grace period.
+  "$eng" stop -t 15 "$CONTAINER" >/dev/null 2>&1 || true
   "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
 
 cmd_restart() {
+  mkdir -p "$STATE_DIR"
   # Built before the running server is stopped, so a compile error leaves the
   # stack as it was rather than down.
   build_server
@@ -379,6 +431,8 @@ cmd_status() {
   fi
   if server_running; then
     echo "server      up     ws://${host}:${SERVER_PORT}/ws   (pid $(cat "$SERVER_PID"))"
+  elif foreign_pid="$(unrecognised_server)"; then
+    echo "server      down   (but pid ${foreign_pid} in $SERVER_PID is alive and is not $SERVER_BIN)"
   else
     echo "server      down"
   fi
@@ -408,6 +462,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     restart) cmd_restart ;;
     status)  cmd_status ;;
     logs)    shift; cmd_logs "$@" ;;
-    *)       sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)       sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
   esac
 fi

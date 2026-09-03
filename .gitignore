@@ -91,5 +91,5 @@ private/
 # ─── Dev stack (scripts/devstack.sh) ────────────────────────────────────
 # Companion's config, the generated server config, the built binary, logs
 # and pidfile. All of it is local state for a machine-specific fixture, and
-# the Companion directory holds whatever credentials its modules are given.
+# under podman the Companion directory holds whatever credentials its modules are given.
 .devstack/

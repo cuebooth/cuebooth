@@ -86,6 +86,28 @@ cp "$BASH_BIN" "$SERVER_BIN.new"
 mv "$SERVER_BIN.new" "$SERVER_BIN"
 check "still running after the binary is replaced" "$(say server_running)" yes
 
+# A checkout or a DEVSTACK_DIR reached through a symlink resolves to a different
+# path than the kernel reports for a running process, so comparing the two
+# naively makes the stack's own server invisible to it: `up` reports a failure
+# that did not happen, `status` says down, and `down` loses the handle.
+echo "# server_running through a symlink"
+
+mkdir -p "$WORK/real"
+ln -sfn "$WORK/real" "$WORK/link"
+SYM_OUT="$(
+  DEVSTACK_DIR="$WORK/link" bash -c '
+    source "'"$SCRIPT_DIR"'/devstack.sh"
+    set +e
+    cp "$(command -v bash)" "$SERVER_BIN"
+    "$SERVER_BIN" -c "sleep 20; true" &
+    pid=$!
+    echo "$pid" > "$SERVER_PID"
+    if server_running; then echo yes; else echo no; fi
+    kill -9 "$pid" 2>/dev/null
+  ' 2>/dev/null | tail -1
+)"
+check "the server is found through a symlinked state dir" "$SYM_OUT" yes
+
 # --- stop_server --------------------------------------------------------------
 #
 # Removing the pidfile without confirming the process died leaves the port held
@@ -129,6 +151,38 @@ check "a server ignoring SIGTERM is seen as running" "$(say server_running)" yes
 stop_server >/dev/null 2>&1
 check "a server ignoring SIGTERM is still stopped" "$(dead "$STUBBORN")" yes
 wait "$STUBBORN" 2>/dev/null
+
+# A pidfile naming a live process that is not this stack's server is not a stale
+# pidfile. Deleting it leaves that process holding the port with nothing
+# pointing at it, and the next `up` cannot bind.
+echo "# stop_server, unrecognised process"
+
+# Some other build of the server, or a server started by hand: a live process
+# whose image is not the binary this script builds.
+cp "$BASH_BIN" "$WORK/other-cuebooth-server"
+cp "$BASH_BIN" "$SERVER_BIN"
+"$WORK/other-cuebooth-server" -c 'sleep 30; true' &
+FOREIGN=$!
+echo "$FOREIGN" > "$SERVER_PID"
+
+check "an unrecognised live process is not the server" "$(say server_running)" no
+check "it is reported as unrecognised, not absent" "$(unrecognised_server)" "$FOREIGN"
+# /bin/true stands in for the container engine: it reports no container, so
+# this asserts on the server line without depending on what is installed.
+check "status says the pid is alive rather than just 'down'" \
+  "$(CONTAINER_ENGINE=/bin/true cmd_status 2>/dev/null | grep -c "is alive and is not")" 1
+OUT="$(stop_server 2>&1 >/dev/null)"
+check "an unrecognised live process is left running" "$(dead "$FOREIGN")" no
+check "its pidfile is kept" "$([[ -f "$SERVER_PID" ]] && echo yes || echo no)" yes
+check "and stop_server says so" "$(printf '%s' "$OUT" | grep -c "leaving both alone")" 1
+kill -9 "$FOREIGN" 2>/dev/null
+wait "$FOREIGN" 2>/dev/null
+rm -f "$SERVER_PID"
+
+# A pidfile for a process that really is gone is stale, and goes.
+echo 999999999 > "$SERVER_PID"
+stop_server >/dev/null 2>&1
+check "a stale pidfile is removed" "$([[ -f "$SERVER_PID" ]] && echo yes || echo no)" no
 
 # --- surface_registered -------------------------------------------------------
 #
@@ -239,6 +293,54 @@ else
   kill "$LISTENER" 2>/dev/null
   wait "$LISTENER" 2>/dev/null
 fi
+
+# --- companion_is_current -----------------------------------------------------
+#
+# `up` reuses a running container by name. If it came from a different
+# DEVSTACK_COMPANION_VERSION, reusing it is the difference between testing an
+# upgrade and believing you have.
+
+echo "# companion_is_current"
+
+# A stand-in engine: `ps --format '{{.Image}}'` answers from FAKE_IMAGE, and
+# every other field from the container name.
+FAKE_ENGINE="$WORK/bin/podman"
+mkdir -p "$WORK/bin"
+cat > "$FAKE_ENGINE" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "ps" ]]; then
+  [[ -n "${FAKE_IMAGE:-}" ]] || exit 0
+  for arg in "$@"; do
+    case "$arg" in
+      '{{.Image}}') echo "$FAKE_IMAGE"; exit 0 ;;
+      '{{.Names}}') echo "cuebooth-devstack"; exit 0 ;;
+      '{{.Ports}}') echo "${FAKE_PORTS:-}"; exit 0 ;;
+    esac
+  done
+fi
+exit 0
+FAKE
+chmod +x "$FAKE_ENGINE"
+export CONTAINER_ENGINE="$FAKE_ENGINE"
+
+FAKE_IMAGE="" check "no container is not current" "$(FAKE_IMAGE="" say companion_is_current)" no
+check "no container is not running" "$(FAKE_IMAGE="" say companion_running)" no
+check "the wanted image is current" "$(FAKE_IMAGE="$IMAGE" say companion_is_current)" yes
+check "a docker.io-prefixed name is the same image" \
+  "$(FAKE_IMAGE="docker.io/$IMAGE" say companion_is_current)" yes
+check "a different tag is not current" \
+  "$(FAKE_IMAGE="ghcr.io/bitfocus/companion/companion:v5.0.3" say companion_is_current)" no
+check "a container from another tag still counts as running" \
+  "$(FAKE_IMAGE="ghcr.io/bitfocus/companion/companion:v5.0.3" say companion_running)" yes
+
+# `up` recomputes the bind address every run; a running container keeps the one
+# it was created with.
+check "a container published on this address is fine" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.1:8000->8000/tcp" say companion_publishes 100.64.0.1)" yes
+check "a container published elsewhere is not" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.9:8000->8000/tcp" say companion_publishes 100.64.0.1)" no
+
+unset CONTAINER_ENGINE
 
 # --- check_config_bind --------------------------------------------------------
 #
