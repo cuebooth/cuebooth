@@ -234,6 +234,8 @@ The buttons that appear are whatever page Companion has assigned to the surface 
 
 `scripts/devstack.sh` runs Companion and cuebooth-server together on a development machine and publishes them on that machine's Tailscale address, so a real client on a laptop can drive the real thing without the production PC.
 
+**Linux only.** It detaches the server with `setsid` and identifies it again by `/proc/<pid>/exe`; it refuses to run without `/proc` rather than mistaking a healthy server for a dead one.
+
 ```sh
 scripts/devstack.sh up        # start both; prints where to point a client
 scripts/devstack.sh status    # what is up, and whether the surface registered
@@ -246,9 +248,13 @@ scripts/devstack.sh down      # stop both; Companion's config is kept
 
 Where Companion's own config lives depends on the engine. Under **podman** it is bind-mounted to `.devstack/companion/`, readable and backup-able on the host. Under **docker** it is in a managed volume named `cuebooth-devstack-config`, because docker has no equivalent of `--userns keep-id` and the image runs as uid 1000. `down` prints whichever applies.
 
+`up` refuses to start when `.devstack/server.pid` names a live process that is not this stack's server — a server started by hand, or one left by another checkout. Starting anyway would overwrite the only handle to it, and the new server could not bind the port regardless.
+
 `up` leaves a running server and a running Companion alone; it does not rebuild either. After editing server code, use `restart`, which builds first and only stops the running server once the build succeeds. Changing `DEVSTACK_COMPANION_VERSION` does recreate the container — `up` compares the running container's image, not just its name — but changing `DEVSTACK_BIND` does not, since the addresses a container publishes are fixed when it is created; `up` warns and `down` then `up` republishes.
 
 **One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
+
+Companion's config directory is shared across image tags, so switching `DEVSTACK_COMPANION_VERSION` runs a different Companion against the same data. `up` warns when the tag has changed since the last run, and warns harder on a downgrade, because the newer version migrates the directory in place.
 
 Faster, if you have a `.companionconfig` export from a real installation: drop it on **Import/Export → Import**. Exports back to Companion 2.x are accepted — 3.x upgrades them on the way in — so an old backup still works. Two things to know before importing a production export:
 
@@ -258,10 +264,12 @@ Faster, if you have a `.companionconfig` export from a real installation: drop i
 Then, from a laptop on the same tailnet:
 
 ```sh
-cd client && flutter run -d macos      # or windows, chrome, or a device
+cd client && flutter run -d macos      # or windows, or a device
 ```
 
 …and connect to the `host:7878` that `status` prints.
+
+Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type.
 
 ### What it binds, and what it doesn't
 
@@ -279,6 +287,9 @@ Nothing needs to be reachable from the public internet. That holds even for the 
 | `DEVSTACK_BIND` | this host's Tailscale IPv4 | extra address to publish on |
 | `DEVSTACK_HOST` | this host's Tailscale DNS name | name printed in connect instructions |
 | `DEVSTACK_DIR` | `<repo>/.devstack` | where local state lives |
+| `DEVSTACK_ADMIN_PORT` | `8000` | Companion's admin UI — move it if you already run Companion here |
+| `DEVSTACK_SAT_PORT` | `16622` | Companion's Satellite port |
+| `DEVSTACK_SERVER_PORT` | `7878` | the CueBooth server |
 | `DEVSTACK_REGENERATE` | unset | `1` rewrites `.devstack/cuebooth.toml`, discarding edits |
 | `CONTAINER_ENGINE` | podman, else docker | |
 

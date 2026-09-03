@@ -6,10 +6,14 @@ on:
     paths:
       - 'scripts/**'
       - '.github/workflows/scripts.yml'
+      # devstack.sh reads the server's log messages, and devstack-test.sh
+      # asserts they still exist. A rename in server/ has to run this job.
+      - 'server/**'
   pull_request:
     paths:
       - 'scripts/**'
       - '.github/workflows/scripts.yml'
+      - 'server/**'
 
 # Least privilege: lint and a self-contained test.
 permissions:

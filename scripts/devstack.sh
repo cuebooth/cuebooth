@@ -15,7 +15,13 @@
 #   DEVSTACK_BIND                extra address to publish on (default: this host's Tailscale IPv4)
 #   DEVSTACK_HOST                name printed in connect instructions (default: Tailscale DNS name)
 #   DEVSTACK_DIR                 state directory (default: <repo>/.devstack)
+#   DEVSTACK_ADMIN_PORT          Companion admin UI port (default: 8000)
+#   DEVSTACK_SAT_PORT            Companion Satellite port (default: 16622)
+#   DEVSTACK_SERVER_PORT         cuebooth-server port (default: 7878)
 #   CONTAINER_ENGINE             podman or docker (default: whichever is installed)
+#
+# Requires Linux: the server is detached with setsid, and a running server is
+# identified by /proc/<pid>/exe.
 #
 # This is a manual fixture, not CI. The live protocol tests are
 # scripts/companion-live-test.sh, which pins versions and runs headless.
@@ -26,11 +32,8 @@ STATE_DIR="${DEVSTACK_DIR:-$REPO_ROOT/.devstack}"
 # Physical, not logical: SERVER_BIN below is compared against the image path of
 # a running process, which the kernel reports with every symlink resolved. A
 # checkout reached through a symlinked directory would otherwise never match.
-if [[ -d "$STATE_DIR" ]]; then
-  STATE_DIR="$(cd "$STATE_DIR" && pwd -P)"
-elif [[ "$STATE_DIR" != /* ]]; then
-  STATE_DIR="$(pwd -P)/$STATE_DIR"
-fi
+# -m rather than -f so a state directory that does not exist yet still resolves.
+STATE_DIR="$(readlink -m "$STATE_DIR")"
 COMPANION_DIR="$STATE_DIR/companion"
 CONFIG_FILE="$STATE_DIR/cuebooth.toml"
 SERVER_LOG="$STATE_DIR/server.log"
@@ -41,11 +44,23 @@ VERSION="${DEVSTACK_COMPANION_VERSION:-v3.4.1}"
 IMAGE="ghcr.io/bitfocus/companion/companion:${VERSION}"
 CONTAINER="cuebooth-devstack"
 
-ADMIN_PORT=8000
-SAT_PORT=16622
-SERVER_PORT=7878
+ADMIN_PORT="${DEVSTACK_ADMIN_PORT:-8000}"
+SAT_PORT="${DEVSTACK_SAT_PORT:-16622}"
+SERVER_PORT="${DEVSTACK_SERVER_PORT:-7878}"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# setsid detaches the server and /proc/<pid>/exe identifies it again later;
+# without /proc the identification silently fails and every `up` reports a
+# server that started fine as having exited.
+[[ -d /proc ]] || die "devstack.sh requires Linux (it identifies the server by /proc/<pid>/exe)"
+
+# usage prints the header comment, from the shebang to the first line that is
+# not a comment. Line numbers would silently truncate the moment a knob is
+# documented.
+usage() {
+  sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
 
 engine() {
   if [[ -n "${CONTAINER_ENGINE:-}" ]]; then echo "$CONTAINER_ENGINE"; return; fi
@@ -63,6 +78,12 @@ bind_addr() {
   ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
   [[ -n "$ip" ]] || die "no Tailscale IPv4 found; set DEVSTACK_BIND to the address to publish on"
   echo "$ip"
+}
+
+# publish_host brackets an IPv6 literal, which -p needs to tell the address
+# apart from the port.
+publish_host() {
+  if [[ "$1" == *:* ]]; then echo "[$1]"; else echo "$1"; fi
 }
 
 # host_name is what a client should be pointed at.
@@ -130,8 +151,8 @@ check_config_bind() {
   [[ -n "$listed" ]] || return 0
   [[ "$listed" == "${bind}:${SERVER_PORT}" ]] && return 0
   echo "==> warning: $CONFIG_FILE listens on ${listed}, but this host binds ${bind}:${SERVER_PORT}" >&2
-  echo "    a server already running is on ${listed}; a new one will fail to bind" >&2
-  echo "    DEVSTACK_REGENERATE=1 rewrites the config, then restart" >&2
+  echo "    a server starting on ${listed} will fail if this host no longer has that address" >&2
+  echo "    DEVSTACK_REGENERATE=1 rewrites the config" >&2
 }
 
 companion_running() {
@@ -141,7 +162,11 @@ companion_running() {
 # companion_field reads one field of the running container, or nothing if there
 # is none.
 companion_field() {
-  "$(engine)" ps --filter "name=^${CONTAINER}$" --format "$1" 2>/dev/null | head -1
+  local eng
+  # Resolved outside the pipeline: engine() dies when nothing is installed, and
+  # inside the substitution that message would go to the discarded stderr.
+  eng="$(engine)"
+  "$eng" ps --filter "name=^${CONTAINER}$" --format "$1" 2>/dev/null | head -1
 }
 
 # companion_is_current reports whether the running container came from the image
@@ -214,12 +239,19 @@ start_companion() {
     storage=(-v "cuebooth-devstack-config:/companion")
   fi
 
+  # Loopback always; the extra address only if it is a different one. Publishing
+  # 127.0.0.1 twice is redundant, and 0.0.0.0 over it fails to bind outright.
+  local publish=(-p "127.0.0.1:${ADMIN_PORT}:8000" -p "127.0.0.1:${SAT_PORT}:16622")
+  if [[ "$bind" != "127.0.0.1" && "$bind" != "localhost" ]]; then
+    publish+=(-p "$(publish_host "$bind"):${ADMIN_PORT}:8000")
+  fi
+
+  check_config_version
+
   echo "==> starting companion"
   "$eng" run -d --name "$CONTAINER" \
     "${storage[@]}" \
-    -p "127.0.0.1:${ADMIN_PORT}:8000" \
-    -p "${bind}:${ADMIN_PORT}:8000" \
-    -p "127.0.0.1:${SAT_PORT}:16622" \
+    "${publish[@]}" \
     "$IMAGE" >/dev/null
 
   echo -n "==> waiting for companion's satellite port"
@@ -234,6 +266,23 @@ start_companion() {
   done
   echo
   die "companion did not answer on ${SAT_PORT} within 90s — check: $eng logs $CONTAINER"
+}
+
+# check_config_version warns when Companion's config directory was last used by
+# a different image tag. The directory is shared across tags — moving it per
+# tag would look like losing a config that took real work to set up — but a
+# newer Companion migrates it in place, and the older one then reads what the
+# newer one wrote.
+check_config_version() {
+  local marker="$STATE_DIR/companion-version" previous
+  previous="$(cat "$marker" 2>/dev/null || true)"
+  if [[ -n "$previous" && "$previous" != "$VERSION" ]]; then
+    echo "==> warning: $(config_home) was last used by Companion $previous, now starting $VERSION" >&2
+    if [[ "$previous" > "$VERSION" ]]; then
+      echo "    that is a downgrade; $previous may have migrated the config in place" >&2
+    fi
+  fi
+  echo "$VERSION" > "$marker"
 }
 
 # companion_publishes reports whether the running container publishes on addr.
@@ -273,6 +322,10 @@ build_server() {
 }
 
 launch_server() {
+  local foreign
+  if foreign="$(unrecognised_server)"; then
+    die "refusing to overwrite $SERVER_PID, which names live pid $foreign"
+  fi
   echo "==> starting server"
   # setsid so the stack outlives the shell that started it.
   setsid "$SERVER_BIN" -config "$CONFIG_FILE" >>"$SERVER_LOG" 2>&1 &
@@ -323,9 +376,16 @@ stop_server() {
 }
 
 start_server() {
+  local foreign
   if server_running; then
     echo "==> server already running (pid $(cat "$SERVER_PID"))"
     return
+  fi
+  if foreign="$(unrecognised_server)"; then
+    die "$SERVER_PID names live pid $foreign, which is not $SERVER_BIN.
+    Starting would overwrite the pidfile and lose the only handle to it, and
+    a second server on ${SERVER_PORT} could not bind anyway. Stop it, or point
+    DEVSTACK_DIR somewhere else."
   fi
   build_server
   launch_server
@@ -365,6 +425,8 @@ wait_for_surface() {
 
 cmd_up() {
   mkdir -p "$STATE_DIR"
+  # An imported production Companion export carries module credentials.
+  chmod 700 "$STATE_DIR"
   local bind host
   bind="$(bind_addr)"
   host="$(host_name)"
@@ -383,8 +445,11 @@ Next, once only:
   3. Surfaces tab: assign a page to the "cuebooth" surface.
 
 Then, from your laptop:
-  cd client && flutter run -d macos      # or windows, chrome, or a device
+  cd client && flutter run -d macos      # or windows, or a device
   ...and connect to  ${host}:${SERVER_PORT}
+
+Not -d chrome: a Flutter dev server serves the page from its own port, and
+/ws refuses a page whose origin is not the server's.
 EOF
 }
 
@@ -392,7 +457,7 @@ cmd_down() {
   local eng
   eng="$(engine)"
   stop_server
-  echo "==> removing companion (config kept in $(config_home))"
+  echo "==> stopping companion (config kept in $(config_home))"
   # Stopped before removal: Companion writes its config on a timer, and
   # `docker rm -f` is an immediate SIGKILL with no grace period.
   "$eng" stop -t 15 "$CONTAINER" >/dev/null 2>&1 || true
@@ -422,7 +487,7 @@ config_home() {
 }
 
 cmd_status() {
-  local host
+  local host foreign_pid
   host="$(host_name)"
   if companion_running; then
     echo "companion   up     http://${host}:${ADMIN_PORT}   (satellite ${SAT_PORT})"
@@ -462,6 +527,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     restart) cmd_restart ;;
     status)  cmd_status ;;
     logs)    shift; cmd_logs "$@" ;;
-    *)       sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)       usage; exit 1 ;;
   esac
 fi

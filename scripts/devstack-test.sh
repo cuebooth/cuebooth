@@ -108,6 +108,18 @@ SYM_OUT="$(
 )"
 check "the server is found through a symlinked state dir" "$SYM_OUT" yes
 
+mkdir -p "$WORK/real-unmade"
+ln -sfn "$WORK/real-unmade" "$WORK/link-unmade"
+NEW_OUT="$(
+  DEVSTACK_DIR="$WORK/link-unmade/state" bash -c '
+    source "'"$SCRIPT_DIR"'/devstack.sh"
+    set +e
+    echo "$SERVER_BIN"
+  ' 2>/dev/null | tail -1
+)"
+check "a state dir that does not exist yet still resolves physically" \
+  "$NEW_OUT" "$WORK/real-unmade/state/cuebooth-server"
+
 # --- stop_server --------------------------------------------------------------
 #
 # Removing the pidfile without confirming the process died leaves the port held
@@ -179,6 +191,27 @@ kill -9 "$FOREIGN" 2>/dev/null
 wait "$FOREIGN" 2>/dev/null
 rm -f "$SERVER_PID"
 
+# Starting must not overwrite what stopping goes to trouble to preserve: the
+# new server cannot bind the port anyway, and the pidfile was the only handle.
+cp "$BASH_BIN" "$WORK/other-cuebooth-server"
+"$WORK/other-cuebooth-server" -c 'sleep 30; true' &
+FOREIGN2=$!
+echo "$FOREIGN2" > "$SERVER_PID"
+
+( launch_server ) >/dev/null 2>&1
+check "launch_server refuses to overwrite a live foreign pidfile" \
+  "$(cat "$SERVER_PID")" "$FOREIGN2"
+check "and the process is untouched" "$(dead "$FOREIGN2")" no
+
+START_OUT="$( ( start_server ) 2>&1 >/dev/null )"
+check "start_server refuses too" "$(cat "$SERVER_PID")" "$FOREIGN2"
+# Its own message, not launch_server's: refusing here is what saves the build.
+check "and says so before building" \
+  "$(printf '%s' "$START_OUT" | grep -c 'Stop it, or point')" 1
+kill -9 "$FOREIGN2" 2>/dev/null
+wait "$FOREIGN2" 2>/dev/null
+rm -f "$SERVER_PID"
+
 # A pidfile for a process that really is gone is stale, and goes.
 echo 999999999 > "$SERVER_PID"
 stop_server >/dev/null 2>&1
@@ -221,6 +254,43 @@ check "an Origin header cannot claim the surface registered" "$(say surface_regi
 
 log "$START" "$REG" "$FORGED_END"
 check "an Origin header cannot claim the surface dropped" "$(say surface_registered)" yes
+
+# surface_registered matches the server's own log messages. The tests above
+# write those lines themselves, so they pin the parser without pinning the
+# contract: a rename in server/ would leave every assertion here passing while
+# `up` and `status` stopped seeing a registered surface.
+echo "# surface_registered matches what the server actually logs"
+
+SERVER_SRC="$SCRIPT_DIR/../server"
+for msg in "cuebooth-server starting" \
+           "companion satellite registered" \
+           "companion satellite session ended"; do
+  check "the server still logs \"$msg\"" \
+    "$(grep -rlF "\"$msg\"" "$SERVER_SRC" --include='*.go' 2>/dev/null | grep -cv '_test\.go' | tr -d ' ')" 1
+done
+
+# --- usage --------------------------------------------------------------------
+#
+# The header block is the only documentation of the knobs, and it used to be
+# extracted by hardcoded line numbers.
+
+echo "# usage"
+
+USAGE="$(usage)"
+check "usage ends at the header, not in the code" \
+  "$(printf '%s' "$USAGE" | grep -c 'set -euo pipefail')" 0
+check "usage reaches the last header line" \
+  "$(printf '%s' "$USAGE" | grep -c 'companion-live-test.sh')" 1
+for knob in DEVSTACK_BIND DEVSTACK_DIR DEVSTACK_ADMIN_PORT DEVSTACK_SERVER_PORT CONTAINER_ENGINE; do
+  check "usage documents $knob" "$(printf '%s' "$USAGE" | grep -c "$knob")" 1
+done
+
+# --- publish_host -------------------------------------------------------------
+
+echo "# publish_host"
+
+check "an IPv4 address is passed through" "$(publish_host 100.64.0.1)" "100.64.0.1"
+check "an IPv6 literal is bracketed for -p" "$(publish_host fd7a::1)" "[fd7a::1]"
 
 # --- companion_ready ----------------------------------------------------------
 #
