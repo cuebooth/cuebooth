@@ -318,11 +318,16 @@ check "a session that ended is not up" "$(say surface_registered)" no
 log "$REG" "$START"
 check "a registration before the newest start is not up" "$(say surface_registered)" no
 
-# What the server writes when it rejects an upgrade, with the phrase planted in
-# the Origin header. slog escapes the quotes inside a value, so an unescaped
-# msg="..." can only be the server's own message.
-FORGED_REG='time=2026-09-03T00:00:01.000Z level=WARN msg="websocket accept failed" err="failed to accept websocket connection: request Origin \"http://evil/ msg=\"companion satellite registered\"\" is not authorized for Host \"host:7878\""'
-FORGED_END='time=2026-09-03T00:00:02.000Z level=WARN msg="websocket accept failed" err="failed to accept websocket connection: request Origin \"http://evil/ msg=\"companion satellite session ended\"\" is not authorized for Host \"host:7878\""'
+# What the server writes when it rejects an upgrade carrying a planted message
+# field, captured from a real server rather than composed here.
+#
+# coder/websocket logs the *parsed host* when an Origin names one, which drops
+# anything planted after it — so the reachable vectors are an Origin with no
+# host at all, and one that does not parse. Both log the header verbatim. slog
+# then escapes the quotes inside the value, which is what makes an unescaped
+# msg="..." impossible to forge.
+FORGED_REG='time=2026-09-03T07:42:00.615Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"companion satellite registered\\\" device_id=cuebooth\" is not a valid URL with a host"'
+FORGED_END='time=2026-09-03T07:42:00.625Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: failed to parse Origin header \"ht tp://x msg=\\\"companion satellite session ended\\\"\": parse \"ht tp://x\": first path segment in URL cannot contain colon"'
 
 log "$START" "$FORGED_REG"
 check "an Origin header cannot claim the surface registered" "$(say surface_registered)" no
@@ -656,6 +661,14 @@ check "v9 to v10 is an upgrade, not a downgrade" \
   "$(version_warning v9.0.0 v10.0.0 | grep -c 'that is a downgrade')" 0
 check "v10 to v9 is a downgrade" \
   "$(version_warning v10.0.0 v9.0.0 | grep -c 'that is a downgrade')" 1
+
+# The warning is only possible because the previous run recorded its tag. The
+# helper above writes the marker itself, which hides whether the function does.
+rm -f "$VERSION_MARKER"
+VERSION=v3.4.1 check_config_version >/dev/null 2>&1
+check "the tag in use is recorded" "$(cat "$VERSION_MARKER" 2>/dev/null)" v3.4.1
+check "and a later run reads it back" \
+  "$({ VERSION=v5.0.3 check_config_version >/dev/null; } 2>&1 | grep -c 'last used by Companion v3.4.1')" 1
 rm -f "$VERSION_MARKER"
 
 # --- the wiring ---------------------------------------------------------------
@@ -685,20 +698,57 @@ restart_without_building() {
     cmd_restart
   )
 }
-check "restart drift-checks before it builds" \
-  "$(DEVSTACK_BIND=127.0.0.1 restart_without_building 2>&1 >/dev/null | grep -c 'listen = "10.0.0.1')" 1
+# The kept config names 127.0.0.1, so a drift check told to compare against a
+# hardcoded 127.0.0.1 would find nothing. It has to use this run's bind.
+write_kept_config "127.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:${SAT_PORT}"
+check "restart drift-checks against this run's bind, before it builds" \
+  "$(DEVSTACK_BIND=10.0.0.5 restart_without_building 2>&1 >/dev/null | grep -c 'listen = "127.0.0.1')" 1
+check "and is quiet when the config already matches" \
+  "$(DEVSTACK_BIND=127.0.0.1 restart_without_building 2>&1 >/dev/null | grep -c 'listen = ')" 0
+
+write_kept_config "10.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:${SAT_PORT}"
 
 current_config
 
 # start_companion reuses a running container, and has to say when what it
 # publishes is not what this run would ask for.
 export CONTAINER_ENGINE="$FAKE_ENGINE"
-STALE_PORTS="127.0.0.1:${ADMIN_PORT}->8000/tcp, 127.0.0.1:${SAT_PORT}->16622/tcp, 100.64.0.1:${ADMIN_PORT}->8000/tcp, 100.64.0.1:${SAT_PORT}->16622/tcp"
-START_OUT="$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$STALE_PORTS" start_companion 100.64.0.1 2>&1)"
+
+# Loopback-only, which is what a container created under DEVSTACK_BIND=127.0.0.1
+# publishes. Asking about 127.0.0.1 matches it; asking about the address this
+# run actually wants does not — so a check that ignored its argument would pass
+# the first and be caught by the second.
+LOOPBACK_PORTS="127.0.0.1:${ADMIN_PORT}->8000/tcp, 127.0.0.1:${SAT_PORT}->16622/tcp"
+check "a loopback-only container satisfies a loopback bind" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$LOOPBACK_PORTS" say companion_publishes 127.0.0.1)" yes
+check "but not a tailnet bind" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$LOOPBACK_PORTS" say companion_publishes 100.64.0.1)" no
+
+START_OUT="$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$LOOPBACK_PORTS" start_companion 100.64.0.1 2>&1)"
 check "start_companion reuses a container whose image matches" \
   "$(printf '%s' "$START_OUT" | grep -c 'already running')" 1
-check "and warns that its publish list is not this run's" \
+check "and warns when its publish list is not this run's" \
   "$(printf '%s' "$START_OUT" | grep -c "not what this run would ask for")" 1
+
+# The same container, asked about the bind it was created for: no warning.
+QUIET_OUT="$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$LOOPBACK_PORTS" start_companion 127.0.0.1 2>&1)"
+check "and stays quiet when it is" \
+  "$(printf '%s' "$QUIET_OUT" | grep -c "not what this run would ask for")" 0
+
+# start_companion has to record the tag it is starting, or the next run has
+# nothing to compare against.
+rm -f "$VERSION_MARKER"
+(
+  # shellcheck disable=SC2329
+  companion_ready() { return 0; }
+  FAKE_IMAGE="" start_companion 127.0.0.1
+) >/dev/null 2>&1
+check "starting a container records its Companion tag" \
+  "$(cat "$VERSION_MARKER" 2>/dev/null)" "$VERSION"
+rm -f "$VERSION_MARKER"
+
 unset CONTAINER_ENGINE
 
 # A wildcard bind puts two unauthenticated services on every interface, so `up`
@@ -723,6 +773,27 @@ up_without_starting() {
 }
 check "and up is what says it" \
   "$(DEVSTACK_BIND=0.0.0.0 up_without_starting 2>&1 >/dev/null | grep -c 'every interface')" 1
+
+# up creates the state directory; the credentials an imported production export
+# carries are only protected by the mode it gets. Loosened first, or an earlier
+# command in this file would have already tightened it and the check could not
+# tell the difference.
+chmod 755 "$STATE_DIR"
+DEVSTACK_BIND=127.0.0.1 up_without_starting >/dev/null 2>&1
+check "up leaves the state directory unreadable by others" \
+  "$(stat -c %a "$STATE_DIR")" 700
+
+# down is the destructive command, and stopping the server is the half of it
+# that the container engine cannot do.
+cp "$BASH_BIN" "$SERVER_BIN"
+spawn_server_like 'sleep 30; true'
+DOWNED="$SPAWNED"
+echo "$DOWNED" > "$SERVER_PID"
+CONTAINER_ENGINE=/bin/true cmd_down >/dev/null 2>&1
+check "down stops the server, not only the container" "$(dead "$DOWNED")" yes
+wait "$DOWNED" 2>/dev/null
+rm -f "$SERVER_PID"
+
 current_config
 
 # --- config_home --------------------------------------------------------------
