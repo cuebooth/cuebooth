@@ -15,6 +15,7 @@
 #   DEVSTACK_BIND                extra address to publish on (default: this host's Tailscale IPv4)
 #   DEVSTACK_HOST                name printed in connect instructions (default: Tailscale DNS name)
 #   DEVSTACK_DIR                 state directory (default: <repo>/.devstack)
+#   DEVSTACK_REGENERATE          1 rewrites the generated config, discarding edits
 #   DEVSTACK_ADMIN_PORT          Companion admin UI port (default: 8000)
 #   DEVSTACK_SAT_PORT            Companion Satellite port (default: 16622)
 #   DEVSTACK_SERVER_PORT         cuebooth-server port (default: 7878)
@@ -86,6 +87,27 @@ publish_host() {
   if [[ "$1" == *:* ]]; then echo "[$1]"; else echo "$1"; fi
 }
 
+# publish_flags is the -p list for a bind address.
+#
+# The Satellite port stays on loopback: the generated config points the server
+# at 127.0.0.1, so nothing off this host needs it. A wildcard bind replaces the
+# loopback publish rather than joining it — binding 0.0.0.0 over 127.0.0.1 on
+# the same port fails outright.
+publish_flags() {
+  local bind="$1"
+  case "$bind" in
+    0.0.0.0 | "::" | "[::]")
+      echo "-p ${bind}:${ADMIN_PORT}:8000 -p ${bind}:${SAT_PORT}:16622"
+      return
+      ;;
+    127.0.0.1 | localhost)
+      echo "-p 127.0.0.1:${ADMIN_PORT}:8000 -p 127.0.0.1:${SAT_PORT}:16622"
+      return
+      ;;
+  esac
+  echo "-p 127.0.0.1:${ADMIN_PORT}:8000 -p 127.0.0.1:${SAT_PORT}:16622 -p $(publish_host "$bind"):${ADMIN_PORT}:8000"
+}
+
 # host_name is what a client should be pointed at.
 host_name() {
   if [[ -n "${DEVSTACK_HOST:-}" ]]; then echo "$DEVSTACK_HOST"; return; fi
@@ -98,7 +120,7 @@ write_config() {
   local bind="$1"
   if [[ -f "$CONFIG_FILE" && "${DEVSTACK_REGENERATE:-0}" != "1" ]]; then
     echo "==> keeping existing $CONFIG_FILE (DEVSTACK_REGENERATE=1 to replace)"
-    check_config_bind "$bind"
+    check_config_drift "$bind"
     return
   fi
   cat > "$CONFIG_FILE" <<EOF
@@ -145,14 +167,30 @@ EOF
 # check_config_bind warns when the kept config listens on an address this host
 # no longer has. A Tailscale address can change between runs, and the server
 # would otherwise fail to bind with nothing pointing at the reason.
-check_config_bind() {
-  local bind="$1" listed
-  listed="$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$CONFIG_FILE" | head -1)"
-  [[ -n "$listed" ]] || return 0
-  [[ "$listed" == "${bind}:${SERVER_PORT}" ]] && return 0
-  echo "==> warning: $CONFIG_FILE listens on ${listed}, but this host binds ${bind}:${SERVER_PORT}" >&2
-  echo "    a server starting on ${listed} will fail if this host no longer has that address" >&2
+check_config_drift() {
+  local bind="$1" drifted=0
+
+  config_value listen "${bind}:${SERVER_PORT}" || drifted=1
+  config_value base_url "http://127.0.0.1:${ADMIN_PORT}" || drifted=1
+  config_value addr "127.0.0.1:${SAT_PORT}" || drifted=1
+
+  [[ "$drifted" == 1 ]] || return 0
+  echo "    a server started from it will use those, not this run's settings" >&2
   echo "    DEVSTACK_REGENERATE=1 rewrites the config" >&2
+}
+
+# config_value compares one setting in the kept config against what this run
+# would have written, and names it if they differ. Checking only the listen
+# address left a changed DEVSTACK_SAT_PORT silently ignored, and the server then
+# dials whatever holds the old port — which on a machine that already runs
+# Companion is the operator's own.
+config_value() {
+  local key="$1" want="$2" found
+  found="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG_FILE" | head -1)"
+  [[ -n "$found" ]] || return 0
+  [[ "$found" == "$want" ]] && return 0
+  echo "==> warning: $CONFIG_FILE has ${key} = \"${found}\", this run would use \"${want}\"" >&2
+  return 1
 }
 
 companion_running() {
@@ -239,12 +277,8 @@ start_companion() {
     storage=(-v "cuebooth-devstack-config:/companion")
   fi
 
-  # Loopback always; the extra address only if it is a different one. Publishing
-  # 127.0.0.1 twice is redundant, and 0.0.0.0 over it fails to bind outright.
-  local publish=(-p "127.0.0.1:${ADMIN_PORT}:8000" -p "127.0.0.1:${SAT_PORT}:16622")
-  if [[ "$bind" != "127.0.0.1" && "$bind" != "localhost" ]]; then
-    publish+=(-p "$(publish_host "$bind"):${ADMIN_PORT}:8000")
-  fi
+  local publish=()
+  read -r -a publish <<< "$(publish_flags "$bind")"
 
   check_config_version
 
@@ -278,7 +312,8 @@ check_config_version() {
   previous="$(cat "$marker" 2>/dev/null || true)"
   if [[ -n "$previous" && "$previous" != "$VERSION" ]]; then
     echo "==> warning: $(config_home) was last used by Companion $previous, now starting $VERSION" >&2
-    if [[ "$previous" > "$VERSION" ]]; then
+    # Compared as versions, not as strings: "v9.0.0" sorts after "v10.0.0".
+    if [[ "$(printf '%s\n%s\n' "$previous" "$VERSION" | sort -V | tail -1)" == "$previous" ]]; then
       echo "    that is a downgrade; $previous may have migrated the config in place" >&2
     fi
   fi
@@ -371,6 +406,12 @@ stop_server() {
     echo "==> server ignored SIGTERM; sending SIGKILL"
     kill -9 "$pid" 2>/dev/null || true
     sleep 1
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    # Unkillable for now — blocked in the kernel. Dropping the pidfile here
+    # would lose the handle to a process still holding the port.
+    echo "==> pid $pid survived SIGKILL; keeping $SERVER_PID" >&2
+    return 0
   fi
   rm -f "$SERVER_PID"
 }

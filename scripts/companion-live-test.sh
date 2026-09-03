@@ -69,7 +69,11 @@ companion_ready() {
   # redirect before applying a 2>/dev/null on the same command, so a refused
   # connection would print on every poll.
   { exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}"; } 2>/dev/null || return 1
-  read -r -t 5 greeting <&3 || true
+  # Companion greets as soon as it accepts, so a second is generous. A longer
+  # wait multiplies against the poll count below: every poll before Companion
+  # is up blocks for the whole timeout, because the published port accepts from
+  # the moment the container is created.
+  read -r -t 1 greeting <&3 || true
   { exec 3>&-; } 2>/dev/null || true
   { exec 3<&-; } 2>/dev/null || true
   [[ "$greeting" == BEGIN* ]]
@@ -78,7 +82,8 @@ companion_ready() {
 # Companion takes a few seconds to render its first surface.
 echo -n "==> waiting for Satellite port ${SAT_PORT} "
 ready=0
-for _ in $(seq 1 90); do
+deadline=$((SECONDS + 90))
+while ((SECONDS < deadline)); do
   if companion_ready; then
     echo " ready"
     ready=1
@@ -89,7 +94,7 @@ for _ in $(seq 1 90); do
 done
 if [[ "$ready" != 1 ]]; then
   echo
-  echo "Companion did not answer on ${SAT_PORT} in time; container log:" >&2
+  echo "Companion did not answer on ${SAT_PORT} within 90s; container log:" >&2
   "$ENGINE" logs --tail 40 "$CONTAINER" >&2 || true
   exit 1
 fi

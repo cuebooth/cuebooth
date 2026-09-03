@@ -149,10 +149,15 @@ wait "$MINE" 2>/dev/null
 spawn_server_like 'trap "sleep 3; exit 0" TERM; for _ in $(seq 600); do sleep 0.1; done'
 SLOW="$SPAWNED"
 echo "$SLOW" > "$SERVER_PID"
-stop_server >/dev/null 2>&1
+SLOW_OUT="$(stop_server 2>&1)"
 check "stop_server does not return while the server is still shutting down" \
   "$(dead "$SLOW")" yes
+# Waiting is the point: without it the SIGKILL below would satisfy the check
+# above just as well, and every `down` would become an immediate kill.
+check "and lets it shut down rather than killing it" \
+  "$(printf '%s' "$SLOW_OUT" | grep -c 'ignored SIGTERM')" 0
 wait "$SLOW" 2>/dev/null
+check "the slow server exited on its own terms" "$?" 0
 
 # The inner $(seq …) is for the spawned shell to expand, not this one.
 # shellcheck disable=SC2016
@@ -160,8 +165,10 @@ spawn_server_like 'trap "" TERM; for _ in $(seq 600); do sleep 0.1; done'
 STUBBORN="$SPAWNED"
 echo "$STUBBORN" > "$SERVER_PID"
 check "a server ignoring SIGTERM is seen as running" "$(say server_running)" yes
-stop_server >/dev/null 2>&1
+STUBBORN_OUT="$(stop_server 2>&1)"
 check "a server ignoring SIGTERM is still stopped" "$(dead "$STUBBORN")" yes
+check "and says it had to escalate" \
+  "$(printf '%s' "$STUBBORN_OUT" | grep -c 'ignored SIGTERM')" 1
 wait "$STUBBORN" 2>/dev/null
 
 # A pidfile naming a live process that is not this stack's server is not a stale
@@ -281,7 +288,8 @@ check "usage ends at the header, not in the code" \
   "$(printf '%s' "$USAGE" | grep -c 'set -euo pipefail')" 0
 check "usage reaches the last header line" \
   "$(printf '%s' "$USAGE" | grep -c 'companion-live-test.sh')" 1
-for knob in DEVSTACK_BIND DEVSTACK_DIR DEVSTACK_ADMIN_PORT DEVSTACK_SERVER_PORT CONTAINER_ENGINE; do
+for knob in DEVSTACK_BIND DEVSTACK_DIR DEVSTACK_ADMIN_PORT DEVSTACK_SERVER_PORT \
+            DEVSTACK_REGENERATE CONTAINER_ENGINE; do
   check "usage documents $knob" "$(printf '%s' "$USAGE" | grep -c "$knob")" 1
 done
 
@@ -409,23 +417,103 @@ check "a container published on this address is fine" \
   "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.1:8000->8000/tcp" say companion_publishes 100.64.0.1)" yes
 check "a container published elsewhere is not" \
   "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.9:8000->8000/tcp" say companion_publishes 100.64.0.1)" no
+# Tailscale addresses differ by a trailing digit routinely, so the match has to
+# end at the port separator.
+check "an address that is only a prefix does not count as published" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.126.18:8000->8000/tcp" say companion_publishes 100.64.126.1)" no
 
 unset CONTAINER_ENGINE
 
-# --- check_config_bind --------------------------------------------------------
+# --- check_config_drift -------------------------------------------------------
 #
-# A Tailscale address can change between runs, and a kept config then names one
-# this host no longer has.
+# The config is kept across runs, so every setting this run would have written
+# can disagree with what is in the file. A Tailscale address can change; so can
+# a port knob, and a satellite address left pointing at 16622 sends the server
+# to whatever holds that port — on a machine that already runs Companion, the
+# operator's own.
 
-echo "# check_config_bind"
+echo "# check_config_drift"
 
-printf 'listen = "10.0.0.1:%s"\n' "$SERVER_PORT" > "$CONFIG_FILE"
+write_kept_config() {
+  printf 'listen = "%s"\nbase_url = "%s"\naddr = "%s"\n' "$1" "$2" "$3" > "$CONFIG_FILE"
+}
+
+current_config() {
+  write_kept_config "127.0.0.1:${SERVER_PORT}" \
+    "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:${SAT_PORT}"
+}
+
+current_config
+check "a config matching this run is silent" \
+  "$(check_config_drift 127.0.0.1 2>&1 >/dev/null | wc -l | tr -d ' ')" 0
+
+write_kept_config "10.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:${SAT_PORT}"
 check "a stale listen address warns" \
-  "$(check_config_bind 127.0.0.1 2>&1 >/dev/null | grep -c 'listens on 10.0.0.1')" 1
+  "$(check_config_drift 127.0.0.1 2>&1 >/dev/null | grep -c 'listen = "10.0.0.1')" 1
 
-printf 'listen = "127.0.0.1:%s"\n' "$SERVER_PORT" > "$CONFIG_FILE"
-check "a current listen address is silent" \
-  "$(check_config_bind 127.0.0.1 2>&1 >/dev/null | wc -l | tr -d ' ')" 0
+write_kept_config "127.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:16622"
+check "a satellite port this run would not use warns" \
+  "$(SAT_PORT=16999 check_config_drift 127.0.0.1 2>&1 >/dev/null | grep -c 'addr = "127.0.0.1:16622"')" 1
+
+write_kept_config "127.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:8000" "127.0.0.1:${SAT_PORT}"
+check "an admin port this run would not use warns" \
+  "$(ADMIN_PORT=8999 check_config_drift 127.0.0.1 2>&1 >/dev/null | grep -c 'base_url = "http://127.0.0.1:8000"')" 1
+
+current_config
+
+# --- publish_flags ------------------------------------------------------------
+#
+# What the container publishes, and to whom. The Satellite port on the tailnet
+# would be an unauthenticated surface endpoint for every device on it.
+
+echo "# publish_flags"
+
+check "the satellite port is not published beyond loopback" \
+  "$(publish_flags 100.64.0.1 | grep -c "100.64.0.1:${SAT_PORT}")" 0
+check "the admin port is published on the bind address" \
+  "$(publish_flags 100.64.0.1 | grep -c "100.64.0.1:${ADMIN_PORT}:8000")" 1
+check "loopback is published too" \
+  "$(publish_flags 100.64.0.1 | grep -c "127.0.0.1:${ADMIN_PORT}:8000")" 1
+check "a loopback bind is not published twice" \
+  "$(publish_flags 127.0.0.1 | grep -o "127.0.0.1:${ADMIN_PORT}:8000" | wc -l | tr -d ' ')" 1
+# 0.0.0.0 over 127.0.0.1 on one port does not bind, so it replaces it.
+check "a wildcard bind replaces loopback rather than joining it" \
+  "$(publish_flags 0.0.0.0 | grep -c '127.0.0.1')" 0
+check "a wildcard bind still publishes both ports" \
+  "$(publish_flags 0.0.0.0 | grep -o -- '-p' | wc -l | tr -d ' ')" 2
+check "an IPv6 bind is bracketed" \
+  "$(publish_flags fd7a::1 | grep -c '\[fd7a::1\]')" 1
+
+# --- check_config_version -----------------------------------------------------
+#
+# Companion migrates its config directory in place, so running an older tag
+# against a directory a newer one has written is worth saying out loud.
+
+echo "# check_config_version"
+
+VERSION_MARKER="$STATE_DIR/companion-version"
+
+version_warning() {
+  printf '%s' "$1" > "$VERSION_MARKER"
+  { VERSION="$2" check_config_version >/dev/null; } 2>&1
+}
+
+check "the same tag is silent" "$(version_warning v3.4.1 v3.4.1 | wc -l | tr -d ' ')" 0
+check "a change of tag is named" \
+  "$(version_warning v3.4.1 v5.0.3 | grep -c 'last used by Companion v3.4.1')" 1
+check "a downgrade says so" \
+  "$(version_warning v5.0.3 v3.4.1 | grep -c 'that is a downgrade')" 1
+check "an upgrade does not" \
+  "$(version_warning v3.4.1 v5.0.3 | grep -c 'that is a downgrade')" 0
+# Compared as versions: as strings, "v9.0.0" sorts after "v10.0.0".
+check "v9 to v10 is an upgrade, not a downgrade" \
+  "$(version_warning v9.0.0 v10.0.0 | grep -c 'that is a downgrade')" 0
+check "v10 to v9 is a downgrade" \
+  "$(version_warning v10.0.0 v9.0.0 | grep -c 'that is a downgrade')" 1
+rm -f "$VERSION_MARKER"
 
 # --- config_home --------------------------------------------------------------
 #
