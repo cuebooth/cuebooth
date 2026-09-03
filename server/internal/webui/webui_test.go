@@ -2,6 +2,7 @@ package webui
 
 import (
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,6 +44,8 @@ func testFS() fstest.MapFS {
 		"main.dart.js":      {Data: []byte("console.log(1)")},
 		"canvaskit/ck.wasm": {Data: []byte("\x00asm")},
 		"assets/thing.png":  {Data: []byte("\x89PNG")},
+		"assets/f.otf":      {Data: []byte("OTTO")},
+		"manifest.json":     {Data: []byte("{}")},
 		".last_build_id":    {Data: []byte("abc123")},
 	}
 }
@@ -203,13 +206,17 @@ func TestValidatorsFollowContent(t *testing.T) {
 }
 
 // Content types matter: a browser refuses to instantiate wasm served as
-// something else.
+// something else, and with nosniff it refuses to run a script that arrives as
+// anything but a script.
 func TestContentTypesComeFromTheExtension(t *testing.T) {
 	h := serveFrom(testFS())
 
 	for path, want := range map[string]string{
 		"/canvaskit/ck.wasm": "application/wasm",
 		"/main.dart.js":      "text/javascript",
+		"/manifest.json":     "application/json",
+		"/assets/thing.png":  "image/png",
+		"/assets/f.otf":      "font/otf",
 	} {
 		rec := fetch(t, h, path)
 		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, want) {
@@ -218,6 +225,29 @@ func TestContentTypesComeFromTheExtension(t *testing.T) {
 	}
 	if got := navigate(t, h, "/").Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
 		t.Errorf("GET / content type = %q, want text/html", got)
+	}
+}
+
+// The type must come from this package, not from the machine the binary runs
+// on. Go's mime package lets the host database overwrite its built-in table, so
+// a registry that calls .js something else would otherwise reach the browser —
+// and nosniff turns that into a refused script rather than a recovered one.
+func TestContentTypesIgnoreTheHostMIMEDatabase(t *testing.T) {
+	for _, ext := range []string{".js", ".wasm", ".json", ".html", ".otf"} {
+		if err := mime.AddExtensionType(ext, "application/x-host-database-says-so"); err != nil {
+			t.Fatalf("AddExtensionType(%q): %v", ext, err)
+		}
+	}
+
+	h := serveFrom(testFS())
+	for _, path := range []string{"/main.dart.js", "/canvaskit/ck.wasm", "/manifest.json", "/assets/f.otf"} {
+		rec := fetch(t, h, path)
+		if got := rec.Header().Get("Content-Type"); strings.Contains(got, "host-database-says-so") {
+			t.Errorf("GET %s content type = %q; the host's table decided it", path, got)
+		}
+	}
+	if got := navigate(t, h, "/").Header().Get("Content-Type"); strings.Contains(got, "host-database-says-so") {
+		t.Errorf("GET / content type = %q; the host's table decided it", got)
 	}
 }
 

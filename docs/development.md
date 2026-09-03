@@ -27,7 +27,7 @@ The only wiring constraints:
 | client → server WebSocket | `ws://<server>:7878/ws` | client dials the server |
 | sidecar → server | `\\.\pipe\cuebooth-sidecar` | sidecar writes to the server |
 
-The processes can all run on one machine or be split across the network however you like (e.g. Companion + server on the production PC, client on an iPad over Tailscale). Wherever the client runs, point it at the server's reachable address.
+The processes can all run on one machine or be split across the network however you like (e.g. Companion + server on the production PC, client on an iPad over Tailscale). Point a native client at the server's reachable address; a browser client is served by the server itself, so it is already pointed at it ([§3.1](#31-bundling-the-web-client-into-the-server)).
 
 ---
 
@@ -93,7 +93,7 @@ Then open `http://<server-host>:7878`. The connect screen prefills the address t
 
 `make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
 
-**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, which `flutter build web` emits as six wasm files. A page load fetches one: the build declares the `canvaskit` renderer, so the loader picks `canvaskit/chromium/canvaskit.wasm` (5.8 MB) on a Chromium browser and `canvaskit/canvaskit.wasm` (7.2 MB) elsewhere. The skwasm and wimp builds are never requested under this configuration — 12 MB of dead weight, tracked in [CB-098](https://github.com/cuebooth/cuebooth/issues/91).
+**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, which `flutter build web` emits as six wasm builds. A page load fetches one: this build declares the `canvaskit` renderer, so the loader picks `canvaskit/chromium/canvaskit.wasm` (5.8 MB) on a Chromium browser and `canvaskit/canvaskit.wasm` (7.2 MB) elsewhere. The other four cannot be selected without setting `canvasKitVariant` by hand — 22 MB with their JavaScript and symbol files, tracked in [CB-098](https://github.com/cuebooth/cuebooth/issues/91). A first page load is around 8 MB all told; there is no compression ([CB-099](https://github.com/cuebooth/cuebooth/issues/92)), though a reload revalidates and gets 304s.
 
 `make web` passes `--no-web-resources-cdn`, which is what makes the loader read CanvasKit from here rather than `gstatic.com`; without the flag the whole 37 MB is embedded and never requested.
 
@@ -179,6 +179,8 @@ On the **Connect** screen, enter the server's `host:port`:
 
 The last successful address is remembered and prefilled on the next launch. The transport is cleartext `ws://` for v1 (reach the server by LAN IP or over Tailscale, which provides the encrypted link).
 
+**In a browser, only one address works**: the one the page was served from, which is already prefilled. `/ws` compares the request's `Origin` against its `Host`, so a page served from `192.168.1.50:7878` gets a 403 if you point it at the same server's tailnet address instead. The fields are editable because the same screen runs on native builds, where any reachable address is fine.
+
 ---
 
 ## 5. C# PowerPoint sidecar (`sidecar/`) — Windows only
@@ -238,8 +240,10 @@ CI runs this same script against both versions (see the workflows README), so a 
 On a Mac or Windows laptop, to see the control surface working against your real Companion:
 
 1. Enable Companion's Satellite API (§2) and have a page ready to assign.
-2. `cd server && cp configs/cuebooth.example.toml configs/cuebooth.toml`, point `[companion]` at your Companion, then `./bin/cuebooth-server -config configs/cuebooth.toml` (after `make build`) or `make run`.
+2. `cd server && cp configs/cuebooth.example.toml configs/cuebooth.toml`, point `[companion]` at your Companion, then `make web && make build` and run `./bin/cuebooth-server -config configs/cuebooth.toml`.
 3. In Companion's Surfaces, assign a page to the `cuebooth` surface.
-4. `cd client && flutter run -d <your-platform>`, and connect to the server's `host:7878`.
+4. Open `http://<server-host>:7878` in a browser. The address is already filled in; press Connect.
+
+Step 4 needs no Flutter toolchain on the machine you are driving from. For a native client instead, skip `make web` and run `cd client && flutter run -d <your-platform>`, connecting to the server's `host:7878`.
 
 The buttons that appear are whatever page Companion has assigned to the surface — discovered live, nothing defined in the client.

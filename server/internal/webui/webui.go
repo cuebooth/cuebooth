@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
@@ -169,6 +170,44 @@ func acceptsHTML(r *http.Request) bool {
 	return accept == "" || strings.Contains(accept, "text/html")
 }
 
+// contentTypes fixes the type of everything a Flutter web build contains.
+//
+// Go's mime package lets the host's own database overwrite its built-in table —
+// /usr/share/mime on Linux, HKEY_CLASSES_ROOT on Windows — so without this the
+// type of a file compiled into the binary is decided by the machine it happens
+// to run on. Paired with nosniff that is not a cosmetic difference: a box whose
+// registry calls .js text/plain gets a refused script and a blank page.
+var contentTypes = map[string]string{
+	".html":  "text/html; charset=utf-8",
+	".js":    "text/javascript; charset=utf-8",
+	".mjs":   "text/javascript; charset=utf-8",
+	".json":  "application/json",
+	".wasm":  "application/wasm",
+	".css":   "text/css; charset=utf-8",
+	".png":   "image/png",
+	".jpg":   "image/jpeg",
+	".jpeg":  "image/jpeg",
+	".gif":   "image/gif",
+	".svg":   "image/svg+xml",
+	".ico":   "image/x-icon",
+	".otf":   "font/otf",
+	".ttf":   "font/ttf",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+	".txt":   "text/plain; charset=utf-8",
+	".bin":   "application/octet-stream",
+	".map":   "application/json",
+}
+
+// contentType is the type to serve name as, or "" to let net/http decide —
+// which is right for the extensions a build may gain that this does not know.
+func contentType(name string) string {
+	if t, ok := contentTypes[strings.ToLower(path.Ext(name))]; ok {
+		return t
+	}
+	return mime.TypeByExtension(strings.ToLower(path.Ext(name)))
+}
+
 // serve writes one bundled file.
 //
 // Deliberately not http.FileServer: that redirects a request for index.html
@@ -186,6 +225,11 @@ func serve(w http.ResponseWriter, r *http.Request, files fs.FS, name string) {
 	if err != nil {
 		http.Error(w, "could not read bundled client", http.StatusInternalServerError)
 		return
+	}
+
+	// Set before ServeContent, which only derives a type when none is present.
+	if t := contentType(name); t != "" {
+		w.Header().Set("Content-Type", t)
 	}
 
 	if rs, ok := f.(io.ReadSeeker); ok {
