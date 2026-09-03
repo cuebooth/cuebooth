@@ -77,9 +77,29 @@ Key fields (the file documents the rest):
 
 The server binds the client WebSocket on `[server] listen` at path `/ws` (`/ws/meters` is reserved for later phases). The default config path when no `-config` is given is `configs/cuebooth.toml`.
 
+### 3.1 Bundling the web client into the server
+
+The server can carry the Flutter web client and serve it at `/` on the same port, so a browser on any machine is a working client with nothing installed:
+
+```sh
+cd server
+make web      # flutter build web, staged into internal/webui/dist
+make build    # go build, embedding whatever make web staged
+```
+
+Then open `http://<server-host>:7878`. The connect screen prefills the address the page came from, so there is nothing to type.
+
+**It has to be the same port.** `/ws` enforces a same-origin policy (coder/websocket's default compares `Origin` against `Host`), so a client page served from anywhere else is refused with a 403. Serving it here satisfies that check rather than weakening it — worth keeping, since v1 has no in-protocol auth ([protocol.md](protocol.md) §1).
+
+`make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
+
+The client adds roughly 22 MB to the binary, mostly CanvasKit wasm variants that the browser chooses between at runtime.
+
 ---
 
 ## 4. Flutter client (`client/`)
+
+> **You may not need any of this.** The server can carry the web client and serve it from its own port — open `http://<server>:7878` in a browser and you have a working client with nothing installed and no Flutter toolchain. See [§3.1](#31-bundling-the-web-client-into-the-server). The rest of this section is for building a *native* client, or for developing the client itself.
 
 **Prerequisites (all platforms):** the Flutter SDK (Dart **3.11+**, which Flutter 3.41 onward provides), then the platform-specific toolchain below. After installing the toolchain, fetch dependencies once:
 

@@ -1,9 +1,25 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/server_connection.dart';
 import '../services/session.dart';
 import 'home_screen.dart';
+
+/// The address to prefill on the connect screen.
+///
+/// On the web the client is served by the server itself, so the page's own
+/// origin *is* the server — prefilling it means an operator who typed the
+/// address into their browser does not type it again. Everywhere else the app
+/// arrived by some other route and localhost is the only sensible guess.
+({String host, int port}) defaultServerAddress({bool? isWeb, Uri? base}) {
+  final onWeb = isWeb ?? kIsWeb;
+  final from = base ?? Uri.base;
+  if (onWeb && from.host.isNotEmpty) {
+    return (host: from.host, port: from.port);
+  }
+  return (host: '127.0.0.1', port: 7878);
+}
 
 /// First-launch screen for entering the server host:port and connecting.
 ///
@@ -31,8 +47,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
   static const _portPrefKey = 'server_port';
 
   // Seeded with sensible defaults; overwritten by any persisted last-good value.
-  final _hostCtrl = TextEditingController(text: '127.0.0.1');
-  final _portCtrl = TextEditingController(text: '7878');
+  final _hostCtrl = TextEditingController(text: defaultServerAddress().host);
+  final _portCtrl = TextEditingController(text: '${defaultServerAddress().port}');
   String? _portError;
   bool _connecting = false;
   // The address of the in-flight connect attempt, persisted once it succeeds.

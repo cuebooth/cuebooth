@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
+	"github.com/cuebooth/cuebooth/server/internal/webui"
 )
 
 // shutdownTimeout bounds graceful HTTP shutdown.
@@ -135,6 +136,10 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
 	s.mux.HandleFunc("/ws/meters", s.serveMeters)
+	// Registered last and least specific, so the API routes above win. Serving
+	// the client from this listener is what lets a browser open /ws at all:
+	// acceptWS enforces same-origin, which a page served elsewhere fails.
+	s.mux.Handle("/", webui.Handler())
 	return s
 }
 
