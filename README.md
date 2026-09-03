@@ -32,7 +32,7 @@ cuebooth/
 ├── server/                  Go server (orchestration + automation)
 ├── client/                  Flutter app (cross-platform control surface)
 ├── sidecar/                 C# PowerPoint COM monitor
-└── .github/workflows/       CI: build + test the server and client; build the sidecar
+└── .github/workflows/       CI: vet/build/test the server, analyze/test the client, build the sidecar
 ```
 
 ## Distribution

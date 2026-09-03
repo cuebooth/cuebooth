@@ -40,6 +40,17 @@ void main() {
       expect(addr.port, 7878);
     });
 
+    // Called with no arguments it reads kIsWeb and Uri.base, which is how the
+    // widget actually calls it. kIsWeb is false in a VM test, so this pins the
+    // native default and, with it, that the arguments are defaults rather than
+    // the only path through the function.
+    test('with no arguments, a native build gets localhost', () {
+      final addr = defaultServerAddress();
+
+      expect(addr.host, '127.0.0.1');
+      expect(addr.port, 7878);
+    });
+
     // A web build opened from a file: URL has no host to derive an address
     // from, so the origin is no better a guess than localhost.
     test('a hostless base falls back to localhost', () {

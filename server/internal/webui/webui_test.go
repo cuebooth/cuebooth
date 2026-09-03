@@ -269,6 +269,13 @@ func TestNonReadMethodsAreRefused(t *testing.T) {
 				if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
 					t.Errorf("%s / Allow = %q, want \"GET, HEAD\"", method, got)
 				}
+				// Every response, not only the ones that serve something.
+				if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+					t.Errorf("%s / X-Frame-Options = %q, want DENY", method, got)
+				}
+				if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+					t.Errorf("%s / Content-Security-Policy = %q", method, got)
+				}
 			}
 		})
 	}
@@ -348,7 +355,10 @@ func TestWithoutAStagedBuildTheExplanationIsServed(t *testing.T) {
 	}
 }
 
-// A path that climbs out of the bundle must not reach the filesystem.
+// A path that climbs out of the bundle must not reach the filesystem. fs.ValidPath
+// rejects a ".." element on its own, so these hold whether or not the handler
+// cleans first; they are here because the guarantee is worth stating, not
+// because they discriminate.
 func TestTraversalIsContained(t *testing.T) {
 	h := serveFrom(testFS())
 
@@ -360,6 +370,23 @@ func TestTraversalIsContained(t *testing.T) {
 		}
 		if !strings.Contains(rec.Body.String(), "the app") {
 			t.Errorf("GET %s served something other than the entry document", path)
+		}
+		if strings.Contains(rec.Body.String(), "root:") {
+			t.Errorf("GET %s reached the filesystem", path)
+		}
+	}
+}
+
+// What cleaning the path actually decides. Without it these reach fs.Open as
+// "/index.html" and "./index.html", neither of which is a valid fs path, so the
+// entry document 404s for a client that states no preference for HTML.
+func TestPathsAreCleanedBeforeLookup(t *testing.T) {
+	h := serveFrom(testFS())
+
+	for _, path := range []string{"//index.html", "/./index.html", "/canvaskit/../main.dart.js"} {
+		rec := fetch(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 		}
 	}
 }
