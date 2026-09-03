@@ -53,14 +53,40 @@ func bundledIn(files fs.FS) bool {
 }
 
 // Handler serves the client, or an explanation if none was bundled.
-func Handler() http.Handler {
-	if !Bundled() {
-		return http.HandlerFunc(serveMissing)
+func Handler() http.Handler { return handlerFrom(assets()) }
+
+// handlerFrom is the whole chain for one set of files — the client when one is
+// there, the explanation when it is not — so a test drives what Handler does
+// rather than the file lookup alone.
+func handlerFrom(files fs.FS) http.Handler {
+	if !bundledIn(files) {
+		return guard(http.HandlerFunc(serveMissing))
 	}
-	files := assets()
 	tags := etags(files)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleWith(files, tags, w, r)
+	}))
+}
+
+// guard applies what holds for every response, bundled client or not.
+//
+// The frame rules are the part specific to this server: /ws admits a page whose
+// Origin equals its Host, and until the client was served here there was no
+// page on this origin to admit. A hostile page that frames this one gets a
+// client already pointed at the server and needs only to steer two clicks, and
+// there is no in-protocol auth to fall back on (protocol.md §1). CSP is the
+// current mechanism; X-Frame-Options covers what predates it.
+func guard(inner http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		inner.ServeHTTP(w, r)
 	})
 }
 
@@ -89,12 +115,6 @@ func etags(files fs.FS) map[string]string {
 // handleWith resolves one request against the bundled files. Split from Handler
 // so it can be driven against an FS that is not the embedded build.
 func handleWith(files fs.FS, tags map[string]string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Clean before trimming, so a path climbing out of the bundle resolves to
 	// something inside it rather than reaching the filesystem.
 	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")

@@ -18,7 +18,11 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 ## Status
 
-Phase 0 — foundation, documentation, and project scaffolding. The design is complete and the server, client, and sidecar skeletons are landing now; feature implementation (Phase 1 onward) has not yet begun. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
+**Phase 1 — the Companion control surface — works.** The server registers with Bitfocus Companion as a Satellite surface, streams the rendered button grid to the Flutter client over a WebSocket, and routes presses back. Companion's own page navigation comes with it, so a surface that links to other surfaces behaves as it does on hardware. The server also carries the web client and serves it at `/`, so a browser on any machine on the network is a working client with nothing installed.
+
+Phases 2 onward — direct OSC audio control, VISCA camera, the slide engine, HID input, video preview — are not implemented; `server/internal/{audio,camera,obs,slides,hid}` are package stubs, and the C# sidecar does not yet drive anything. There are no prebuilt downloads: [building from source](docs/development.md) is the only way to run it, and release packaging is tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71).
+
+See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
 ## Repository Layout
 
@@ -28,7 +32,7 @@ cuebooth/
 ├── server/                  Go server (orchestration + automation)
 ├── client/                  Flutter app (cross-platform control surface)
 ├── sidecar/                 C# PowerPoint COM monitor
-└── .github/workflows/       CI: build server, client, sidecar, and Windows installers
+└── .github/workflows/       CI: build and test the server, client, and sidecar
 ```
 
 ## Distribution

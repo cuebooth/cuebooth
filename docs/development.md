@@ -93,7 +93,11 @@ Then open `http://<server-host>:7878`. The connect screen prefills the address t
 
 `make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
 
-**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, shipped as six wasm builds; the loader picks one from what the browser supports, so a page load downloads 3–7 MB of that, not all of it. `make web` passes `--no-web-resources-cdn`, which is what makes the loader read those files from here instead of `gstatic.com`; without the flag they are embedded and never requested.
+**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, which `flutter build web` emits as six wasm files. A page load fetches one: the build declares the `canvaskit` renderer, so the loader picks `canvaskit/chromium/canvaskit.wasm` (5.8 MB) on a Chromium browser and `canvaskit/canvaskit.wasm` (7.2 MB) elsewhere. The skwasm and wimp builds are never requested under this configuration — 12 MB of dead weight, tracked in [CB-098](https://github.com/cuebooth/cuebooth/issues/91).
+
+`make web` passes `--no-web-resources-cdn`, which is what makes the loader read CanvasKit from here rather than `gstatic.com`; without the flag the whole 37 MB is embedded and never requested.
+
+**Plain HTTP only.** The client builds a `ws://` URL unconditionally, so a page served over HTTPS loads and then cannot connect — the browser blocks the socket as mixed content, and the connect screen's origin prefill will have filled in port 443. Serve this over plain HTTP and reach it by LAN IP or tailnet address. [CB-097](https://github.com/cuebooth/cuebooth/issues/90) tracks choosing the scheme from the page.
 
 ---
 
@@ -144,6 +148,8 @@ Run `flutter doctor` to confirm your target platform shows no outstanding issues
    ```
 
 ### Web (any OS)
+
+> **This cannot reach the server.** `flutter run -d chrome` serves the page from its own port, and `/ws` refuses a page whose origin is not the server's (see [§3.1](#31-bundling-the-web-client-into-the-server)) — the connect attempt gets a 403 whatever address you type. Use it for UI work with no server, and use `make web` in `server/` to run the web client against a real server.
 
 1. Install Chrome or Chromium.
 2. Run:

@@ -9,14 +9,12 @@ import (
 	"testing/fstest"
 )
 
-// serveFrom exercises the same request handling as Handler against a supplied
-// FS, so behaviour can be tested without a real Flutter build embedded.
-func serveFrom(files fs.FS) http.Handler {
-	tags := etags(files)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWith(files, tags, w, r)
-	})
-}
+// serveFrom exercises the same chain as Handler against a supplied FS, so
+// behaviour can be tested without a real Flutter build embedded.
+func serveFrom(files fs.FS) http.Handler { return handlerFrom(files) }
+
+// noClient is what Handler builds when `make web` was never run.
+func noClient() http.Handler { return handlerFrom(fstest.MapFS{}) }
 
 // navigate requests path the way a browser navigating to it does.
 func navigate(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -224,16 +222,48 @@ func TestContentTypesComeFromTheExtension(t *testing.T) {
 }
 
 // Nothing behind this handler takes a write, so a method that implies one
-// should be refused rather than quietly answered with the app.
+// should be refused rather than quietly answered with the app — and the answer
+// must not depend on whether a client happens to be bundled.
 func TestNonReadMethodsAreRefused(t *testing.T) {
-	h := serveFrom(testFS())
+	for name, h := range map[string]http.Handler{
+		"bundled":   serveFrom(testFS()),
+		"no client": noClient(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+				if rec.Code != http.StatusMethodNotAllowed {
+					t.Errorf("%s / = %d, want 405", method, rec.Code)
+				}
+				if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
+					t.Errorf("%s / Allow = %q, want \"GET, HEAD\"", method, got)
+				}
+			}
+		})
+	}
+}
 
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s / = %d, want 405", method, rec.Code)
-		}
+// The page is same-origin with /ws, which admits a page whose Origin equals its
+// Host — so a page that could be framed is a page that could be clicked through
+// into an API with no auth of its own.
+func TestTheAppCannotBeFramed(t *testing.T) {
+	for name, h := range map[string]http.Handler{
+		"bundled":   serveFrom(testFS()),
+		"no client": noClient(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := navigate(t, h, "/")
+			if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Errorf("X-Frame-Options = %q, want DENY", got)
+			}
+			if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+				t.Errorf("Content-Security-Policy = %q, want frame-ancestors 'none'", got)
+			}
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+		})
 	}
 }
 
@@ -278,14 +308,10 @@ func TestBundledDetection(t *testing.T) {
 	}
 }
 
-// Handler picks between the two behaviours; with nothing staged in this
-// checkout it must be the explanatory one.
-func TestHandlerWithoutAStagedBuildServesTheExplanation(t *testing.T) {
-	if Bundled() {
-		t.Skip("a client is staged in this checkout; the no-client path is covered by TestBundledDetection")
-	}
-	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+// A build with nothing staged answers with the explanation, whatever is staged
+// in the checkout the tests happen to run in.
+func TestWithoutAStagedBuildTheExplanationIsServed(t *testing.T) {
+	rec := navigate(t, noClient(), "/")
 
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "make web") {
 		t.Errorf("status = %d, body = %q; want the no-client page", rec.Code, rec.Body.String())

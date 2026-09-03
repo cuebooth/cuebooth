@@ -334,6 +334,8 @@ A single app that consolidates:
 
 **Framework:** Flutter (Dart). Compiles to native binaries on all targets — no bridge, no JS runtime. Desktop support (Windows, macOS, Linux) is first-party and stable. Web output uses WASM/Canvas (heavier than typical web apps, but fine for a control surface — not a public site). The widget composition model and reactive state management map well to a real-time control surface with meters, faders, and live video.
 
+**Delivery.** The server carries the web build and serves it from the same listener as the WebSocket API, so a browser on the network is a client with nothing installed. That makes the server the client's distribution channel for the web target, alongside the per-platform installers the native targets need — and it is why the web client is served from the API's own port rather than any other: the WebSocket refuses a page whose origin is not its own (§3.6), and serving the page there satisfies that rather than relaxing it. The server does not otherwise know about the client: no session state, no per-client configuration, nothing beyond the static bundle and the protocol.
+
 ### 3.6 Communication Protocol
 
 Client ↔ Server communication is over WebSocket with JSON messages. The server is authoritative — clients send commands, server broadcasts state updates. The normative wire format — every message type, field, the per-target actions catalog, and the meter channel — is specified in [`protocol.md`](protocol.md); the example below is an abbreviated illustration and follows the v1 shapes defined there.
