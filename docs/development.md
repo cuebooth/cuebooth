@@ -207,6 +207,14 @@ COMPANION_SATELLITE_ADDR=127.0.0.1:16622 scripts/companion-live-test.sh   # use 
 
 CI runs this same script against both versions (see the workflows README), so a local run and a CI run do the same thing. The test is skipped by a plain `go test ./...` unless `COMPANION_SATELLITE_ADDR` is set, which keeps the normal suite hermetic.
 
+### The dev stack's own checks
+
+```sh
+scripts/devstack-test.sh
+```
+
+Covers the judgements [`devstack.sh`](../scripts/devstack.sh) acts on — whether the pidfile names the server rather than whatever reused its number, whether Companion is answering rather than merely accepting, and what the server log says about the surface. Starts no containers and writes only under its own scratch directory.
+
 ---
 
 ## 7. A minimal end-to-end run
@@ -236,6 +244,8 @@ scripts/devstack.sh down      # stop both; Companion's config is kept
 
 `up` pulls a pinned Companion image, starts it with its config directory bound to `.devstack/companion/`, generates `.devstack/cuebooth.toml`, builds the server from the working tree, and starts it detached — the stack outlives the shell that launched it. Everything it writes lives under `.devstack/`, which is gitignored.
 
+`up` leaves a running server alone; it does not rebuild one. After editing server code, use `restart`, which builds first and only stops the running server once the build succeeds.
+
 **One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
 
 Faster, if you have a `.companionconfig` export from a real installation: drop it on **Import/Export → Import**. Exports back to Companion 2.x are accepted — 3.x upgrades them on the way in — so an old backup still works. Two things to know before importing a production export:
@@ -253,7 +263,9 @@ cd client && flutter run -d macos      # or windows, chrome, or a device
 
 ### What it binds, and what it doesn't
 
-Services are published on **loopback and the Tailscale address only** — never `0.0.0.0`. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+Nothing is published on `0.0.0.0`. Companion's admin UI and Satellite port are published on **loopback and the Tailscale address**; the CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+
+The generated `.devstack/cuebooth.toml` is kept across runs, so a Tailscale address that changes leaves it naming an address this host no longer has. `up` warns when the two disagree; `DEVSTACK_REGENERATE=1` rewrites the file.
 
 Nothing needs to be reachable from the public internet. That holds even for the Restream chat authorization (CB-017): the OAuth callback is a redirect the *operator's browser* follows, not a connection Restream makes inbound, so tailnet reachability is enough — no `tailscale funnel`.
 

@@ -23,6 +23,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${DEVSTACK_DIR:-$REPO_ROOT/.devstack}"
+# Absolute, because SERVER_BIN below is compared against the image path of a
+# running process, which the kernel always reports absolute.
+if [[ -d "$STATE_DIR" ]]; then
+  STATE_DIR="$(cd "$STATE_DIR" && pwd)"
+elif [[ "$STATE_DIR" != /* ]]; then
+  STATE_DIR="$PWD/$STATE_DIR"
+fi
 COMPANION_DIR="$STATE_DIR/companion"
 CONFIG_FILE="$STATE_DIR/cuebooth.toml"
 SERVER_LOG="$STATE_DIR/server.log"
@@ -69,6 +76,7 @@ write_config() {
   local bind="$1"
   if [[ -f "$CONFIG_FILE" && "${DEVSTACK_REGENERATE:-0}" != "1" ]]; then
     echo "==> keeping existing $CONFIG_FILE (DEVSTACK_REGENERATE=1 to replace)"
+    check_config_bind "$bind"
     return
   fi
   cat > "$CONFIG_FILE" <<EOF
@@ -112,12 +120,47 @@ EOF
   echo "==> wrote $CONFIG_FILE"
 }
 
+# check_config_bind warns when the kept config listens on an address this host
+# no longer has. A Tailscale address can change between runs, and the server
+# would otherwise fail to bind with nothing pointing at the reason.
+check_config_bind() {
+  local bind="$1" listed
+  listed="$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$CONFIG_FILE" | head -1)"
+  [[ -n "$listed" ]] || return 0
+  [[ "$listed" == "${bind}:${SERVER_PORT}" ]] && return 0
+  echo "==> warning: $CONFIG_FILE listens on ${listed}, but this host binds ${bind}:${SERVER_PORT}" >&2
+  echo "    if the server fails to start, DEVSTACK_REGENERATE=1 rewrites the config" >&2
+}
+
 companion_running() {
   [[ -n "$("$(engine)" ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null)" ]]
 }
 
+# server_running is true only when the pidfile names a live process that is
+# this stack's server. A pid number is reused once the process is gone, so a
+# bare kill -0 answers for whatever inherited it — enough for `down` to kill an
+# unrelated process and for `status` to report a server that is not there.
 server_running() {
-  [[ -f "$SERVER_PID" ]] && kill -0 "$(cat "$SERVER_PID")" 2>/dev/null
+  local pid
+  [[ -f "$SERVER_PID" ]] || return 1
+  pid="$(cat "$SERVER_PID" 2>/dev/null)" || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  server_pid_matches "$pid"
+}
+
+# server_pid_matches compares the process's own image against the binary this
+# script builds. A rebuild replaces that file by rename, so the kernel reports
+# the old path with " (deleted)" appended while the process still runs.
+server_pid_matches() {
+  local pid="$1" exe
+  if [[ -d "/proc/$pid" ]]; then
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
+    [[ -n "$exe" && "$exe" == "$SERVER_BIN" ]]
+    return
+  fi
+  ps -p "$pid" -o args= 2>/dev/null | grep -qF -- "$SERVER_BIN"
 }
 
 start_companion() {
@@ -127,12 +170,19 @@ start_companion() {
     echo "==> companion already running"
     return
   fi
+  # Pull before removing anything: a pull that fails on an offline machine
+  # would otherwise leave no container and no way to start one.
+  echo "==> pulling $IMAGE"
+  if ! "$eng" pull "$IMAGE" >/dev/null 2>&1; then
+    "$eng" image inspect "$IMAGE" >/dev/null 2>&1 \
+      || die "could not pull $IMAGE, and there is no local copy to fall back on"
+    echo "==> pull failed; using the local copy of $IMAGE"
+  fi
+
   # Removed rather than restarted: a container left from an older image tag
   # would otherwise silently keep serving.
   "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$COMPANION_DIR"
-  echo "==> pulling $IMAGE"
-  "$eng" pull "$IMAGE" >/dev/null
 
   # The image runs as uid 1000. Under rootless podman that maps to a subuid, so
   # a directory owned by the invoking user is not writable inside the container;
@@ -157,8 +207,7 @@ start_companion() {
 
   echo -n "==> waiting for companion's satellite port"
   for _ in $(seq 1 60); do
-    if (exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}") 2>/dev/null; then
-      exec 3>&- 2>/dev/null || true
+    if companion_ready; then
       echo " ok"
       return
     fi
@@ -166,7 +215,63 @@ start_companion() {
     sleep 1
   done
   echo
-  die "companion did not open ${SAT_PORT} — check: $(engine) logs $CONTAINER"
+  die "companion did not answer on ${SAT_PORT} — check: $eng logs $CONTAINER"
+}
+
+# companion_ready reports whether Companion is answering on the Satellite port,
+# which a bare connect does not establish: rootless podman's port forwarder
+# binds a published port when the container is created, so the connect succeeds
+# from the moment `run` returns and the wait can never fail. Companion greets a
+# new satellite connection with a BEGIN line, so reading one is the first proof
+# that Companion itself is up.
+companion_ready() {
+  local greeting=""
+  # The group is what carries the redirection: bash reports a failed exec
+  # redirect before applying a 2>/dev/null on the same command, so a refused
+  # connection would print on every poll.
+  { exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}"; } 2>/dev/null || return 1
+  read -r -t 5 greeting <&3 || true
+  { exec 3>&-; } 2>/dev/null || true
+  { exec 3<&-; } 2>/dev/null || true
+  [[ "$greeting" == BEGIN* ]]
+}
+
+# build_server is separate from starting one so a restart can fail on a compile
+# error while the running server is still up.
+build_server() {
+  echo "==> building server"
+  (cd "$REPO_ROOT/server" && go build -o "$SERVER_BIN.new" ./cmd/cuebooth-server)
+  mv "$SERVER_BIN.new" "$SERVER_BIN"
+}
+
+launch_server() {
+  echo "==> starting server"
+  # setsid so the stack outlives the shell that started it.
+  setsid "$SERVER_BIN" -config "$CONFIG_FILE" >>"$SERVER_LOG" 2>&1 &
+  echo $! > "$SERVER_PID"
+  sleep 1
+  server_running || die "server exited immediately — see $SERVER_LOG"
+}
+
+# stop_server does not return until the process is gone. Removing the pidfile
+# while the server still holds the port leaves nothing pointing at it, and the
+# next `up` starts a second one that cannot bind.
+stop_server() {
+  local pid
+  server_running || { rm -f "$SERVER_PID"; return 0; }
+  pid="$(cat "$SERVER_PID")"
+  echo "==> stopping server (pid $pid)"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "==> server ignored SIGTERM; sending SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$SERVER_PID"
 }
 
 start_server() {
@@ -174,15 +279,8 @@ start_server() {
     echo "==> server already running (pid $(cat "$SERVER_PID"))"
     return
   fi
-  echo "==> building server"
-  (cd "$REPO_ROOT/server" && go build -o "$SERVER_BIN" ./cmd/cuebooth-server)
-
-  echo "==> starting server"
-  # setsid so the stack outlives the shell that started it.
-  setsid "$SERVER_BIN" -config "$CONFIG_FILE" >>"$SERVER_LOG" 2>&1 &
-  echo $! > "$SERVER_PID"
-  sleep 1
-  server_running || die "server exited immediately — see $SERVER_LOG"
+  build_server
+  launch_server
 }
 
 # surface_registered reports whether Companion currently has the CueBooth
@@ -194,11 +292,15 @@ surface_registered() {
   local last
   # The log spans every run the stack has had, so lines before the newest
   # "starting" describe a server that is no longer here.
+  # Matched on the whole msg= field rather than anywhere in the line. The server
+  # logs a rejected upgrade's Origin header, which a client sets to whatever it
+  # likes; slog escapes the quotes inside a value, so an unescaped msg="..." can
+  # only be the server's own message.
   last="$(awk '
-    /cuebooth-server starting/            { latest = "" }
-    /companion satellite registered/      { latest = "up" }
-    /companion satellite session ended/   { latest = "down" }
-    END                                   { print latest }
+    /msg="cuebooth-server starting"/           { latest = "" }
+    /msg="companion satellite registered"/     { latest = "up" }
+    /msg="companion satellite session ended"/  { latest = "down" }
+    END                                        { print latest }
   ' "$SERVER_LOG" 2>/dev/null)"
   [[ "$last" == "up" ]]
 }
@@ -241,24 +343,30 @@ EOF
 cmd_down() {
   local eng
   eng="$(engine)"
-  if server_running; then
-    echo "==> stopping server (pid $(cat "$SERVER_PID"))"
-    kill "$(cat "$SERVER_PID")" 2>/dev/null || true
-  fi
-  rm -f "$SERVER_PID"
-  echo "==> removing companion (config kept in $COMPANION_DIR)"
+  stop_server
+  echo "==> removing companion (config kept in $(config_home))"
   "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
 
 cmd_restart() {
-  if server_running; then
-    kill "$(cat "$SERVER_PID")" 2>/dev/null || true
-    rm -f "$SERVER_PID"
-    sleep 1
-  fi
-  start_server
+  # Built before the running server is stopped, so a compile error leaves the
+  # stack as it was rather than down.
+  build_server
+  stop_server
+  launch_server
   wait_for_surface || true
   cmd_status
+}
+
+# config_home is where Companion's config actually survives a `down` — a bind
+# mount under podman, a managed volume under docker, which start_companion
+# chooses between.
+config_home() {
+  if [[ "$(basename "$(engine)")" == "podman" ]]; then
+    echo "$COMPANION_DIR"
+  else
+    echo "the $(engine) volume cuebooth-devstack-config"
+  fi
 }
 
 cmd_status() {
@@ -291,11 +399,15 @@ cmd_logs() {
   esac
 }
 
-case "${1:-}" in
-  up)      cmd_up ;;
-  down)    cmd_down ;;
-  restart) cmd_restart ;;
-  status)  cmd_status ;;
-  logs)    shift; cmd_logs "$@" ;;
-  *)       sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
-esac
+# Sourcing this file defines its functions and dispatches nothing, which is how
+# devstack-test.sh drives them.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    up)      cmd_up ;;
+    down)    cmd_down ;;
+    restart) cmd_restart ;;
+    status)  cmd_status ;;
+    logs)    shift; cmd_logs "$@" ;;
+    *)       sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  esac
+fi

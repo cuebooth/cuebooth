@@ -1,6 +1,6 @@
 # CueBooth CI/CD Workflows
 
-GitHub Actions workflows live here. The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml` — server and client have a test step; the sidecar is build-only for now), plus `companion-live.yml`, an integration test against real Companion instances. The release/installer builds are still planned, tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71). This README captures the full intended set.
+GitHub Actions workflows live here. The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml` — server and client have a test step; the sidecar is build-only for now), plus `scripts.yml` for the shell scripts and `companion-live.yml`, an integration test against real Companion instances. The release/installer builds are still planned, tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71). This README captures the full intended set.
 
 ## Planned Workflows
 
@@ -11,6 +11,7 @@ GitHub Actions workflows live here. The per-PR/push CI workflows are implemented
 | `server/`  | `go vet`, `go build`, `go test ./...` (native) + `GOOS=windows` cross-build | Runs on a Linux runner. The production target is Windows, reached via a `windows/amd64` cross-build (cross-compilation is trivial) — not a Windows runner. |
 | `client/`  | `flutter analyze`, `flutter test` | Run on Linux for speed. |
 | `sidecar/` | `dotnet restore`, `dotnet build` (Release) | Runs on `windows-latest` — the Office COM interop types don't restore on Linux. No `dotnet test` step yet (no test project). |
+| `scripts/` | `shellcheck scripts/*.sh`, `scripts/devstack-test.sh` | The dev-stack tests start no containers, so this needs nothing beyond the runner's bash and python3. |
 
 ### Companion integration (`companion-live.yml`, implemented)
 
@@ -47,4 +48,4 @@ An earlier prototype used a Visual Studio Installer (`.vdproj`), which is deprec
 
 ## Status
 
-The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml`) — landed in #68 (CB-003). The release/installer builds are not yet scaffolded; they're tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71) and will land alongside the first version-tagged release.
+The per-PR/push CI workflows are implemented (`server.yml`, `client.yml`, `sidecar.yml`) — landed in #68 (CB-003) — plus `scripts.yml` (CB-094). The release/installer builds are not yet scaffolded; they're tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71) and will land alongside the first version-tagged release.
