@@ -220,13 +220,62 @@ check "launch_server refuses to overwrite a live foreign pidfile" \
   "$(cat "$SERVER_PID")" "$FOREIGN2"
 check "and the process is untouched" "$(dead "$FOREIGN2")" no
 
+# stop_server keeps the pidfile when a process survives SIGKILL, so a restart
+# reaches launch_server with a live server of this stack's own still recorded.
+# Overwriting it there loses the same handle stop_server just protected.
+spawn_server_like 'sleep 30; true'
+OWN="$SPAWNED"
+echo "$OWN" > "$SERVER_PID"
+( launch_server ) >/dev/null 2>&1
+check "launch_server refuses over this stack's own running server" \
+  "$(cat "$SERVER_PID")" "$OWN"
+check "and leaves it running" "$(dead "$OWN")" no
+kill -9 "$OWN" 2>/dev/null
+wait "$OWN" 2>/dev/null
+cp "$BASH_BIN" "$SERVER_BIN"
+echo "$FOREIGN2" > "$SERVER_PID"
+
 START_OUT="$( ( start_server ) 2>&1 >/dev/null )"
 check "start_server refuses too" "$(cat "$SERVER_PID")" "$FOREIGN2"
 # Its own message, not launch_server's: refusing here is what saves the build.
 check "and says so before building" \
-  "$(printf '%s' "$START_OUT" | grep -c 'Stop it, or point')" 1
+  "$(printf '%s' "$START_OUT" | grep -c 'delete ')" 1
 kill -9 "$FOREIGN2" 2>/dev/null
 wait "$FOREIGN2" 2>/dev/null
+rm -f "$SERVER_PID"
+
+# launch_server's success path. Reached only through failures until now, so
+# neither the detachment nor the pid it records was pinned.
+echo "# launch_server"
+
+# The image check is stubbed because the stand-in below is a script, whose image
+# the kernel reports as its interpreter. Everything else in server_running still
+# runs, so launch_server's own refusal-to-overwrite guard is exercised on the
+# way in. What is under test is which pid gets recorded and what session it
+# lands in.
+rm -f "$SERVER_PID"
+printf '#!/bin/sh\nsleep 30\n' > "$SERVER_BIN"
+chmod +x "$SERVER_BIN"
+(
+  # shellcheck disable=SC2329
+  server_pid_matches() { return 0; }
+  launch_server
+) >/dev/null 2>&1
+LAUNCHED="$(cat "$SERVER_PID" 2>/dev/null || echo none)"
+
+check "the pidfile names a live process" \
+  "$(kill -0 "$LAUNCHED" 2>/dev/null && echo yes || echo no)" yes
+# The recorded pid has to be the server, not the shell that started it.
+check "and not this shell" "$([[ "$LAUNCHED" == "$$" ]] && echo yes || echo no)" no
+
+# setsid, so the stack outlives the shell that launched it: the server must be
+# in its own session, not the test shell's. That is issue #85's "the stack keeps
+# running after the invoking shell exits".
+session_of() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f4; }
+check "the server is detached into its own session" \
+  "$([[ "$(session_of "$LAUNCHED")" == "$(session_of $$)" ]] && echo same || echo detached)" detached
+
+kill -9 "$LAUNCHED" 2>/dev/null
 rm -f "$SERVER_PID"
 
 # A pidfile for a process that really is gone is stale, and goes.
@@ -572,6 +621,12 @@ check "an IPv6 bind is bracketed" \
   "$(publish_flags fd7a::1 | grep -c '\[fd7a::1\]')" 1
 check "an IPv6 wildcard is bracketed too" \
   "$(publish_flags :: | grep -c '\[::\]')" 1
+# publish_flags names "[::]" as a value it accepts, so bracketing must not
+# double up: the engine rejects "[[::]]".
+check "an already-bracketed address is left alone" "$(publish_host '[::]')" "[::]"
+check "and so is a bracketed literal" "$(publish_host '[fd7a::1]')" "[fd7a::1]"
+check "a bracketed bind produces no double brackets" \
+  "$(publish_flags '[::]' | grep -c '\[\[')" 0
 check "no unbracketed IPv6 address reaches -p" \
   "$(publish_flags :: | grep -c -- '-p :::')" 0
 
@@ -602,6 +657,73 @@ check "v9 to v10 is an upgrade, not a downgrade" \
 check "v10 to v9 is a downgrade" \
   "$(version_warning v10.0.0 v9.0.0 | grep -c 'that is a downgrade')" 1
 rm -f "$VERSION_MARKER"
+
+# --- the wiring ---------------------------------------------------------------
+#
+# Every check above exercises a function directly. That leaves the calls
+# themselves unpinned: a refactor could drop them from `up` and the whole suite
+# would stay green while the behaviour disappeared.
+
+echo "# up calls the checks it is documented to make"
+
+write_kept_config "10.0.0.1:${SERVER_PORT}" \
+  "http://127.0.0.1:${ADMIN_PORT}" "127.0.0.1:${SAT_PORT}"
+check "write_config drift-checks a config it keeps" \
+  "$(write_config 127.0.0.1 2>&1 >/dev/null | grep -c 'listen = "10.0.0.1')" 1
+
+restart_without_building() {
+  (
+    # Overrides of the sourced script's own functions; cmd_restart calls them.
+    # shellcheck disable=SC2329
+    build_server() { :; }
+    # shellcheck disable=SC2329
+    launch_server() { :; }
+    # shellcheck disable=SC2329
+    wait_for_surface() { return 0; }
+    # shellcheck disable=SC2329
+    cmd_status() { :; }
+    cmd_restart
+  )
+}
+check "restart drift-checks before it builds" \
+  "$(DEVSTACK_BIND=127.0.0.1 restart_without_building 2>&1 >/dev/null | grep -c 'listen = "10.0.0.1')" 1
+
+current_config
+
+# start_companion reuses a running container, and has to say when what it
+# publishes is not what this run would ask for.
+export CONTAINER_ENGINE="$FAKE_ENGINE"
+STALE_PORTS="127.0.0.1:${ADMIN_PORT}->8000/tcp, 127.0.0.1:${SAT_PORT}->16622/tcp, 100.64.0.1:${ADMIN_PORT}->8000/tcp, 100.64.0.1:${SAT_PORT}->16622/tcp"
+START_OUT="$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$STALE_PORTS" start_companion 100.64.0.1 2>&1)"
+check "start_companion reuses a container whose image matches" \
+  "$(printf '%s' "$START_OUT" | grep -c 'already running')" 1
+check "and warns that its publish list is not this run's" \
+  "$(printf '%s' "$START_OUT" | grep -c "not what this run would ask for")" 1
+unset CONTAINER_ENGINE
+
+# A wildcard bind puts two unauthenticated services on every interface, so `up`
+# says so rather than leaving it to the reader of the knob table.
+check "a wildcard bind is called out" \
+  "$(DEVSTACK_BIND=0.0.0.0 warn_wildcard_bind 2>&1 >/dev/null | grep -c 'every interface')" 1
+check "an ordinary bind is not" \
+  "$(DEVSTACK_BIND=100.64.0.1 warn_wildcard_bind 2>&1 >/dev/null | wc -l | tr -d ' ')" 0
+
+up_without_starting() {
+  (
+    # shellcheck disable=SC2329
+    start_companion() { :; }
+    # shellcheck disable=SC2329
+    start_server() { :; }
+    # shellcheck disable=SC2329
+    wait_for_surface() { return 0; }
+    # shellcheck disable=SC2329
+    cmd_status() { :; }
+    cmd_up
+  )
+}
+check "and up is what says it" \
+  "$(DEVSTACK_BIND=0.0.0.0 up_without_starting 2>&1 >/dev/null | grep -c 'every interface')" 1
+current_config
 
 # --- config_home --------------------------------------------------------------
 #

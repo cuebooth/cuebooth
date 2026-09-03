@@ -12,7 +12,9 @@
 #
 # Knobs:
 #   DEVSTACK_COMPANION_VERSION   Companion image tag (default: the production-PC version)
-#   DEVSTACK_BIND                extra address to publish on (default: this host's Tailscale IPv4)
+#   DEVSTACK_BIND                address to reach the stack on, for Companion's admin UI
+#                                and the server's listen address
+#                                (default: this host's Tailscale IPv4)
 #   DEVSTACK_HOST                name printed in connect instructions (default: Tailscale DNS name)
 #   DEVSTACK_DIR                 state directory (default: <repo>/.devstack)
 #   DEVSTACK_REGENERATE          1 rewrites the generated config, discarding edits
@@ -72,8 +74,9 @@ engine() {
   die "no container engine found (need podman or docker)"
 }
 
-# bind_addr is the address to publish on besides loopback. Companion's admin UI
-# has no authentication, so this deliberately does not publish on 0.0.0.0.
+# bind_addr is the address the stack is reachable on besides loopback: where
+# Companion's admin UI is published, and what the server listens on. Neither has
+# authentication, so this deliberately does not default to 0.0.0.0.
 bind_addr() {
   if [[ -n "${DEVSTACK_BIND:-}" ]]; then echo "$DEVSTACK_BIND"; return; fi
   local ip
@@ -85,7 +88,11 @@ bind_addr() {
 # publish_host brackets an IPv6 literal, which -p needs to tell the address
 # apart from the port.
 publish_host() {
-  if [[ "$1" == *:* ]]; then echo "[$1]"; else echo "$1"; fi
+  case "$1" in
+    \[*\]) echo "$1" ;;
+    *:*) echo "[$1]" ;;
+    *) echo "$1" ;;
+  esac
 }
 
 # publish_flags is the -p list for a bind address.
@@ -117,6 +124,19 @@ publish_flags() {
       ;;
   esac
   echo "$admin $sat -p ${host}:${ADMIN_PORT}:8000"
+}
+
+# warn_wildcard_bind says what a wildcard DEVSTACK_BIND actually exposes.
+# Companion's admin UI and the server's WebSocket API both have no
+# authentication of their own (protocol.md §1), and the server's listen address
+# follows this setting.
+warn_wildcard_bind() {
+  case "${DEVSTACK_BIND:-}" in
+    0.0.0.0 | "::" | "[::]")
+      echo "==> warning: DEVSTACK_BIND=${DEVSTACK_BIND} publishes Companion's admin UI and the" >&2
+      echo "    server's API on every interface, and neither has authentication" >&2
+      ;;
+  esac
 }
 
 # host_name is what a client should be pointed at.
@@ -388,6 +408,9 @@ build_server() {
 
 launch_server() {
   local foreign
+  if server_running; then
+    die "refusing to overwrite $SERVER_PID: pid $(cat "$SERVER_PID") is this stack's server and is still running"
+  fi
   if foreign="$(unrecognised_server)"; then
     die "refusing to overwrite $SERVER_PID, which names live pid $foreign"
   fi
@@ -459,9 +482,9 @@ start_server() {
   fi
   if foreign="$(unrecognised_server)"; then
     die "$SERVER_PID names live pid $foreign, which is not $SERVER_BIN.
-    Starting would overwrite the pidfile and lose the only handle to it, and
-    a second server on ${SERVER_PORT} could not bind anyway. Stop it, or point
-    DEVSTACK_DIR somewhere else."
+    Starting would overwrite the pidfile and lose the only handle to it. If that
+    process is a server holding ${SERVER_PORT}, stop it; if the pid was reused
+    after a reboot and belongs to something else, delete $SERVER_PID."
   fi
   build_server
   launch_server
@@ -501,6 +524,7 @@ wait_for_surface() {
 
 cmd_up() {
   mkdir -p "$STATE_DIR"
+  warn_wildcard_bind
   # An imported production Companion export carries module credentials.
   chmod 700 "$STATE_DIR"
   local bind host
@@ -543,6 +567,7 @@ cmd_down() {
 cmd_restart() {
   mkdir -p "$STATE_DIR"
   chmod 700 "$STATE_DIR"
+  [[ -f "$CONFIG_FILE" ]] && check_config_drift "$(bind_addr)"
   # Built before the running server is stopped, so a compile error leaves the
   # stack as it was rather than down.
   build_server

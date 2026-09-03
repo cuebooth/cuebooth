@@ -275,7 +275,13 @@ Not `-d chrome`: a Flutter dev server serves the page from its own port, and the
 
 ### What it binds, and what it doesn't
 
-By default nothing is published on `0.0.0.0` — `DEVSTACK_BIND` is the escape hatch, and it moves the **admin UI** only. A wildcard there replaces the loopback publish of that port rather than joining it, because binding `0.0.0.0` over `127.0.0.1` on the same port does not work; the Satellite port is a different port and stays on loopback whatever `DEVSTACK_BIND` says. Companion's admin UI is published on **loopback and the Tailscale address**; its Satellite port is published on **loopback only**, since the server reaches it over `127.0.0.1` and nothing off this host needs it. The CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+By default nothing is published on `0.0.0.0`.
+
+- Companion's **admin UI** is published on loopback and the address `DEVSTACK_BIND` names (by default this host's Tailscale IPv4).
+- Companion's **Satellite port** is published on **loopback only**, whatever `DEVSTACK_BIND` says. The server reaches it over `127.0.0.1`, and nothing off this host needs an endpoint that will hand out the operator's buttons to anyone who sends `ADD-DEVICE`.
+- The **CueBooth server** listens on the `DEVSTACK_BIND` address, because `[server] listen` takes a single address.
+
+So `DEVSTACK_BIND` sets two things, and a wildcard there puts **two unauthenticated services on every interface**: Companion's admin UI, and the server's WebSocket API, which has no in-protocol auth in v1 ([protocol.md](protocol.md) §1). `up` says so when you set one. For the admin port a wildcard replaces the loopback publish rather than joining it, since binding `0.0.0.0` over `127.0.0.1` on the same port does not work.
 
 The generated `.devstack/cuebooth.toml` is kept across runs, so anything that changes between runs — a Tailscale address, any of the port knobs — leaves the file describing the previous one. `up` names each setting that disagrees with what this run would have written; `DEVSTACK_REGENERATE=1` rewrites the file. This matters most for the Satellite port: a config still pointing at `16622` sends the server to whatever holds it, which on a machine that already runs Companion is the operator's own.
 
@@ -286,7 +292,7 @@ Nothing needs to be reachable from the public internet. That holds even for the 
 | Variable | Default | |
 |---|---|---|
 | `DEVSTACK_COMPANION_VERSION` | `v3.4.1` | Companion image tag — match the production PC |
-| `DEVSTACK_BIND` | this host's Tailscale IPv4 | extra address to publish on |
+| `DEVSTACK_BIND` | this host's Tailscale IPv4 | address for Companion's admin UI and the server's `listen` |
 | `DEVSTACK_HOST` | this host's Tailscale DNS name | name printed in connect instructions |
 | `DEVSTACK_DIR` | `<repo>/.devstack` | where local state lives |
 | `DEVSTACK_ADMIN_PORT` | `8000` | Companion's admin UI — move it if you already run Companion here |
