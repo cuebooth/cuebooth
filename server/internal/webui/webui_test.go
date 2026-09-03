@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -13,31 +12,48 @@ import (
 // serveFrom exercises the same request handling as Handler against a supplied
 // FS, so behaviour can be tested without a real Flutter build embedded.
 func serveFrom(files fs.FS) http.Handler {
+	tags := etags(files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWith(files, w, r)
+		handleWith(files, tags, w, r)
 	})
 }
 
-func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+// navigate requests path the way a browser navigating to it does.
+func navigate(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// fetch requests path the way a script or wasm subresource does.
+func fetch(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":       {Data: []byte("<html>the app</html>")},
-		"main.dart.js":     {Data: []byte("console.log(1)")},
-		"assets/thing.png": {Data: []byte("\x89PNG")},
+		"index.html":        {Data: []byte("<html>the app</html>")},
+		"main.dart.js":      {Data: []byte("console.log(1)")},
+		"canvaskit/ck.wasm": {Data: []byte("\x00asm")},
+		"assets/thing.png":  {Data: []byte("\x89PNG")},
+		".last_build_id":    {Data: []byte("abc123")},
 	}
 }
 
-// The root has to serve the app itself. http.FileServer redirects a request
-// for index.html back to the directory holding it, which against a rewrite of
-// "/" to "index.html" is a redirect loop rather than a page.
+// The root has to serve the app itself. http.FileServer redirects a request for
+// index.html back to the directory holding it, which against a rewrite of "/"
+// to "index.html" is a redirect loop rather than a page.
 func TestRootServesTheAppWithoutRedirecting(t *testing.T) {
-	rec := get(t, serveFrom(testFS()), "/")
+	rec := navigate(t, serveFrom(testFS()), "/")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (a redirect here is a loop)", rec.Code)
@@ -47,14 +63,33 @@ func TestRootServesTheAppWithoutRedirecting(t *testing.T) {
 	}
 }
 
+// The root is the app whoever asks for it. A client that states no preference
+// for HTML — curl, a health check, anything sending */* — must still get the
+// page rather than a 404, since there is no other document the root could mean.
+func TestRootServesTheAppRegardlessOfAccept(t *testing.T) {
+	h := serveFrom(testFS())
+
+	for _, path := range []string{"/", "//", "/."} {
+		rec := fetch(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), "the app") {
+			t.Errorf("GET %s did not serve the entry document", path)
+		}
+	}
+}
+
 func TestBundledAssetsAreServed(t *testing.T) {
 	h := serveFrom(testFS())
 
 	for path, want := range map[string]string{
-		"/main.dart.js":     "console.log(1)",
-		"/assets/thing.png": "\x89PNG",
+		"/main.dart.js":      "console.log(1)",
+		"/assets/thing.png":  "\x89PNG",
+		"/canvaskit/ck.wasm": "\x00asm",
 	} {
-		rec := get(t, h, path)
+		rec := fetch(t, h, path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 			continue
@@ -66,11 +101,11 @@ func TestBundledAssetsAreServed(t *testing.T) {
 }
 
 // A refresh on a client-routed path must land in the app, not on a 404.
-func TestUnknownPathsFallBackToTheApp(t *testing.T) {
+func TestNavigationsFallBackToTheApp(t *testing.T) {
 	h := serveFrom(testFS())
 
 	for _, path := range []string{"/settings", "/deep/link", "/chatty"} {
-		rec := get(t, h, path)
+		rec := navigate(t, h, path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 			continue
@@ -81,35 +116,123 @@ func TestUnknownPathsFallBackToTheApp(t *testing.T) {
 	}
 }
 
-// The entry document names the hashed asset files, so a cached copy would pin
-// a browser to a previous build.
-func TestEntryDocumentIsNotCached(t *testing.T) {
-	rec := get(t, serveFrom(testFS()), "/")
+// A missing asset must not be answered with the app. A half-staged build would
+// otherwise return HTML for a script, which a browser reports as a syntax error
+// on a blank page rather than as the missing file it is.
+func TestMissingAssetsAreNotAnsweredWithHTML(t *testing.T) {
+	h := serveFrom(testFS())
 
+	for _, path := range []string{"/missing.js", "/missing.wasm", "/assets/gone.png"} {
+		rec := fetch(t, h, path)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "the app") {
+			t.Errorf("GET %s was answered with the entry document", path)
+		}
+	}
+}
+
+// fs.Stat succeeds for a directory, so without an explicit check the handler
+// reaches a read that fails with an error reading as though the bundled client
+// itself were unreadable.
+func TestDirectoriesDoNotProduceAServerError(t *testing.T) {
+	h := serveFrom(testFS())
+
+	for _, path := range []string{"/assets", "/assets/", "/canvaskit"} {
+		rec := navigate(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200 (the app, via fallback)", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "could not read") {
+			t.Errorf("GET %s reported the client as unreadable", path)
+		}
+	}
+}
+
+// Build leavings are not part of the app and should not be reachable.
+func TestDotfilesAreNotServed(t *testing.T) {
+	rec := fetch(t, serveFrom(testFS()), "/.last_build_id")
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "abc123") {
+		t.Error("a dotfile's contents were served")
+	}
+}
+
+// The filenames carry no version, so a cached copy cannot be shown to match the
+// build being served without revalidating against a validator.
+func TestResponsesCarryAValidatorAndRevalidate(t *testing.T) {
+	h := serveFrom(testFS())
+
+	rec := fetch(t, h, "/main.dart.js")
+	tag := rec.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("no ETag; every load re-downloads the whole client")
+	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+
+	// A client presenting the validator gets a 304 rather than the bytes again.
+	req := httptest.NewRequest(http.MethodGet, "/main.dart.js", nil)
+	req.Header.Set("If-None-Match", tag)
+	again := httptest.NewRecorder()
+	h.ServeHTTP(again, req)
+
+	if again.Code != http.StatusNotModified {
+		t.Errorf("revalidation status = %d, want 304", again.Code)
+	}
+	if again.Body.Len() != 0 {
+		t.Errorf("304 carried %d bytes of body", again.Body.Len())
+	}
+}
+
+// Different content must not share a validator, or a stale asset survives a
+// rebuild.
+func TestValidatorsFollowContent(t *testing.T) {
+	one := etags(fstest.MapFS{"a.js": {Data: []byte("first")}})["a.js"]
+	two := etags(fstest.MapFS{"a.js": {Data: []byte("second")}})["a.js"]
+
+	if one == "" || two == "" {
+		t.Fatal("etags produced no validator")
+	}
+	if one == two {
+		t.Error("different content produced the same ETag")
 	}
 }
 
 // Content types matter: a browser refuses to instantiate wasm served as
 // something else.
 func TestContentTypesComeFromTheExtension(t *testing.T) {
-	files := fstest.MapFS{
-		"index.html":        {Data: []byte("<html></html>")},
-		"canvaskit/ck.wasm": {Data: []byte("\x00asm")},
-		"main.dart.js":      {Data: []byte("1")},
-		"assets/font.ttf":   {Data: []byte("ttf")},
-	}
-	h := serveFrom(files)
+	h := serveFrom(testFS())
 
 	for path, want := range map[string]string{
 		"/canvaskit/ck.wasm": "application/wasm",
 		"/main.dart.js":      "text/javascript",
-		"/":                  "text/html",
 	} {
-		rec := get(t, h, path)
+		rec := fetch(t, h, path)
 		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, want) {
 			t.Errorf("GET %s content type = %q, want it to contain %q", path, got, want)
+		}
+	}
+	if got := navigate(t, h, "/").Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Errorf("GET / content type = %q, want text/html", got)
+	}
+}
+
+// Nothing behind this handler takes a write, so a method that implies one
+// should be refused rather than quietly answered with the app.
+func TestNonReadMethodsAreRefused(t *testing.T) {
+	h := serveFrom(testFS())
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s / = %d, want 405", method, rec.Code)
 		}
 	}
 }
@@ -123,32 +246,64 @@ func TestNoBundledClientExplainsItself(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "make web") {
-		t.Errorf("page does not say how to build a client: %q", body)
+	if !strings.Contains(rec.Body.String(), "make web") {
+		t.Errorf("page does not say how to build a client: %q", rec.Body.String())
 	}
 }
 
-// Bundled is what decides between the two handlers, so it has to be honest
-// about an FS with no entry document.
-func TestBundledTracksTheEntryDocument(t *testing.T) {
-	if _, err := fs.Stat(fstest.MapFS{"other.txt": {}}, entry); err == nil {
-		t.Fatal("test fixture unexpectedly contains an entry document")
+// bundledIn is the single branch deciding between serving the app and serving
+// the no-client page, so it has to be exercised rather than described.
+func TestBundledDetection(t *testing.T) {
+	cases := []struct {
+		name  string
+		files fs.FS
+		want  bool
+	}{
+		{"a staged build", testFS(), true},
+		{"only a placeholder", fstest.MapFS{".gitkeep": {Data: []byte("x")}}, false},
+		{"empty", fstest.MapFS{}, false},
+		{"assets but no entry", fstest.MapFS{"main.dart.js": {Data: []byte("1")}}, false},
+		// A directory named index.html would satisfy a bare existence check and
+		// then fail on read.
+		{"a directory where the entry should be", fstest.MapFS{
+			"index.html/inner.txt": {Data: []byte("x")},
+		}, false},
 	}
-	if _, err := fs.Stat(testFS(), entry); err != nil {
-		t.Fatalf("test fixture should contain %s: %v", entry, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bundledIn(tc.files); got != tc.want {
+				t.Errorf("bundledIn = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Handler picks between the two behaviours; with nothing staged in this
+// checkout it must be the explanatory one.
+func TestHandlerWithoutAStagedBuildServesTheExplanation(t *testing.T) {
+	if Bundled() {
+		t.Skip("a client is staged in this checkout; the no-client path is covered by TestBundledDetection")
+	}
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "make web") {
+		t.Errorf("status = %d, body = %q; want the no-client page", rec.Code, rec.Body.String())
 	}
 }
 
 // A path that climbs out of the bundle must not reach the filesystem.
 func TestTraversalIsContained(t *testing.T) {
-	rec := get(t, serveFrom(testFS()), "/../../etc/passwd")
+	h := serveFrom(testFS())
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (the app, via fallback)", rec.Code)
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if !strings.Contains(string(body), "the app") {
-		t.Errorf("traversal served %q, want the entry document", string(body))
+	for _, path := range []string{"/../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "//etc/passwd"} {
+		rec := navigate(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200 (the app, via fallback)", path, rec.Code)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), "the app") {
+			t.Errorf("GET %s served something other than the entry document", path)
+		}
 	}
 }

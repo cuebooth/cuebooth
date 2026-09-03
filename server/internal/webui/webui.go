@@ -1,19 +1,20 @@
 // Package webui serves the Flutter web client from the same listener as the
 // WebSocket API.
 //
-// It has to be the same listener: /ws enforces a same-origin policy, so a
-// client page served from any other port cannot open a socket to it. Serving
-// the client here satisfies that check without weakening it, and means a
-// browser on any machine on the network is a working client with nothing
-// installed.
+// It has to be the same listener: /ws compares Origin against Host, so a client
+// page served from any other port cannot open a socket to it. Serving the client
+// here satisfies that check without weakening it, and means a browser on any
+// machine on the network is a working client with nothing installed.
 //
-// The build output is not committed. `make web` fills dist/ before the binary
-// is built; a binary built without it still runs and says so.
+// The build output is not committed. `make web` fills dist/ before the binary is
+// built; a binary built without it still runs and says so.
 package webui
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io"
 	"io/fs"
 	"net/http"
@@ -27,15 +28,15 @@ import (
 //go:embed all:dist
 var dist embed.FS
 
-// entry is the file a browser is given for any path that is not a bundled
-// asset, so client-side routing survives a page load on a deep link.
+// entry is the document a browser navigation is given when the path is not a
+// bundled asset, so client-side routing survives a page load on a deep link.
 const entry = "index.html"
 
 func assets() fs.FS {
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
-		// Only reachable if the embed directive above stops matching, which is
-		// a build-time fact rather than a runtime one.
+		// Only reachable if the embed directive above stops matching, which is a
+		// build-time fact rather than a runtime one.
 		panic(err)
 	}
 	return sub
@@ -43,8 +44,12 @@ func assets() fs.FS {
 
 // Bundled reports whether a client was built into this binary.
 func Bundled() bool {
-	_, err := fs.Stat(assets(), entry)
-	return err == nil
+	return bundledIn(assets())
+}
+
+func bundledIn(files fs.FS) bool {
+	info, err := fs.Stat(files, entry)
+	return err == nil && !info.IsDir()
 }
 
 // Handler serves the client, or an explanation if none was bundled.
@@ -52,16 +57,44 @@ func Handler() http.Handler {
 	if !Bundled() {
 		return http.HandlerFunc(serveMissing)
 	}
-
 	files := assets()
+	tags := etags(files)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWith(files, w, r)
+		handleWith(files, tags, w, r)
 	})
+}
+
+// etags digests every bundled file once, so responses carry a validator.
+//
+// The build has no content-hashed filenames, so a URL alone never proves which
+// version a cache holds; without this a client re-downloads megabytes on every
+// load because there is nothing to revalidate against.
+func etags(files fs.FS) map[string]string {
+	tags := map[string]string{}
+	_ = fs.WalkDir(files, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		body, err := fs.ReadFile(files, name)
+		if err != nil {
+			return nil
+		}
+		sum := sha256.Sum256(body)
+		tags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
+		return nil
+	})
+	return tags
 }
 
 // handleWith resolves one request against the bundled files. Split from Handler
 // so it can be driven against an FS that is not the embedded build.
-func handleWith(files fs.FS, w http.ResponseWriter, r *http.Request) {
+func handleWith(files fs.FS, tags map[string]string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Clean before trimming, so a path climbing out of the bundle resolves to
 	// something inside it rather than reaching the filesystem.
 	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
@@ -69,19 +102,51 @@ func handleWith(files fs.FS, w http.ResponseWriter, r *http.Request) {
 		name = entry
 	}
 
-	if _, err := fs.Stat(files, name); err != nil {
-		// Not a bundled asset: hand back the entry document so a deep link or a
-		// refresh lands in the app rather than on a 404.
+	if !serveable(files, name) {
+		// A navigation gets the app so a deep link or a refresh lands in it. An
+		// asset request does not: answering a missing script with HTML turns a
+		// half-staged build into a blank page and a syntax error in the console
+		// rather than a 404 naming the file.
+		if !acceptsHTML(r) {
+			http.NotFound(w, r)
+			return
+		}
 		name = entry
 	}
 
-	if name == entry {
-		// The entry document names the hashed assets, so a stale copy would pin
-		// a browser to a previous build.
-		w.Header().Set("Cache-Control", "no-cache")
+	if tag := tags[name]; tag != "" {
+		w.Header().Set("ETag", tag)
 	}
+	// Revalidate rather than trust age: the filenames carry no version, so a
+	// cached copy cannot be shown to match the build being served.
+	w.Header().Set("Cache-Control", "no-cache")
 
 	serve(w, r, files, name)
+}
+
+// serveable reports whether name is a bundled file this handler will return.
+// Directories are excluded — fs.Stat succeeds for them, and reading one fails
+// later with an error that reads as though the client itself were unreadable.
+// So are dotfiles, which are build leavings rather than part of the app.
+func serveable(files fs.FS, name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if strings.HasPrefix(segment, ".") {
+			return false
+		}
+	}
+	info, err := fs.Stat(files, name)
+	return err == nil && !info.IsDir()
+}
+
+// acceptsHTML reports whether the request looks like a browser navigation.
+//
+// A navigation names text/html explicitly; a script, wasm or fetch subresource
+// sends */* instead, so */* must not count — treating it as a navigation is
+// what hands a missing asset the entry document. An absent header is a bare
+// HTTP client with no stated preference, which is likelier to want the page.
+func acceptsHTML(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	return accept == "" || strings.Contains(accept, "text/html")
 }
 
 // serve writes one bundled file.

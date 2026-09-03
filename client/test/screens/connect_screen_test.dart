@@ -40,7 +40,8 @@ void main() {
       expect(addr.port, 7878);
     });
 
-    // Uri.base on a native platform is a file: URI with no host.
+    // A web build opened from a file: URL has no host to derive an address
+    // from, so the origin is no better a guess than localhost.
     test('a hostless base falls back to localhost', () {
       final addr = defaultServerAddress(
         isWeb: true,

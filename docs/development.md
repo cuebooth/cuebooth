@@ -93,7 +93,7 @@ Then open `http://<server-host>:7878`. The connect screen prefills the address t
 
 `make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
 
-The client adds roughly 22 MB to the binary, mostly CanvasKit wasm variants that the browser chooses between at runtime.
+**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, shipped as six wasm builds; the loader picks one from what the browser supports, so a page load downloads 3–7 MB of that, not all of it. `make web` passes `--no-web-resources-cdn`, which is what makes the loader read those files from here instead of `gstatic.com`; without the flag they are embedded and never requested.
 
 ---
 

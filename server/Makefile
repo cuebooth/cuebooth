@@ -9,11 +9,15 @@ BIN_NAME   := cuebooth-server
 # Build the Flutter web client into the directory the server embeds. Run this
 # before build/build-windows if the binary should carry a client; without it the
 # server still runs and serves a page saying so.
+#
+# --no-web-resources-cdn makes the loader read CanvasKit from this bundle.
+# Without it the page fetches the engine from gstatic.com and the copy staged
+# here is embedded but never asked for.
 WEB_DIST := internal/webui/dist
 FLUTTER   ?= flutter
 
 web:
-	cd ../client && $(FLUTTER) build web --release
+	cd ../client && $(FLUTTER) build web --release --no-web-resources-cdn
 	@find $(WEB_DIST) -mindepth 1 ! -name .gitkeep -delete
 	@cp -R ../client/build/web/. $(WEB_DIST)/
 	@echo "web client staged in $(WEB_DIST)"
