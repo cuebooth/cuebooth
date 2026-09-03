@@ -118,7 +118,7 @@ NEW_OUT="$(
   ' 2>/dev/null | tail -1
 )"
 check "a state dir that does not exist yet still resolves physically" \
-  "$NEW_OUT" "$WORK/real-unmade/state/cuebooth-server"
+  "$NEW_OUT" "$(readlink -m "$WORK/real-unmade")/state/cuebooth-server"
 
 # --- stop_server --------------------------------------------------------------
 #
@@ -186,6 +186,16 @@ echo "$FOREIGN" > "$SERVER_PID"
 
 check "an unrecognised live process is not the server" "$(say server_running)" no
 check "it is reported as unrecognised, not absent" "$(unrecognised_server)" "$FOREIGN"
+
+# A pidfile holding "-1" names every process this user owns. Without the guard
+# `kill -0 -1` succeeds, and `down` then refuses to stop the real server while
+# `up` refuses to start, until the pidfile is deleted by hand.
+for bogus in -1 0 not-a-number; do
+  printf '%s\n' "$bogus" > "$SERVER_PID"
+  check "a pidfile of '$bogus' is not an unrecognised server" \
+    "$(unrecognised_server; echo "rc=$?")" "rc=1"
+done
+printf '%s\n' "$FOREIGN" > "$SERVER_PID"
 # /bin/true stands in for the container engine: it reports no container, so
 # this asserts on the server line without depending on what is installed.
 check "status says the pid is alive rather than just 'down'" \
@@ -223,6 +233,15 @@ rm -f "$SERVER_PID"
 echo 999999999 > "$SERVER_PID"
 stop_server >/dev/null 2>&1
 check "a stale pidfile is removed" "$([[ -f "$SERVER_PID" ]] && echo yes || echo no)" no
+
+# A server that dies at start — a bad config, a port already taken — must not
+# leave its pid behind. Once that number is reused by anything else, `up` and
+# `down` both refuse to touch it and the state dir has to be cleaned by hand.
+printf '#!/bin/sh\nexit 1\n' > "$SERVER_BIN"
+chmod +x "$SERVER_BIN"
+( launch_server ) >/dev/null 2>&1
+check "a server that dies at start leaves no pidfile" \
+  "$([[ -f "$SERVER_PID" ]] && echo yes || echo no)" no
 
 # --- surface_registered -------------------------------------------------------
 #
@@ -349,6 +368,9 @@ start_listener() {
 if ! command -v python3 >/dev/null 2>&1; then
   echo "skip - companion_ready (no python3)"
 else
+  # Restored afterwards: every later section derives expected ports from these,
+  # and a random value chosen here would silently redefine what they assert.
+  REAL_SAT_PORT="$SAT_PORT"
   SAT_PORT=$((20000 + RANDOM % 10000))
 
   check "nothing listening is not ready" "$(say companion_ready)" no
@@ -370,6 +392,8 @@ else
   fi
   kill "$LISTENER" 2>/dev/null
   wait "$LISTENER" 2>/dev/null
+
+  SAT_PORT="$REAL_SAT_PORT"
 fi
 
 # --- companion_is_current -----------------------------------------------------
@@ -411,18 +435,65 @@ check "a different tag is not current" \
 check "a container from another tag still counts as running" \
   "$(FAKE_IMAGE="ghcr.io/bitfocus/companion/companion:v5.0.3" say companion_running)" yes
 
-# `up` recomputes the bind address every run; a running container keeps the one
-# it was created with.
-check "a container published on this address is fine" \
-  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.1:8000->8000/tcp" say companion_publishes 100.64.0.1)" yes
-check "a container published elsewhere is not" \
-  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.0.9:8000->8000/tcp" say companion_publishes 100.64.0.1)" no
+# `up` recomputes the publish list every run; a running container keeps the one
+# it was created with, so reuse has to compare the whole set.
+MATCHING="127.0.0.1:8000->8000/tcp, 127.0.0.1:16622->16622/tcp, 100.64.0.1:8000->8000/tcp"
+
+check "a container publishing exactly this is fine" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$MATCHING" say companion_publishes 100.64.0.1)" yes
+check "a container published on another address is not" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 127.0.0.1:16622->16622/tcp, 100.64.0.9:8000->8000/tcp" say companion_publishes 100.64.0.1)" no
+
 # Tailscale addresses differ by a trailing digit routinely, so the match has to
 # end at the port separator.
 check "an address that is only a prefix does not count as published" \
-  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 100.64.126.18:8000->8000/tcp" say companion_publishes 100.64.126.1)" no
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="127.0.0.1:8000->8000/tcp, 127.0.0.1:16622->16622/tcp, 100.64.126.18:8000->8000/tcp" say companion_publishes 100.64.126.1)" no
+
+# A container created before the Satellite port came off the tailnet publishes
+# one mapping too many. Reusing it would leave that endpoint exposed for as long
+# as the container lives, with nothing said about it.
+check "an extra published mapping is a mismatch" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$MATCHING, 100.64.0.1:16622->16622/tcp" say companion_publishes 100.64.0.1)" no
+
+# A port knob changed since the container was created.
+check "a container on the old admin port is a mismatch" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$MATCHING" ADMIN_PORT=8999 say companion_publishes 100.64.0.1)" no
+check "a container on the old satellite port is a mismatch" \
+  "$(FAKE_IMAGE="$IMAGE" FAKE_PORTS="$MATCHING" SAT_PORT=16999 say companion_publishes 100.64.0.1)" no
 
 unset CONTAINER_ENGINE
+
+# --- write_config -------------------------------------------------------------
+#
+# The generated file says "Edit freely", and the preset coordinates in it are
+# hand-tuned to whatever page the operator built in Companion. Which way this
+# decision goes is the difference between keeping those edits and discarding
+# them on every run.
+
+echo "# write_config"
+
+printf 'hand-edited by the operator\n' > "$CONFIG_FILE"
+write_config 127.0.0.1 >/dev/null 2>&1
+check "an existing config is kept" \
+  "$(grep -c 'hand-edited' "$CONFIG_FILE")" 1
+
+DEVSTACK_REGENERATE=1 write_config 127.0.0.1 >/dev/null 2>&1
+check "DEVSTACK_REGENERATE=1 replaces it" \
+  "$(grep -c 'hand-edited' "$CONFIG_FILE")" 0
+check "and what it writes is this run's listen address" \
+  "$(grep -c "listen = \"127.0.0.1:${SERVER_PORT}\"" "$CONFIG_FILE")" 1
+
+rm -f "$CONFIG_FILE"
+write_config 127.0.0.1 >/dev/null 2>&1
+check "a missing config is generated" \
+  "$(grep -c '\[companion.satellite\]' "$CONFIG_FILE")" 1
+
+# An IPv6 bind has to produce an address the server can parse; unbracketed,
+# "fd7a::1:7878" is "too many colons".
+rm -f "$CONFIG_FILE"
+write_config fd7a::1 >/dev/null 2>&1
+check "an IPv6 bind is bracketed in listen" \
+  "$(grep -c "listen = \"\[fd7a::1\]:${SERVER_PORT}\"" "$CONFIG_FILE")" 1
 
 # --- check_config_drift -------------------------------------------------------
 #
@@ -471,21 +542,38 @@ current_config
 
 echo "# publish_flags"
 
-check "the satellite port is not published beyond loopback" \
-  "$(publish_flags 100.64.0.1 | grep -c "100.64.0.1:${SAT_PORT}")" 0
+# The Satellite port is never published beyond loopback, whatever the bind —
+# it would be an unauthenticated surface endpoint for everyone who can reach it.
+for bind in 100.64.0.1 0.0.0.0 "::" fd7a::1; do
+  check "the satellite port stays on loopback for a $bind bind" \
+    "$(publish_flags "$bind" | grep -c "127.0.0.1:${SAT_PORT}:16622")" 1
+  check "and is published nowhere else for a $bind bind" \
+    "$(publish_flags "$bind" | grep -o -- "-p [^ ]*:${SAT_PORT}:16622" | wc -l | tr -d ' ')" 1
+done
+
 check "the admin port is published on the bind address" \
   "$(publish_flags 100.64.0.1 | grep -c "100.64.0.1:${ADMIN_PORT}:8000")" 1
 check "loopback is published too" \
   "$(publish_flags 100.64.0.1 | grep -c "127.0.0.1:${ADMIN_PORT}:8000")" 1
 check "a loopback bind is not published twice" \
   "$(publish_flags 127.0.0.1 | grep -o "127.0.0.1:${ADMIN_PORT}:8000" | wc -l | tr -d ' ')" 1
-# 0.0.0.0 over 127.0.0.1 on one port does not bind, so it replaces it.
-check "a wildcard bind replaces loopback rather than joining it" \
-  "$(publish_flags 0.0.0.0 | grep -c '127.0.0.1')" 0
-check "a wildcard bind still publishes both ports" \
+
+# A wildcard admin publish subsumes the loopback one on that port and cannot
+# sit beside it, so it replaces it — that port only.
+check "a wildcard bind does not also publish admin on loopback" \
+  "$(publish_flags 0.0.0.0 | grep -c "127.0.0.1:${ADMIN_PORT}:8000")" 0
+check "a wildcard bind publishes admin on the wildcard" \
+  "$(publish_flags 0.0.0.0 | grep -c "0.0.0.0:${ADMIN_PORT}:8000")" 1
+check "a wildcard bind publishes exactly two ports" \
   "$(publish_flags 0.0.0.0 | grep -o -- '-p' | wc -l | tr -d ' ')" 2
+
+# Every address in a -p flag has to be one the engine will accept.
 check "an IPv6 bind is bracketed" \
   "$(publish_flags fd7a::1 | grep -c '\[fd7a::1\]')" 1
+check "an IPv6 wildcard is bracketed too" \
+  "$(publish_flags :: | grep -c '\[::\]')" 1
+check "no unbracketed IPv6 address reaches -p" \
+  "$(publish_flags :: | grep -c -- '-p :::')" 0
 
 # --- check_config_version -----------------------------------------------------
 #

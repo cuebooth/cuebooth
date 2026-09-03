@@ -234,7 +234,7 @@ The buttons that appear are whatever page Companion has assigned to the surface 
 
 `scripts/devstack.sh` runs Companion and cuebooth-server together on a development machine and publishes them on that machine's Tailscale address, so a real client on a laptop can drive the real thing without the production PC.
 
-**Linux only.** It detaches the server with `setsid` and identifies it again by `/proc/<pid>/exe`; it refuses to run without `/proc` rather than mistaking a healthy server for a dead one.
+**Linux only.** It detaches the server with `setsid` and identifies it again by `/proc/<pid>/exe`; it refuses to run without `/proc` rather than mistaking a healthy server for a dead one. `python3` is used to read this host's Tailscale DNS name; without it, `DEVSTACK_HOST` defaults to the bind address instead.
 
 ```sh
 scripts/devstack.sh up        # start both; prints where to point a client
@@ -256,6 +256,8 @@ Where Companion's own config lives depends on the engine. Under **podman** it is
 
 Companion's config directory is shared across image tags, so switching `DEVSTACK_COMPANION_VERSION` runs a different Companion against the same data. `up` warns when the tag has changed since the last run, and warns harder on a downgrade, because the newer version migrates the directory in place.
 
+`up` reuses a running container only when its image *and* its published ports are the ones this run would ask for. A container created before a port knob changed — or before the Satellite port came off the tailnet — is a mismatch, and `up` says so; `down` then `up` recreates it.
+
 Faster, if you have a `.companionconfig` export from a real installation: drop it on **Import/Export → Import**. Exports back to Companion 2.x are accepted — 3.x upgrades them on the way in — so an old backup still works. Two things to know before importing a production export:
 
 - **It carries credentials.** Module passwords (OBS, for one) travel in the export and are readable in Companion's admin UI, which this stack publishes on your tailnet without authentication. Blank them in the JSON first unless you need them, or expect anyone on the tailnet to be able to read them.
@@ -273,7 +275,7 @@ Not `-d chrome`: a Flutter dev server serves the page from its own port, and the
 
 ### What it binds, and what it doesn't
 
-By default nothing is published on `0.0.0.0` — `DEVSTACK_BIND` is the escape hatch. A wildcard there *replaces* the loopback publish rather than joining it, because binding `0.0.0.0` over `127.0.0.1` on the same port does not work. Companion's admin UI is published on **loopback and the Tailscale address**; its Satellite port is published on **loopback only**, since the server reaches it over `127.0.0.1` and nothing off this host needs it. The CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
+By default nothing is published on `0.0.0.0` — `DEVSTACK_BIND` is the escape hatch, and it moves the **admin UI** only. A wildcard there replaces the loopback publish of that port rather than joining it, because binding `0.0.0.0` over `127.0.0.1` on the same port does not work; the Satellite port is a different port and stays on loopback whatever `DEVSTACK_BIND` says. Companion's admin UI is published on **loopback and the Tailscale address**; its Satellite port is published on **loopback only**, since the server reaches it over `127.0.0.1` and nothing off this host needs it. The CueBooth server listens on **the Tailscale address only**, because `[server] listen` takes a single address. Companion's admin UI has no authentication, so it should not be reachable from a network it doesn't need to be on. Override the extra address with `DEVSTACK_BIND` if this machine isn't on Tailscale.
 
 The generated `.devstack/cuebooth.toml` is kept across runs, so anything that changes between runs — a Tailscale address, any of the port knobs — leaves the file describing the previous one. `up` names each setting that disagrees with what this run would have written; `DEVSTACK_REGENERATE=1` rewrites the file. This matters most for the Satellite port: a config still pointing at `16622` sends the server to whatever holds it, which on a machine that already runs Companion is the operator's own.
 

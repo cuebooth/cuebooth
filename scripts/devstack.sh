@@ -22,7 +22,8 @@
 #   CONTAINER_ENGINE             podman or docker (default: whichever is installed)
 #
 # Requires Linux: the server is detached with setsid, and a running server is
-# identified by /proc/<pid>/exe.
+# identified by /proc/<pid>/exe. python3 is used to read the Tailscale DNS name;
+# without it DEVSTACK_HOST falls back to the bind address.
 #
 # This is a manual fixture, not CI. The live protocol tests are
 # scripts/companion-live-test.sh, which pins versions and runs headless.
@@ -94,18 +95,28 @@ publish_host() {
 # loopback publish rather than joining it — binding 0.0.0.0 over 127.0.0.1 on
 # the same port fails outright.
 publish_flags() {
-  local bind="$1"
+  local bind="$1" admin sat host
+  sat="-p 127.0.0.1:${SAT_PORT}:16622"
+  admin="-p 127.0.0.1:${ADMIN_PORT}:8000"
+
   case "$bind" in
-    0.0.0.0 | "::" | "[::]")
-      echo "-p ${bind}:${ADMIN_PORT}:8000 -p ${bind}:${SAT_PORT}:16622"
-      return
-      ;;
     127.0.0.1 | localhost)
-      echo "-p 127.0.0.1:${ADMIN_PORT}:8000 -p 127.0.0.1:${SAT_PORT}:16622"
+      echo "$admin $sat"
       return
       ;;
   esac
-  echo "-p 127.0.0.1:${ADMIN_PORT}:8000 -p 127.0.0.1:${SAT_PORT}:16622 -p $(publish_host "$bind"):${ADMIN_PORT}:8000"
+
+  host="$(publish_host "$bind")"
+  case "$bind" in
+    0.0.0.0 | "::" | "[::]")
+      # A wildcard admin publish subsumes the loopback one on that port and
+      # cannot sit alongside it, so it replaces it. The Satellite port is a
+      # different port and is unaffected — it stays on loopback.
+      echo "-p ${host}:${ADMIN_PORT}:8000 $sat"
+      return
+      ;;
+  esac
+  echo "$admin $sat -p ${host}:${ADMIN_PORT}:8000"
 }
 
 # host_name is what a client should be pointed at.
@@ -128,7 +139,7 @@ write_config() {
 # DEVSTACK_REGENERATE=1.
 
 [server]
-listen = "${bind}:${SERVER_PORT}"
+listen = "$(publish_host "${bind}"):${SERVER_PORT}"
 
 [companion]
 base_url = "http://127.0.0.1:${ADMIN_PORT}"
@@ -164,13 +175,14 @@ EOF
   echo "==> wrote $CONFIG_FILE"
 }
 
-# check_config_bind warns when the kept config listens on an address this host
-# no longer has. A Tailscale address can change between runs, and the server
-# would otherwise fail to bind with nothing pointing at the reason.
+# check_config_drift warns when the kept config disagrees with what this run
+# would have written. Anything that changes between runs — a Tailscale address,
+# any of the port knobs — otherwise takes effect for the container and not for
+# the server.
 check_config_drift() {
   local bind="$1" drifted=0
 
-  config_value listen "${bind}:${SERVER_PORT}" || drifted=1
+  config_value listen "$(publish_host "${bind}"):${SERVER_PORT}" || drifted=1
   config_value base_url "http://127.0.0.1:${ADMIN_PORT}" || drifted=1
   config_value addr "127.0.0.1:${SAT_PORT}" || drifted=1
 
@@ -226,7 +238,7 @@ server_running() {
   local pid
   [[ -f "$SERVER_PID" ]] || return 1
   pid="$(cat "$SERVER_PID" 2>/dev/null)" || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   server_pid_matches "$pid"
 }
@@ -246,7 +258,7 @@ start_companion() {
   eng="$(engine)"
   if companion_running; then
     if companion_is_current; then
-      companion_publishes "$bind" || echo "==> warning: companion is published on $(companion_field '{{.Ports}}'), not ${bind} — 'down' then 'up' to republish" >&2
+      companion_publishes "$bind" || echo "==> warning: companion publishes $(companion_field '{{.Ports}}'), not what this run would ask for — 'down' then 'up' to republish" >&2
       echo "==> companion already running"
       return
     fi
@@ -320,12 +332,30 @@ check_config_version() {
   echo "$VERSION" > "$marker"
 }
 
-# companion_publishes reports whether the running container publishes on addr.
-# `up` recomputes the bind address every run, but a running container keeps the
-# one it was created with, so the connect instructions can name an address
-# nothing is listening on.
+# companion_publishes reports whether the running container publishes exactly
+# what this run would ask for.
+#
+# `up` recomputes the publish list every run, but a container keeps the one it
+# was created with — so the connect instructions can name an address nothing
+# listens on, a changed port knob can be silently ignored, and a container
+# created before the Satellite port came off the tailnet keeps it there.
+# Extra mappings count as a mismatch for that last reason.
 companion_publishes() {
-  companion_field '{{.Ports}}' | grep -qF -- "$1:"
+  local ports mapping wanted=0 published
+  ports="$(companion_field '{{.Ports}}')"
+
+  # shellcheck disable=SC2013  # publish_flags emits a plain space-separated list
+  for mapping in $(publish_flags "$1"); do
+    [[ "$mapping" == "-p" ]] && continue
+    wanted=$((wanted + 1))
+    # Trailing container port dropped: what matters is the host side.
+    grep -qF -- "${mapping%:*}->" <<< "$ports" || return 1
+  done
+
+  # And no more than this run asks for, so a container created before the
+  # Satellite port came off the tailnet does not pass.
+  published="$(grep -o -- '->' <<< "$ports" | grep -c .)"
+  [[ "$published" == "$wanted" ]]
 }
 
 # companion_ready reports whether Companion is answering on the Satellite port,
@@ -366,7 +396,12 @@ launch_server() {
   setsid "$SERVER_BIN" -config "$CONFIG_FILE" >>"$SERVER_LOG" 2>&1 &
   echo $! > "$SERVER_PID"
   sleep 1
-  server_running || die "server exited immediately — see $SERVER_LOG"
+  if ! server_running; then
+    # The pid just written is dead; leaving it lets an unrelated process inherit
+    # the number and make every later up and down refuse to touch anything.
+    rm -f "$SERVER_PID"
+    die "server exited immediately — see $SERVER_LOG"
+  fi
 }
 
 # stop_server does not return until the process is gone. Removing the pidfile
@@ -380,7 +415,7 @@ unrecognised_server() {
   local pid
   server_running && return 1
   pid="$(cat "$SERVER_PID" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   echo "$pid"
 }
@@ -507,6 +542,7 @@ cmd_down() {
 
 cmd_restart() {
   mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
   # Built before the running server is stopped, so a compile error leaves the
   # stack as it was rather than down.
   build_server
