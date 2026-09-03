@@ -40,7 +40,7 @@ if [[ -z "$ENGINE" ]]; then
 fi
 echo "==> engine: $ENGINE   image: $IMAGE"
 
-# shellcheck disable=SC2329  # invoked by the EXIT trap below
+# shellcheck disable=SC2329,SC2317  # invoked by the EXIT trap below
 cleanup() {
   if [[ "${COMPANION_KEEP:-0}" == "1" ]]; then
     echo "==> COMPANION_KEEP=1, leaving $CONTAINER running (admin http://127.0.0.1:${ADMIN_PORT})"
