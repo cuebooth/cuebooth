@@ -38,6 +38,15 @@ func fetch(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder
 	return rec
 }
 
+// get requests path with no Accept header at all, the way curl and most
+// scripted clients do.
+func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec
+}
+
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":        {Data: []byte("<html>the app</html>")},
@@ -114,6 +123,16 @@ func TestNavigationsFallBackToTheApp(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "the app") {
 			t.Errorf("GET %s did not serve the entry document", path)
 		}
+	}
+
+	// A client that states no preference is not a subresource fetch; it is a
+	// bare HTTP client, and the app is the only thing a client-routed path
+	// could mean to it. The root reaches the entry document without consulting
+	// Accept at all, so only a deeper path exercises this.
+	rec := get(t, h, "/settings")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "the app") {
+		t.Errorf("GET /settings with no Accept = %d, body %q; want the app",
+			rec.Code, rec.Body.String())
 	}
 }
 

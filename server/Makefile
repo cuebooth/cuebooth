@@ -18,11 +18,13 @@ FLUTTER   ?= flutter
 
 web:
 	cd ../client && $(FLUTTER) build web --release --no-web-resources-cdn
+	@mkdir -p $(WEB_DIST)
 	@find $(WEB_DIST) -mindepth 1 ! -name .gitkeep -delete
 	@cp -R ../client/build/web/. $(WEB_DIST)/
 	@echo "web client staged in $(WEB_DIST)"
 
 web-clean:
+	@mkdir -p $(WEB_DIST)
 	@find $(WEB_DIST) -mindepth 1 ! -name .gitkeep -delete
 	@echo "cleared $(WEB_DIST)"
 
