@@ -8,6 +8,10 @@
 #   scripts/devstack-test.sh
 #
 # Starts no containers and writes nothing outside its own scratch directory.
+# This file defines stub overrides of the sourced script's functions. The linter
+# cannot see those being invoked, and which code it reports for that varies by
+# version (SC2329 here, SC2317 on the CI runner), so both are off for the file.
+# shellcheck disable=SC2317,SC2329
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -257,7 +261,6 @@ rm -f "$SERVER_PID"
 printf '#!/bin/sh\nsleep 30\n' > "$SERVER_BIN"
 chmod +x "$SERVER_BIN"
 (
-  # shellcheck disable=SC2329
   server_pid_matches() { return 0; }
   launch_server
 ) >/dev/null 2>&1
@@ -686,14 +689,9 @@ check "write_config drift-checks a config it keeps" \
 
 restart_without_building() {
   (
-    # Overrides of the sourced script's own functions; cmd_restart calls them.
-    # shellcheck disable=SC2329
     build_server() { :; }
-    # shellcheck disable=SC2329
     launch_server() { :; }
-    # shellcheck disable=SC2329
     wait_for_surface() { return 0; }
-    # shellcheck disable=SC2329
     cmd_status() { :; }
     cmd_restart
   )
@@ -741,7 +739,6 @@ check "and stays quiet when it is" \
 # nothing to compare against.
 rm -f "$VERSION_MARKER"
 (
-  # shellcheck disable=SC2329
   companion_ready() { return 0; }
   FAKE_IMAGE="" start_companion 127.0.0.1
 ) >/dev/null 2>&1
@@ -760,13 +757,9 @@ check "an ordinary bind is not" \
 
 up_without_starting() {
   (
-    # shellcheck disable=SC2329
     start_companion() { :; }
-    # shellcheck disable=SC2329
     start_server() { :; }
-    # shellcheck disable=SC2329
     wait_for_surface() { return 0; }
-    # shellcheck disable=SC2329
     cmd_status() { :; }
     cmd_up
   )
