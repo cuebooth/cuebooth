@@ -18,6 +18,7 @@ import (
 	"github.com/cuebooth/cuebooth/server/internal/api"
 	"github.com/cuebooth/cuebooth/server/internal/companion"
 	"github.com/cuebooth/cuebooth/server/internal/config"
+	"github.com/cuebooth/cuebooth/server/internal/webui"
 )
 
 const defaultConfigPath = "configs/cuebooth.toml"
@@ -81,6 +82,9 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 		logger.Info("companion satellite surface enabled", "addr", sc.Addr)
 	}
 
+	level, msg := webClientStatus(webui.Bundled())
+	logger.Log(ctx, level, msg)
+
 	srv := api.NewServer(cfg, comp, opts...)
 
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -96,4 +100,15 @@ func run(ctx context.Context, logger *slog.Logger, configPath string) error {
 	// VISCA, OBS, HID) here once those exist to shut down.
 
 	return err
+}
+
+// webClientStatus is the startup line saying whether a client was built into
+// this binary. A build without one serves the API normally and answers / with
+// an explanation, which is a difference an operator has no other way to notice
+// before someone opens a browser — hence a warning rather than an info line.
+func webClientStatus(bundled bool) (slog.Level, string) {
+	if bundled {
+		return slog.LevelInfo, "web client bundled; browse to the listen address to use it"
+	}
+	return slog.LevelWarn, "no web client bundled; run `make web` before `make build` to include one"
 }
