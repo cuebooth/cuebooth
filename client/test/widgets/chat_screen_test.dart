@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   final base = Uri.parse('http://production-pc:7878');
@@ -465,6 +466,63 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Could not open a browser.'), findsOneWidget);
+  });
+
+  group('openExternally', () {
+    // chatNavigationStaysInPanel treats a URL it cannot parse as leaving the
+    // panel, and Uri.tryParse returns null in exactly the cases Uri.parse
+    // throws in — so this is reached with the strings that throw.
+    test('drops a URL that cannot be parsed', () {
+      for (final url in ['http://[::1', 'ht tp://x', '://nohost']) {
+        expect(Uri.tryParse(url), isNull, reason: '$url should be unparseable');
+        expect(() => Uri.parse(url), throwsFormatException);
+
+        var launched = false;
+        openExternally(
+          url,
+          launch: (uri, {LaunchMode mode = LaunchMode.platformDefault}) async {
+            launched = true;
+            return true;
+          },
+        );
+        expect(launched, isFalse, reason: 'launched $url anyway');
+      }
+    });
+
+    test('hands a parseable URL to the launcher', () {
+      Uri? seen;
+      LaunchMode? seenMode;
+      openExternally(
+        'https://example.test/some-link',
+        launch: (uri, {LaunchMode mode = LaunchMode.platformDefault}) async {
+          seen = uri;
+          seenMode = mode;
+          return true;
+        },
+      );
+      expect(seen, Uri.parse('https://example.test/some-link'));
+      // Externally, so the link leaves the panel rather than replacing it.
+      expect(seenMode, LaunchMode.externalApplication);
+    });
+
+    // A launcher that rejects — no handler for the scheme, or a blocked link —
+    // must not leave an unhandled error behind it. The rejection arrives on a
+    // later microtask, so the zone has to be given the chance to see it.
+    test('swallows a launcher failure', () async {
+      Object? unhandled;
+      await runZonedGuarded(
+        () async {
+          openExternally(
+            'https://example.test/x',
+            launch: (uri, {LaunchMode mode = LaunchMode.platformDefault}) async =>
+                throw StateError('no handler'),
+          );
+          await Future<void>.delayed(Duration.zero);
+        },
+        (error, stack) => unhandled = error,
+      );
+      expect(unhandled, isNull);
+    });
   });
 
   group('chatNavigationStaysInPanel', () {

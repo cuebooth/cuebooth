@@ -53,6 +53,27 @@ bool chatNavigationStaysInPanel({
   return target.isNotEmpty && target == panel;
 }
 
+/// Hands a link that leaves the panel to the platform browser.
+///
+/// [chatNavigationStaysInPanel] treats a URL it cannot parse as leaving the
+/// panel, so this is reached with exactly the strings `Uri.parse` throws on —
+/// `Uri.tryParse` returns null in the same cases. A link the panel cannot open
+/// is dropped rather than allowed to break navigation handling for the rest of
+/// the session.
+void openExternally(String url, {Future<bool> Function(Uri, {LaunchMode mode})? launch}) {
+  final target = Uri.tryParse(url);
+  if (target == null) return;
+  final open = launch ?? launchUrl;
+  unawaited(() async {
+    try {
+      await open(target, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      // No handler for the scheme, or the platform refused. Nothing to show the
+      // operator mid-service, and nothing worth taking the panel down for.
+    }
+  }());
+}
+
 /// The stream chat panel (CB-017).
 ///
 /// The server owns the platform credential and mints a URL per request, so this
@@ -362,9 +383,7 @@ class _ChatWebviewState extends State<_ChatWebview> {
           )) {
             return NavigationDecision.navigate;
           }
-          unawaited(
-            launchUrl(Uri.parse(request.url), mode: LaunchMode.externalApplication),
-          );
+          openExternally(request.url);
           return NavigationDecision.prevent;
         },
       ),

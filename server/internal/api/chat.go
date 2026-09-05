@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cuebooth/cuebooth/server/internal/chat"
+	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
 )
 
@@ -19,10 +20,14 @@ import (
 // carries a credential: fetching it on demand keeps it out of every state
 // snapshot broadcast to every client (docs/protocol.md §11).
 const (
-	chatURLPath      = "/chat/url"
-	chatAuthPath     = "/chat/auth/start"
-	chatCallbackPath = "/chat/auth/callback"
+	chatURLPath  = "/chat/url"
+	chatAuthPath = "/chat/auth/start"
 )
+
+// chatCallbackPath is defined by config, which also builds the redirect URI
+// Restream is given. Registering a different string here would send the
+// operator's browser back to a route this server does not serve.
+const chatCallbackPath = config.ChatCallbackPath
 
 // chatMintDeadline bounds one /chat/url request. A mint can involve a refresh
 // and the webchat call behind it, twice if the first token is refused, so

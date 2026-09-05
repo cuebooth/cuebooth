@@ -97,9 +97,10 @@ type ChatConfig struct {
 // ChatSecretEnv supplies chat.client_secret when the config file omits it.
 const ChatSecretEnv = "CUEBOOTH_CHAT_CLIENT_SECRET"
 
-// chatCallbackPath is the route Restream redirects back to after an operator
-// authorizes. It must match the handler registered in internal/api.
-const chatCallbackPath = "/chat/auth/callback"
+// ChatCallbackPath is the route Restream redirects back to after an operator
+// authorizes. RedirectURI below sends it to Restream and internal/api registers
+// it as a handler; the two have to be the same string, so there is only one.
+const ChatCallbackPath = "/chat/auth/callback"
 
 // Disabled reports whether the chat panel is turned off by config.
 func (c ChatConfig) Disabled() bool {
@@ -113,7 +114,7 @@ func (c ChatConfig) Disabled() bool {
 
 // RedirectURI is the OAuth callback registered with the chat platform.
 func (c ChatConfig) RedirectURI() string {
-	return strings.TrimRight(c.PublicURL, "/") + chatCallbackPath
+	return strings.TrimRight(c.PublicURL, "/") + ChatCallbackPath
 }
 
 // maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
