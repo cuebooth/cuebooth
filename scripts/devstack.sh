@@ -80,9 +80,18 @@ engine() {
 bind_addr() {
   if [[ -n "${DEVSTACK_BIND:-}" ]]; then echo "$DEVSTACK_BIND"; return; fi
   local ip
-  ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+  ip="$(tailscale_ip)"
   [[ -n "$ip" ]] || die "no Tailscale IPv4 found; set DEVSTACK_BIND to the address to publish on"
   echo "$ip"
+}
+
+tailscale_ip() {
+  tailscale ip -4 2>/dev/null | head -1 || true
+}
+
+tailscale_dns() {
+  tailscale status --json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true
 }
 
 # publish_host brackets an IPv6 literal, which -p needs to tell the address
@@ -140,11 +149,23 @@ warn_wildcard_bind() {
 }
 
 # host_name is what a client should be pointed at.
+#
+# The tailnet DNS name resolves to this host's Tailscale address, so it is only
+# the right thing to print when the stack is actually bound there — a wildcard,
+# or that address itself. Under any other DEVSTACK_BIND, including loopback,
+# printing it names a host nothing is listening on.
 host_name() {
   if [[ -n "${DEVSTACK_HOST:-}" ]]; then echo "$DEVSTACK_HOST"; return; fi
-  local dns
-  dns="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
-  if [[ -n "$dns" ]]; then echo "$dns"; else bind_addr; fi
+
+  local bind dns
+  bind="$(bind_addr)"
+  case "$bind" in
+    0.0.0.0 | "::" | "[::]") ;;
+    *) [[ "$bind" == "$(tailscale_ip)" ]] || { echo "$bind"; return; } ;;
+  esac
+
+  dns="$(tailscale_dns)"
+  if [[ -n "$dns" ]]; then echo "$dns"; else echo "$bind"; fi
 }
 
 write_config() {

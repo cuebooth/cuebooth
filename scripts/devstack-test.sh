@@ -592,6 +592,41 @@ check "an admin port this run would not use warns" \
 
 current_config
 
+# --- host_name ----------------------------------------------------------------
+#
+# What `up` and `status` tell the operator to point a client at. The tailnet DNS
+# name resolves to this host's Tailscale address, so naming it when the stack is
+# bound somewhere else sends the client to a host nothing is listening on.
+
+echo "# host_name"
+
+TAILNET_IP=100.64.0.1
+TAILNET_DNS=host.tailnet.ts.net
+tailscale_ip() { echo "$TAILNET_IP"; }
+tailscale_dns() { echo "$TAILNET_DNS"; }
+
+# DEVSTACK_HOST is exported for the whole file and short-circuits host_name, so
+# it is passed per call here rather than inherited.
+named_host() { DEVSTACK_BIND="$1" DEVSTACK_HOST="${2:-}" host_name; }
+
+check "the tailnet bind gets the tailnet name" "$(named_host "$TAILNET_IP")" "$TAILNET_DNS"
+check "a loopback bind gets loopback" "$(named_host 127.0.0.1)" "127.0.0.1"
+check "another address gets that address" "$(named_host 192.168.1.50)" "192.168.1.50"
+# A wildcard is bound everywhere, so the tailnet name does reach it.
+check "a wildcard bind keeps the tailnet name" "$(named_host 0.0.0.0)" "$TAILNET_DNS"
+check "an IPv6 wildcard bind does too" "$(named_host ::)" "$TAILNET_DNS"
+check "DEVSTACK_HOST wins over all of it" \
+  "$(named_host 127.0.0.1 chosen.example)" "chosen.example"
+
+# Off Tailscale entirely: there is no name to prefer.
+tailscale_dns() { echo ""; }
+check "no tailnet name falls back to the bind address" \
+  "$(named_host "$TAILNET_IP")" "$TAILNET_IP"
+tailscale_dns() { echo "$TAILNET_DNS"; }
+
+unset -f tailscale_ip tailscale_dns
+unset -f named_host
+
 # --- publish_flags ------------------------------------------------------------
 #
 # What the container publishes, and to whom. The Satellite port on the tailnet
