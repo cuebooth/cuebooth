@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/chat_service.dart';
 import '../services/server_connection.dart';
 import '../services/session.dart';
 import '../widgets/stream_control_bar.dart';
 import '../widgets/surface_grid.dart';
+import 'chat_screen.dart';
 
 /// The operator's main control surface.
 ///
@@ -24,6 +26,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<SessionNotice>? _noticeSub;
+  ChatService? _chat;
 
   @override
   void initState() {
@@ -34,7 +37,26 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _noticeSub?.cancel();
+    _chat?.dispose();
     super.dispose();
+  }
+
+  /// The chat client, built from the same server this session is connected to.
+  /// Null until a connection has a host, which is also when chat is unreachable.
+  ChatService? _chatService() {
+    final base = widget.connection.httpBase;
+    if (base == null) return null;
+    return _chat ??= ChatService(serverBase: base);
+  }
+
+  void _openChat() {
+    final chat = _chatService();
+    if (chat == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatScreen(session: widget.session, chat: chat),
+      ),
+    );
   }
 
   Widget _centered(String text) => Center(
@@ -67,6 +89,26 @@ class _HomeScreenState extends State<HomeScreen> {
             listenable: widget.connection,
             builder: (_, _) =>
                 Center(child: Text(widget.connection.state.name)),
+          ),
+          // Shown only when the server has a chat provider; a deployment
+          // without one gets no dead button.
+          ListenableBuilder(
+            listenable: widget.session.state,
+            builder: (_, _) {
+              if (!widget.session.state.chatConfigured) {
+                return const SizedBox.shrink();
+              }
+              final icon = const Icon(Icons.chat_bubble_outline);
+              return IconButton(
+                tooltip: 'Chat',
+                onPressed: _openChat,
+                icon: widget.session.state.chatNeedsAuth
+                    // A dot rather than a number: there is one thing to do,
+                    // which is authorize.
+                    ? Badge(smallSize: 8, child: icon)
+                    : icon,
+              );
+            },
           ),
           // A way back to the connect screen — otherwise a connection that never
           // recovers strands the operator here with no route to change servers.

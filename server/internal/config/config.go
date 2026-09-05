@@ -8,7 +8,9 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -21,6 +23,8 @@ import (
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
 	Companion CompanionConfig `toml:"companion"`
+	// Chat configures the stream-chat panel in the client. See ChatConfig.
+	Chat ChatConfig `toml:"chat"`
 	// Presets maps logical action names (used in slide rules and by the client)
 	// to Companion buttons or direct OSC commands. See presets.go.
 	Presets PresetsConfig `toml:"presets"`
@@ -66,6 +70,53 @@ type SatelliteConfig struct {
 	BitmapSize int `toml:"bitmap_size"`
 }
 
+// ChatConfig configures the stream-chat panel the client renders.
+//
+// The server, not the client, holds the platform credential: Restream's OAuth
+// has no PKCE and its token exchange needs a client secret, which an app
+// distributed to operators cannot keep. See internal/chat.
+type ChatConfig struct {
+	// Provider names the chat platform. "restream" is the only one implemented;
+	// "off" (or empty) disables the panel.
+	Provider string `toml:"provider"`
+	// ClientID and ClientSecret identify the application registered at
+	// developers.restream.io. The secret may be supplied through
+	// CUEBOOTH_CHAT_CLIENT_SECRET instead, keeping it out of the config file.
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	// PublicURL is the address operators reach this server at. The OAuth
+	// redirect is derived from it so the two cannot drift apart; the result must
+	// match a redirect URI registered on the Restream application.
+	PublicURL string `toml:"public_url"`
+	// TokenFile is where the rotating credential is stored. Restream invalidates
+	// the previous token on every refresh, so this file is state: deleting it
+	// costs a re-authorization.
+	TokenFile string `toml:"token_file"`
+}
+
+// ChatSecretEnv supplies chat.client_secret when the config file omits it.
+const ChatSecretEnv = "CUEBOOTH_CHAT_CLIENT_SECRET"
+
+// ChatCallbackPath is the route Restream redirects back to after an operator
+// authorizes. RedirectURI below sends it to Restream and internal/api registers
+// it as a handler; the two have to be the same string, so there is only one.
+const ChatCallbackPath = "/chat/auth/callback"
+
+// Disabled reports whether the chat panel is turned off by config.
+func (c ChatConfig) Disabled() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Provider)) {
+	case "", "off", "disabled", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+// RedirectURI is the OAuth callback registered with the chat platform.
+func (c ChatConfig) RedirectURI() string {
+	return strings.TrimRight(c.PublicURL, "/") + ChatCallbackPath
+}
+
 // maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
 // 32 buttons and the largest rig anyone drives is a few Stream Deck XLs side by
 // side; past a couple of hundred an operator cannot find the button they want
@@ -102,6 +153,20 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
+	// Resolved before validation so an operator who keeps the secret in the
+	// environment isn't rejected for omitting it from the file.
+	if cfg.Chat.ClientSecret == "" {
+		cfg.Chat.ClientSecret = os.Getenv(ChatSecretEnv)
+	}
+
+	// A relative token_file resolves against the config file's directory, not
+	// the process's working directory. An SCM-launched service runs with cwd
+	// C:\Windows\System32 (see cmd/cuebooth-server/service_windows.go), where
+	// the credential would land somewhere no operator backs up or uninstalls.
+	if tf := cfg.Chat.TokenFile; tf != "" && !filepath.IsAbs(tf) {
+		cfg.Chat.TokenFile = filepath.Join(filepath.Dir(path), tf)
+	}
+
 	// Warn (rather than reject) on unrecognized keys so a typo like "listenn"
 	// surfaces instead of silently falling back to the default. We only warn
 	// for keys we'd expect to decode — top-level scalars and keys inside tables
@@ -129,6 +194,7 @@ func Load(path string) (*Config, error) {
 var decodedTables = map[string]bool{
 	"server":    true,
 	"companion": true,
+	"chat":      true,
 	"presets":   true,
 }
 
@@ -146,6 +212,7 @@ func warnableKey(key toml.Key) bool {
 func defaults() *Config {
 	return &Config{
 		Server: ServerConfig{Listen: "0.0.0.0:7878"},
+		Chat:   ChatConfig{TokenFile: "chat-token.json"},
 		Companion: CompanionConfig{
 			BaseURL: "http://localhost:8000",
 			Satellite: SatelliteConfig{
@@ -169,8 +236,45 @@ func (c *Config) validate() error {
 	if err := c.Companion.Satellite.validate(); err != nil {
 		return err
 	}
+	if err := c.Chat.validate(); err != nil {
+		return err
+	}
 	if err := c.Presets.validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c ChatConfig) validate() error {
+	if c.Disabled() {
+		return nil
+	}
+	if strings.ToLower(strings.TrimSpace(c.Provider)) != "restream" {
+		return fmt.Errorf("chat.provider %q is not supported (use \"restream\" or \"off\")", c.Provider)
+	}
+	if c.ClientID == "" {
+		return fmt.Errorf("chat.client_id is required when chat is enabled")
+	}
+	if c.ClientSecret == "" {
+		return fmt.Errorf("chat.client_secret is required when chat is enabled (or set %s)", ChatSecretEnv)
+	}
+	if c.PublicURL == "" {
+		return fmt.Errorf("chat.public_url is required when chat is enabled")
+	}
+	// The redirect is built from public_url and must match one registered on the
+	// Restream application, so a value that can't form an absolute URL would only
+	// fail later, at the point an operator is standing in front of a browser.
+	u, err := url.Parse(strings.TrimRight(c.PublicURL, "/"))
+	if err != nil {
+		return fmt.Errorf("chat.public_url is not a valid URL: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("chat.public_url must be an absolute http:// or https:// URL, e.g. http://production-pc:7878")
+	}
+	// The callback route is appended to this, so a path here would send the
+	// platform's redirect somewhere the server does not serve.
+	if u.Path != "" {
+		return fmt.Errorf("chat.public_url must not include a path (got %q)", u.Path)
 	}
 	return nil
 }

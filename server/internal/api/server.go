@@ -18,12 +18,23 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
 )
 
 // shutdownTimeout bounds graceful HTTP shutdown.
 const shutdownTimeout = 5 * time.Second
+
+// StopBudget is the longest a graceful shutdown can take, for callers that must
+// declare it — the Windows SCM expects a wait hint covering the whole stop.
+func StopBudget() time.Duration { return shutdownTimeout + chatDrainTimeout }
+
+// chatDrainTimeout bounds the wait for a chat token exchange still in flight at
+// shutdown. It exceeds the provider's own request deadline, because the platform
+// rotates the credential on receipt: exiting before the response is read loses
+// the replacement and costs an operator a re-authorization.
+const chatDrainTimeout = 25 * time.Second
 
 // Server is the WebSocket API server.
 type Server struct {
@@ -41,6 +52,10 @@ type Server struct {
 	// surface relays the Companion Satellite button surface to clients; nil when
 	// no satellite is configured (see WithSatellite).
 	surface *surfaceManager
+
+	// chat mints the stream-chat URL clients display; nil when no chat provider
+	// is configured (see WithChat).
+	chat chat.Provider
 
 	pollInterval time.Duration
 	sources      []state.Source
@@ -106,6 +121,15 @@ func WithSatellite(sat satelliteSurface) Option {
 	}
 }
 
+// WithChat enables the stream-chat panel, served by p (see internal/chat).
+func WithChat(p chat.Provider) Option {
+	return func(s *Server) {
+		if p != nil {
+			s.chat = p
+		}
+	}
+}
+
 // NewServer builds the API server. comp is the Companion button presser the
 // command dispatcher routes to (typically *companion.Client).
 func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
@@ -135,6 +159,14 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
 	s.mux.HandleFunc("/ws/meters", s.serveMeters)
+	// Registered only when a provider exists, so a deployment without chat
+	// answers 404 rather than an endpoint that always fails.
+	if s.chat != nil {
+		s.mux.HandleFunc(chatURLPath, s.serveChatURL)
+		s.mux.HandleFunc(chatAuthPath, s.serveChatAuthStart)
+		s.mux.HandleFunc(chatCallbackPath, s.serveChatAuthCallback)
+		s.publishChatStatus()
+	}
 	return s
 }
 
@@ -193,6 +225,11 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		err := s.httpServer.Shutdown(sctx)
 		s.hub.closeAll("server shutting down")
 		s.waitConns(sctx)
+		if s.chat != nil {
+			dctx, dcancel := context.WithTimeout(context.Background(), chatDrainTimeout)
+			chat.Drain(dctx, s.chat)
+			dcancel()
+		}
 		return err
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {

@@ -44,6 +44,19 @@ dependencies:
   # address) doesn't require re-typing it each launch.
   shared_preferences: ^2.3.0
 
+  # Renders the stream chat in-app (CB-017). Supports Android, iOS, and macOS
+  # only — Windows, Linux, and web open chat in the system browser instead
+  # (CB-093), which costs nothing because the server hands out an already
+  # authenticated URL.
+  webview_flutter: ^4.14.1
+
+  # Opens the chat URL and the authorization flow in the system browser.
+  url_launcher: ^6.3.0
+
+  # Fetches the chat URL from the server's HTTP routes (protocol.md §11).
+  # Portable across every target, unlike dart:io's HttpClient.
+  http: ^1.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
