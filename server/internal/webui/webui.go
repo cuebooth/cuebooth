@@ -102,15 +102,31 @@ func etags(files fs.FS) map[string]string {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		body, err := fs.ReadFile(files, name)
+		sum, err := hashFile(files, name)
 		if err != nil {
 			return nil
 		}
-		sum := sha256.Sum256(body)
 		tags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
 		return nil
 	})
 	return tags
+}
+
+// hashFile digests one bundled file without holding it in memory. The largest
+// is several megabytes and every file is read at startup, so reading each one
+// whole costs an allocation the size of the bundle for no benefit.
+func hashFile(files fs.FS, name string) ([]byte, error) {
+	f, err := files.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
 }
 
 // handleWith resolves one request against the bundled files. Split from Handler

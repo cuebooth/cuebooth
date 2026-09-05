@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"errors"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -210,6 +212,38 @@ func TestResponsesCarryAValidatorAndRevalidate(t *testing.T) {
 	}
 }
 
+// halfReadFS opens a file that yields some bytes and then fails, which
+// fstest.MapFS cannot do.
+type halfReadFS struct{}
+
+func (halfReadFS) Open(name string) (fs.File, error) { return &halfReadFile{}, nil }
+
+type halfReadFile struct{ served bool }
+
+func (f *halfReadFile) Stat() (fs.FileInfo, error) { return nil, errors.New("no stat") }
+func (f *halfReadFile) Close() error               { return nil }
+func (f *halfReadFile) Read(p []byte) (int, error) {
+	if f.served {
+		return 0, errors.New("the file went away mid-read")
+	}
+	f.served = true
+	return copy(p, "partial"), nil
+}
+
+// A file that fails partway through must not produce a digest. Hashing what
+// arrived before the error would mint a validator for content nobody has, and
+// with no content-hashed filenames that validator is the only thing telling a
+// client its cached copy is current.
+func TestHashingAPartialReadIsAnError(t *testing.T) {
+	sum, err := hashFile(halfReadFS{}, "anything")
+	if err == nil {
+		t.Errorf("hashFile returned %x and no error for a file that failed mid-read", sum)
+	}
+	if !errors.Is(err, io.EOF) && err != nil && sum != nil {
+		t.Errorf("hashFile returned both a digest and an error")
+	}
+}
+
 // Different content must not share a validator, or a stale asset survives a
 // rebuild.
 func TestValidatorsFollowContent(t *testing.T) {
@@ -251,12 +285,58 @@ func TestContentTypesComeFromTheExtension(t *testing.T) {
 // on. Go's mime package lets the host database overwrite its built-in table, so
 // a registry that calls .js something else would otherwise reach the browser —
 // and nosniff turns that into a refused script rather than a recovered one.
-func TestContentTypesIgnoreTheHostMIMEDatabase(t *testing.T) {
-	for _, ext := range []string{".js", ".wasm", ".json", ".html", ".otf"} {
+// poisonedExtensions are the ones the bundle actually contains.
+var poisonedExtensions = []string{".js", ".wasm", ".json", ".html", ".otf"}
+
+// poisonMIME points the host's table at a bogus type for those extensions, and
+// puts it back when the test ends.
+//
+// mime's table is process-global and has no removal, so restoring means writing
+// the old value back. An extension with no mapping at all cannot be restored,
+// and is left alone rather than replaced with something invented.
+func poisonMIME(t *testing.T) {
+	t.Helper()
+	for _, ext := range poisonedExtensions {
+		before := mime.TypeByExtension(ext)
+		t.Cleanup(func() {
+			if before == "" {
+				return
+			}
+			if err := mime.AddExtensionType(ext, before); err != nil {
+				t.Errorf("restoring %q: %v", ext, err)
+			}
+		})
 		if err := mime.AddExtensionType(ext, "application/x-host-database-says-so"); err != nil {
 			t.Fatalf("AddExtensionType(%q): %v", ext, err)
 		}
 	}
+}
+
+// A test that leaves the process-global table poisoned makes every later test
+// in this binary depend on running first. A subtest's cleanup runs when it
+// returns, so the restoration is observable from here.
+func TestTheHostMIMETableIsPutBack(t *testing.T) {
+	before := map[string]string{}
+	for _, ext := range poisonedExtensions {
+		before[ext] = mime.TypeByExtension(ext)
+	}
+
+	t.Run("poisoned", func(t *testing.T) {
+		poisonMIME(t)
+		if got := mime.TypeByExtension(".js"); !strings.Contains(got, "host-database-says-so") {
+			t.Fatalf(".js = %q; the table was not poisoned, so this proves nothing", got)
+		}
+	})
+
+	for _, ext := range poisonedExtensions {
+		if got := mime.TypeByExtension(ext); got != before[ext] {
+			t.Errorf("%s = %q after the subtest, want %q", ext, got, before[ext])
+		}
+	}
+}
+
+func TestContentTypesIgnoreTheHostMIMEDatabase(t *testing.T) {
+	poisonMIME(t)
 
 	h := serveFrom(testFS())
 	for _, path := range []string{"/main.dart.js", "/canvaskit/ck.wasm", "/manifest.json", "/assets/f.otf"} {
