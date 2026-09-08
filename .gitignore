@@ -87,3 +87,10 @@ server/configs/cuebooth.toml
 # of it belongs in the public repo. Anonymized samples derived from it
 # may later be checked into docs/.
 private/
+
+# ─── Embedded web client (server/internal/webui) ────────────────────────
+# `make web` stages the Flutter web build here for go:embed. It is a build
+# artifact of client/, not source. .gitkeep stays so a fresh clone still
+# satisfies the embed directive.
+server/internal/webui/dist/*
+!server/internal/webui/dist/.gitkeep
