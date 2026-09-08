@@ -1,12 +1,12 @@
 {
-    "name": "cuebooth_client",
-    "short_name": "cuebooth_client",
+    "name": "CueBooth",
+    "short_name": "CueBooth",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "CueBooth client — operator control surface for live-event production.",
-    "orientation": "portrait-primary",
+    "background_color": "#FEF7FF",
+    "theme_color": "#68548E",
+    "description": "CueBooth client \u2014 operator control surface for live-event production.",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {

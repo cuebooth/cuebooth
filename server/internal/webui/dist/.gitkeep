@@ -1,0 +1,5 @@
+The built web client goes here.
+
+Run `make web` from server/ to populate it; the contents are gitignored
+except this file, which keeps the go:embed directive satisfied in a fresh
+clone.

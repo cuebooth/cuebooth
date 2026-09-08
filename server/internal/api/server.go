@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
+	"github.com/cuebooth/cuebooth/server/internal/webui"
 )
 
 // shutdownTimeout bounds graceful HTTP shutdown.
@@ -135,6 +136,10 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
 	s.mux.HandleFunc("/ws/meters", s.serveMeters)
+	// Registered last and least specific, so the API routes above win. Serving
+	// the client from this listener is what lets a browser open /ws at all:
+	// acceptWS enforces same-origin, which a page served elsewhere fails.
+	s.mux.Handle("/", webui.Handler())
 	return s
 }
 
@@ -219,9 +224,12 @@ func (s *Server) waitConns(ctx context.Context) {
 // client, including remote over Tailscale — design.md §3.7) and same-host
 // browser requests are allowed, while cross-origin browser requests are
 // rejected. That rejection is the cross-site-WebSocket-hijacking defense for an
-// API with no in-protocol auth in v1 (protocol.md §1). A cross-origin web client
-// is intentionally unsupported in v1; if a web build is ever added it gets a
-// configurable origin allowlist or the future token handshake.
+// API with no in-protocol auth in v1 (protocol.md §1).
+//
+// The bundled web client is served from this same listener, so it satisfies the
+// policy rather than needing an exception. A web client served from anywhere
+// else is unsupported in v1; it would need a configurable origin allowlist or
+// the token handshake.
 func acceptWS(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
 	return websocket.Accept(w, r, nil)
 }

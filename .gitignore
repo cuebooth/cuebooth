@@ -88,6 +88,13 @@ server/configs/cuebooth.toml
 # may later be checked into docs/.
 private/
 
+# ─── Embedded web client (server/internal/webui) ────────────────────────
+# `make web` stages the Flutter web build here for go:embed. It is a build
+# artifact of client/, not source. .gitkeep stays so a fresh clone still
+# satisfies the embed directive.
+server/internal/webui/dist/*
+!server/internal/webui/dist/.gitkeep
+
 # ─── Dev stack (scripts/devstack.sh) ────────────────────────────────────
 # Companion's config, the generated server config, the built binary, logs
 # and pidfile. All of it is local state for a machine-specific fixture, and
