@@ -40,6 +40,7 @@ if [[ -z "$ENGINE" ]]; then
 fi
 echo "==> engine: $ENGINE   image: $IMAGE"
 
+# shellcheck disable=SC2329,SC2317  # invoked by the EXIT trap below
 cleanup() {
   if [[ "${COMPANION_KEEP:-0}" == "1" ]]; then
     echo "==> COMPANION_KEEP=1, leaving $CONTAINER running (admin http://127.0.0.1:${ADMIN_PORT})"
@@ -57,25 +58,46 @@ trap cleanup EXIT
   -p "127.0.0.1:${SAT_PORT}:16622" \
   "$IMAGE" >/dev/null
 
-# Companion takes a few seconds to render its first surface; wait for the
-# Satellite port to accept a connection rather than sleeping a fixed amount.
+# companion_ready reports whether Companion is answering on the Satellite port.
+# A bare connect does not establish that: rootless podman's port forwarder binds
+# a published port when the container is created, so the connect succeeds from
+# the moment `run` returns. Companion greets a new satellite connection with a
+# BEGIN line, so reading one is the first proof that Companion itself is up.
+companion_ready() {
+  local greeting=""
+  # The group is what carries the redirection: bash reports a failed exec
+  # redirect before applying a 2>/dev/null on the same command, so a refused
+  # connection would print on every poll.
+  { exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}"; } 2>/dev/null || return 1
+  # Companion greets as soon as it accepts, so a second is generous. A longer
+  # wait multiplies against the poll count below: every poll before Companion
+  # is up blocks for the whole timeout, because the published port accepts from
+  # the moment the container is created.
+  read -r -t 1 greeting <&3 || true
+  { exec 3>&-; } 2>/dev/null || true
+  { exec 3<&-; } 2>/dev/null || true
+  [[ "$greeting" == BEGIN* ]]
+}
+
+# Companion takes a few seconds to render its first surface.
 echo -n "==> waiting for Satellite port ${SAT_PORT} "
-for _ in $(seq 1 90); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}") 2>/dev/null; then
-    exec 3<&- 2>/dev/null || true
+ready=0
+deadline=$((SECONDS + 90))
+while ((SECONDS < deadline)); do
+  if companion_ready; then
     echo " ready"
+    ready=1
     break
   fi
   echo -n "."
   sleep 1
 done
-if ! (exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}") 2>/dev/null; then
+if [[ "$ready" != 1 ]]; then
   echo
-  echo "Companion did not open ${SAT_PORT} in time; container log:" >&2
+  echo "Companion did not answer on ${SAT_PORT} within 90s; container log:" >&2
   "$ENGINE" logs --tail 40 "$CONTAINER" >&2 || true
   exit 1
 fi
-exec 3<&- 2>/dev/null || true
 
 cd "${REPO_ROOT}/server"
 set +e
