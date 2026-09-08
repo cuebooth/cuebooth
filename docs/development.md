@@ -27,7 +27,7 @@ The only wiring constraints:
 | client → server WebSocket | `ws://<server>:7878/ws` | client dials the server |
 | sidecar → server | `\\.\pipe\cuebooth-sidecar` | sidecar writes to the server |
 
-The processes can all run on one machine or be split across the network however you like (e.g. Companion + server on the production PC, client on an iPad over Tailscale). Wherever the client runs, point it at the server's reachable address.
+The processes can all run on one machine or be split across the network however you like (e.g. Companion + server on the production PC, client on an iPad over Tailscale). Point a native client at the server's reachable address; a browser client is served by the server itself, so it is already pointed at it ([§3.1](#31-bundling-the-web-client-into-the-server)).
 
 ---
 
@@ -42,6 +42,8 @@ The native button grid is rendered from [Companion](https://bitfocus.io/companio
 The server *declares* the surface shape to Companion from the `[companion.satellite]` config (`rows`/`cols`/`bitmap_size`); the default `4×8 / 72px` registers a Stream Deck XL–shaped surface.
 
 If you want to exercise the server and client **without** Companion, you only need something that speaks the Satellite host side of the protocol on 16622 — a small mock is enough for development.
+
+If you have no Companion install to point at, [§8](#8-dev-stack-the-whole-server-side-on-one-host) starts a real one in a container alongside the server, reachable from a laptop over Tailscale.
 
 ---
 
@@ -77,9 +79,33 @@ Key fields (the file documents the rest):
 
 The server binds the client WebSocket on `[server] listen` at path `/ws` (`/ws/meters` is reserved for later phases). The default config path when no `-config` is given is `configs/cuebooth.toml`.
 
+### 3.1 Bundling the web client into the server
+
+The server can carry the Flutter web client and serve it at `/` on the same port, so a browser on any machine is a working client with nothing installed:
+
+```sh
+cd server
+make web      # flutter build web, staged into internal/webui/dist
+make build    # go build, embedding whatever make web staged
+```
+
+Then open `http://<server-host>:7878`. The connect screen prefills the address the page came from, so there is nothing to type.
+
+**It has to be the same port.** `/ws` enforces a same-origin policy (coder/websocket's default compares `Origin` against `Host`), so a client page served from anywhere else is refused with a 403. Serving it here satisfies that check rather than weakening it — worth keeping, since v1 has no in-protocol auth ([protocol.md](protocol.md) §1).
+
+`make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
+
+**Size.** The bundle is about 40 MB, taking the binary from 7 MB to 48 MB. Nearly all of it — 37 MB — is CanvasKit, which `flutter build web` emits as six wasm builds. A page load fetches one: this build declares the `canvaskit` renderer, so the loader picks `canvaskit/chromium/canvaskit.wasm` (5.8 MB) on a Chromium browser and `canvaskit/canvaskit.wasm` (7.2 MB) elsewhere. The other four are unreachable: the loader only fetches the skwasm and wimp builds when the selected build's renderer is `skwasm`, which this configuration cannot produce, and reaches `experimental_webparagraph` only if `canvasKitVariant` is set by hand. That is 22 MB with their JavaScript and symbol files, tracked in [CB-098](https://github.com/cuebooth/cuebooth/issues/91). A first page load is around 8 MB all told; there is no compression ([CB-099](https://github.com/cuebooth/cuebooth/issues/92)), though a reload revalidates and gets 304s.
+
+`make web` passes `--no-web-resources-cdn`, which is what makes the loader read CanvasKit from here rather than `gstatic.com`; without the flag the whole 37 MB is embedded and never requested.
+
+**Plain HTTP only.** The client builds a `ws://` URL unconditionally, so a page served over HTTPS loads and then cannot connect — the browser blocks the socket as mixed content, and the connect screen's origin prefill will have filled in port 443. Serve this over plain HTTP and reach it by LAN IP or tailnet address. [CB-097](https://github.com/cuebooth/cuebooth/issues/90) tracks choosing the scheme from the page.
+
 ---
 
 ## 4. Flutter client (`client/`)
+
+> **You may not need any of this.** The server can carry the web client and serve it from its own port — open `http://<server>:7878` in a browser and you have a working client with nothing installed and no Flutter toolchain. See [§3.1](#31-bundling-the-web-client-into-the-server). The rest of this section is for building a *native* client, or for developing the client itself.
 
 **Prerequisites (all platforms):** the Flutter SDK (Dart **3.11+**, which Flutter 3.41 onward provides), then the platform-specific toolchain below. After installing the toolchain, fetch dependencies once:
 
@@ -125,6 +151,8 @@ Run `flutter doctor` to confirm your target platform shows no outstanding issues
 
 ### Web (any OS)
 
+> **This cannot reach the server.** `flutter run -d chrome` serves the page from its own port, and `/ws` refuses a page whose origin is not the server's (see [§3.1](#31-bundling-the-web-client-into-the-server)) — the connect attempt gets a 403 whatever address you type. Use it for UI work with no server, and use `make web` in `server/` to run the web client against a real server.
+
 1. Install Chrome or Chromium.
 2. Run:
 
@@ -152,6 +180,8 @@ On the **Connect** screen, enter the server's `host:port`:
 - client on a separate device → the server's LAN or Tailscale IP / `7878`
 
 The last successful address is remembered and prefilled on the next launch. The transport is cleartext `ws://` for v1 (reach the server by LAN IP or over Tailscale, which provides the encrypted link).
+
+**In a browser, only one address works**: the one the page was served from, which is already prefilled. `/ws` compares the request's `Origin` against its `Host`, so a page served from `192.168.1.50:7878` gets a 403 if you point it at the same server's tailnet address instead. The fields are editable because the same screen runs on native builds, where any reachable address is fine.
 
 ---
 
@@ -205,15 +235,104 @@ COMPANION_SATELLITE_ADDR=127.0.0.1:16622 scripts/companion-live-test.sh   # use 
 
 CI runs this same script against both versions (see the workflows README), so a local run and a CI run do the same thing. The test is skipped by a plain `go test ./...` unless `COMPANION_SATELLITE_ADDR` is set, which keeps the normal suite hermetic.
 
+### The dev stack's own checks
+
+```sh
+scripts/devstack-test.sh
+```
+
+Covers the judgements [`devstack.sh`](../scripts/devstack.sh) acts on — whether the pidfile names the server rather than whatever reused its number, whether Companion is answering rather than merely accepting, and what the server log says about the surface. Starts no containers and writes only under its own scratch directory.
+
 ---
 
 ## 7. A minimal end-to-end run
 
-On a Mac or Windows laptop, to see the control surface working against your real Companion:
+On a Mac or Windows laptop, to see the control surface working against your real Companion. (To do the same with no hardware and no local Companion install, use the dev stack in [§8](#8-dev-stack-the-whole-server-side-on-one-host) instead.)
 
 1. Enable Companion's Satellite API (§2) and have a page ready to assign.
-2. `cd server && cp configs/cuebooth.example.toml configs/cuebooth.toml`, point `[companion]` at your Companion, then `./bin/cuebooth-server -config configs/cuebooth.toml` (after `make build`) or `make run`.
+2. `cd server && cp configs/cuebooth.example.toml configs/cuebooth.toml`, point `[companion]` at your Companion, then `make web && make build` and run `./bin/cuebooth-server -config configs/cuebooth.toml`.
 3. In Companion's Surfaces, assign a page to the `cuebooth` surface.
-4. `cd client && flutter run -d <your-platform>`, and connect to the server's `host:7878`.
+4. Open `http://<server-host>:7878` in a browser. The address is already filled in; press Connect.
+
+Step 4 needs no Flutter toolchain on the machine you are driving from. For a native client instead, skip `make web` and run `cd client && flutter run -d <your-platform>`, connecting to the server's `host:7878`.
 
 The buttons that appear are whatever page Companion has assigned to the surface — discovered live, nothing defined in the client.
+
+---
+
+## 8. Dev stack: the whole server side on one host
+
+`scripts/devstack.sh` runs Companion and cuebooth-server together on a development machine and publishes them on that machine's Tailscale address, so a real client on a laptop can drive the real thing without the production PC.
+
+**Linux only.** It detaches the server with `setsid` and identifies it again by `/proc/<pid>/exe`; it refuses to run without `/proc` rather than mistaking a healthy server for a dead one. `python3` is used to read this host's Tailscale DNS name; without it, `DEVSTACK_HOST` defaults to the bind address instead.
+
+```sh
+scripts/devstack.sh up        # start both; prints where to point a client
+scripts/devstack.sh status    # what is up, and whether the surface registered
+scripts/devstack.sh logs server        # or: logs companion
+scripts/devstack.sh restart   # rebuild and restart the server only
+scripts/devstack.sh down      # stop both; Companion's config is kept
+```
+
+`up` pulls a pinned Companion image, starts it with somewhere to keep its config, generates `.devstack/cuebooth.toml`, builds the server from the working tree, and starts it detached — the stack outlives the shell that launched it. Everything the script itself writes lives under `.devstack/`, which is gitignored.
+
+Where Companion's own config lives depends on the engine. Under **podman** it is bind-mounted to `.devstack/companion/`, readable and backup-able on the host. Under **docker** it is in a managed volume named `cuebooth-devstack-config`, because docker has no equivalent of `--userns keep-id` and the image runs as uid 1000. `down` prints whichever applies.
+
+`up` refuses to start when `.devstack/server.pid` names a live process that is not this stack's server — a server started by hand, or one left by another checkout. Starting anyway would overwrite the only handle to it, and the new server could not bind the port regardless.
+
+`up` leaves a running server and a running Companion alone; it does not rebuild either. After editing server code, use `restart`, which builds first and only stops the running server once the build succeeds. Changing `DEVSTACK_COMPANION_VERSION` does recreate the container — `up` compares the running container's image, not just its name — but changing `DEVSTACK_BIND` does not, since the addresses a container publishes are fixed when it is created; `up` warns and `down` then `up` republishes.
+
+**One-time setup, in Companion's web UI:** build a page of buttons (the built-in `internal` connection gives you page navigation and variable displays with no hardware attached), then assign that page to the `cuebooth` surface under **Surfaces**. That config persists across `down`/`up`.
+
+Companion's config directory is shared across image tags, so switching `DEVSTACK_COMPANION_VERSION` runs a different Companion against the same data. `up` warns when the tag has changed since the last run, and warns harder on a downgrade, because the newer version migrates the directory in place.
+
+`up` reuses a running container only when its image *and* its published ports are the ones this run would ask for. A container created before a port knob changed — or before the Satellite port came off the tailnet — is a mismatch, and `up` says so; `down` then `up` recreates it.
+
+Faster, if you have a `.companionconfig` export from a real installation: drop it on **Import/Export → Import**. Exports back to Companion 2.x are accepted — 3.x upgrades them on the way in — so an old backup still works. Two things to know before importing a production export:
+
+- **It carries credentials.** Module passwords (OBS, for one) travel in the export and are readable in Companion's admin UI, which this stack publishes on your tailnet without authentication. Blank them in the JSON first unless you need them, or expect anyone on the tailnet to be able to read them.
+- **Connections will sit in an error state**, because they point at the real deployment's hosts. Buttons still render and presses still route, so the surface is fully exercisable; feedback-driven colours that depend on a live mixer or OBS will not be.
+
+Then, from a laptop on the same tailnet:
+
+```sh
+cd client && flutter run -d macos      # or windows, or a device
+```
+
+…and connect to the `host:7878` that `status` prints.
+
+Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type.
+
+### What it binds, and what it doesn't
+
+By default nothing is published on `0.0.0.0`.
+
+- Companion's **admin UI** is published on loopback and the address `DEVSTACK_BIND` names (by default this host's Tailscale IPv4).
+- Companion's **Satellite port** is published on **loopback only**, whatever `DEVSTACK_BIND` says. The server reaches it over `127.0.0.1`, and nothing off this host needs an endpoint that will hand out the operator's buttons to anyone who sends `ADD-DEVICE`.
+- The **CueBooth server** listens on the `DEVSTACK_BIND` address, because `[server] listen` takes a single address.
+
+So `DEVSTACK_BIND` sets two things, and a wildcard there puts **two unauthenticated services on every interface**: Companion's admin UI, and the server's WebSocket API, which has no in-protocol auth in v1 ([protocol.md](protocol.md) §1). `up` says so when you set one. For the admin port a wildcard replaces the loopback publish rather than joining it, since binding `0.0.0.0` over `127.0.0.1` on the same port does not work.
+
+The generated `.devstack/cuebooth.toml` is kept across runs, so anything that changes between runs — a Tailscale address, any of the port knobs — leaves the file describing the previous one. `up` names each setting that disagrees with what this run would have written; `DEVSTACK_REGENERATE=1` rewrites the file. This matters most for the Satellite port: a config still pointing at `16622` sends the server to whatever holds it, which on a machine that already runs Companion is the operator's own.
+
+Nothing needs to be reachable from the public internet. That holds even for the Restream chat authorization (CB-017): the OAuth callback is a redirect the *operator's browser* follows, not a connection Restream makes inbound, so tailnet reachability is enough — no `tailscale funnel`.
+
+### Knobs
+
+| Variable | Default | |
+|---|---|---|
+| `DEVSTACK_COMPANION_VERSION` | `v3.4.1` | Companion image tag — match the production PC |
+| `DEVSTACK_BIND` | this host's Tailscale IPv4 | address for Companion's admin UI and the server's `listen` |
+| `DEVSTACK_HOST` | this host's Tailscale DNS name | name printed in connect instructions |
+| `DEVSTACK_DIR` | `<repo>/.devstack` | where local state lives |
+| `DEVSTACK_ADMIN_PORT` | `8000` | Companion's admin UI — move it if you already run Companion here |
+| `DEVSTACK_SAT_PORT` | `16622` | Companion's Satellite port |
+| `DEVSTACK_SERVER_PORT` | `7878` | the CueBooth server |
+| `DEVSTACK_REGENERATE` | unset | `1` rewrites `.devstack/cuebooth.toml`, discarding edits |
+| `CONTAINER_ENGINE` | podman, else docker | |
+
+### What it is not
+
+It is not CI, and it does not replace [`scripts/companion-live-test.sh`](../scripts/companion-live-test.sh) (§6) — that pins protocol behaviour against specific Companion versions and runs headless. This is a fixture for driving the system by hand.
+
+The mixer is out of scope: an XR18 has no emulator worth using, so Phase 2 audio work still needs the hardware in front of you.

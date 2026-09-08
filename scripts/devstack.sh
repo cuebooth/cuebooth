@@ -1,0 +1,655 @@
+#!/usr/bin/env bash
+#
+# Run Companion and cuebooth-server on this host, reachable from a laptop over
+# Tailscale, so the system can be driven by a real client without the production
+# PC.
+#
+#   scripts/devstack.sh up        # start both, print where to point a client
+#   scripts/devstack.sh status    # what is running, and whether the surface registered
+#   scripts/devstack.sh logs [companion|server]
+#   scripts/devstack.sh restart   # rebuild and restart the server only
+#   scripts/devstack.sh down      # stop both; Companion's config survives
+#
+# Knobs:
+#   DEVSTACK_COMPANION_VERSION   Companion image tag (default: the production-PC version)
+#   DEVSTACK_BIND                address to reach the stack on, for Companion's admin UI
+#                                and the server's listen address
+#                                (default: this host's Tailscale IPv4)
+#   DEVSTACK_HOST                name printed in connect instructions (default: Tailscale DNS name)
+#   DEVSTACK_DIR                 state directory (default: <repo>/.devstack)
+#   DEVSTACK_REGENERATE          1 rewrites the generated config, discarding edits
+#   DEVSTACK_ADMIN_PORT          Companion admin UI port (default: 8000)
+#   DEVSTACK_SAT_PORT            Companion Satellite port (default: 16622)
+#   DEVSTACK_SERVER_PORT         cuebooth-server port (default: 7878)
+#   CONTAINER_ENGINE             podman or docker (default: whichever is installed)
+#
+# Requires Linux: the server is detached with setsid, and a running server is
+# identified by /proc/<pid>/exe. python3 is used to read the Tailscale DNS name;
+# without it DEVSTACK_HOST falls back to the bind address.
+#
+# This is a manual fixture, not CI. The live protocol tests are
+# scripts/companion-live-test.sh, which pins versions and runs headless.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+STATE_DIR="${DEVSTACK_DIR:-$REPO_ROOT/.devstack}"
+# Physical, not logical: SERVER_BIN below is compared against the image path of
+# a running process, which the kernel reports with every symlink resolved. A
+# checkout reached through a symlinked directory would otherwise never match.
+# -m rather than -f so a state directory that does not exist yet still resolves.
+STATE_DIR="$(readlink -m "$STATE_DIR")"
+COMPANION_DIR="$STATE_DIR/companion"
+CONFIG_FILE="$STATE_DIR/cuebooth.toml"
+SERVER_LOG="$STATE_DIR/server.log"
+SERVER_PID="$STATE_DIR/server.pid"
+SERVER_BIN="$STATE_DIR/cuebooth-server"
+
+VERSION="${DEVSTACK_COMPANION_VERSION:-v3.4.1}"
+IMAGE="ghcr.io/bitfocus/companion/companion:${VERSION}"
+CONTAINER="cuebooth-devstack"
+
+ADMIN_PORT="${DEVSTACK_ADMIN_PORT:-8000}"
+SAT_PORT="${DEVSTACK_SAT_PORT:-16622}"
+SERVER_PORT="${DEVSTACK_SERVER_PORT:-7878}"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+# setsid detaches the server and /proc/<pid>/exe identifies it again later;
+# without /proc the identification silently fails and every `up` reports a
+# server that started fine as having exited.
+[[ -d /proc ]] || die "devstack.sh requires Linux (it identifies the server by /proc/<pid>/exe)"
+
+# usage prints the header comment, from the shebang to the first line that is
+# not a comment. Line numbers would silently truncate the moment a knob is
+# documented.
+usage() {
+  sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+engine() {
+  if [[ -n "${CONTAINER_ENGINE:-}" ]]; then echo "$CONTAINER_ENGINE"; return; fi
+  for candidate in podman docker; do
+    if command -v "$candidate" >/dev/null 2>&1; then echo "$candidate"; return; fi
+  done
+  die "no container engine found (need podman or docker)"
+}
+
+# bind_addr is the address the stack is reachable on besides loopback: where
+# Companion's admin UI is published, and what the server listens on. Neither has
+# authentication, so this deliberately does not default to 0.0.0.0.
+bind_addr() {
+  if [[ -n "${DEVSTACK_BIND:-}" ]]; then echo "$DEVSTACK_BIND"; return; fi
+  local ip
+  ip="$(tailscale_ip)"
+  [[ -n "$ip" ]] || die "no Tailscale IPv4 found; set DEVSTACK_BIND to the address to publish on"
+  echo "$ip"
+}
+
+tailscale_ip() {
+  tailscale ip -4 2>/dev/null | head -1 || true
+}
+
+tailscale_dns() {
+  tailscale status --json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true
+}
+
+# publish_host brackets an IPv6 literal, which -p needs to tell the address
+# apart from the port.
+publish_host() {
+  case "$1" in
+    \[*\]) echo "$1" ;;
+    *:*) echo "[$1]" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# publish_flags is the -p list for a bind address.
+#
+# The Satellite port stays on loopback: the generated config points the server
+# at 127.0.0.1, so nothing off this host needs it. A wildcard bind replaces the
+# loopback publish rather than joining it — binding 0.0.0.0 over 127.0.0.1 on
+# the same port fails outright.
+publish_flags() {
+  local bind="$1" admin sat host
+  sat="-p 127.0.0.1:${SAT_PORT}:16622"
+  admin="-p 127.0.0.1:${ADMIN_PORT}:8000"
+
+  case "$bind" in
+    127.0.0.1 | localhost)
+      echo "$admin $sat"
+      return
+      ;;
+  esac
+
+  host="$(publish_host "$bind")"
+  case "$bind" in
+    0.0.0.0 | "::" | "[::]")
+      # A wildcard admin publish subsumes the loopback one on that port and
+      # cannot sit alongside it, so it replaces it. The Satellite port is a
+      # different port and is unaffected — it stays on loopback.
+      echo "-p ${host}:${ADMIN_PORT}:8000 $sat"
+      return
+      ;;
+  esac
+  echo "$admin $sat -p ${host}:${ADMIN_PORT}:8000"
+}
+
+# warn_wildcard_bind says what a wildcard DEVSTACK_BIND actually exposes.
+# Companion's admin UI and the server's WebSocket API both have no
+# authentication of their own (protocol.md §1), and the server's listen address
+# follows this setting.
+warn_wildcard_bind() {
+  case "${DEVSTACK_BIND:-}" in
+    0.0.0.0 | "::" | "[::]")
+      echo "==> warning: DEVSTACK_BIND=${DEVSTACK_BIND} publishes Companion's admin UI and the" >&2
+      echo "    server's API on every interface, and neither has authentication" >&2
+      ;;
+  esac
+}
+
+# host_name is what a client should be pointed at.
+#
+# The tailnet DNS name resolves to this host's Tailscale address, so it is only
+# the right thing to print when the stack is actually bound there — a wildcard,
+# or that address itself. Under any other DEVSTACK_BIND, including loopback,
+# printing it names a host nothing is listening on.
+host_name() {
+  if [[ -n "${DEVSTACK_HOST:-}" ]]; then echo "$DEVSTACK_HOST"; return; fi
+
+  local bind dns
+  bind="$(bind_addr)"
+  case "$bind" in
+    0.0.0.0 | "::" | "[::]") ;;
+    *) [[ "$bind" == "$(tailscale_ip)" ]] || { echo "$bind"; return; } ;;
+  esac
+
+  dns="$(tailscale_dns)"
+  if [[ -n "$dns" ]]; then echo "$dns"; else echo "$bind"; fi
+}
+
+write_config() {
+  local bind="$1"
+  if [[ -f "$CONFIG_FILE" && "${DEVSTACK_REGENERATE:-0}" != "1" ]]; then
+    echo "==> keeping existing $CONFIG_FILE (DEVSTACK_REGENERATE=1 to replace)"
+    check_config_drift "$bind"
+    return
+  fi
+  cat > "$CONFIG_FILE" <<EOF
+# Generated by scripts/devstack.sh. Edit freely — it is only rewritten when
+# DEVSTACK_REGENERATE=1.
+
+[server]
+listen = "$(publish_host "${bind}"):${SERVER_PORT}"
+
+[companion]
+base_url = "http://127.0.0.1:${ADMIN_PORT}"
+
+[companion.satellite]
+addr = "127.0.0.1:${SAT_PORT}"
+device_id = "cuebooth"
+rows = 4
+cols = 8
+bitmap_size = 72
+
+# Preset names the client and slide rules use, pointed at page 1 of whatever
+# you set up in Companion. Adjust the coordinates to match your buttons;
+# "page/row/column", page 1-based, row and column 0-based.
+[presets.scene.camera-only]
+companion_button = "1/0/0"
+
+[presets.scene.camera-with-slides]
+companion_button = "1/0/1"
+
+[presets.streaming.start]
+companion_button = "1/1/0"
+
+[presets.streaming.stop]
+companion_button = "1/1/1"
+
+[presets.recording.start]
+companion_button = "1/2/0"
+
+[presets.recording.stop]
+companion_button = "1/2/1"
+EOF
+  echo "==> wrote $CONFIG_FILE"
+}
+
+# check_config_drift warns when the kept config disagrees with what this run
+# would have written. Anything that changes between runs — a Tailscale address,
+# any of the port knobs — otherwise takes effect for the container and not for
+# the server.
+check_config_drift() {
+  local bind="$1" drifted=0
+
+  config_value listen "$(publish_host "${bind}"):${SERVER_PORT}" || drifted=1
+  config_value base_url "http://127.0.0.1:${ADMIN_PORT}" || drifted=1
+  config_value addr "127.0.0.1:${SAT_PORT}" || drifted=1
+
+  [[ "$drifted" == 1 ]] || return 0
+  echo "    a server started from it will use those, not this run's settings" >&2
+  echo "    DEVSTACK_REGENERATE=1 rewrites the config" >&2
+}
+
+# config_value compares one setting in the kept config against what this run
+# would have written, and names it if they differ. Checking only the listen
+# address left a changed DEVSTACK_SAT_PORT silently ignored, and the server then
+# dials whatever holds the old port — which on a machine that already runs
+# Companion is the operator's own.
+config_value() {
+  local key="$1" want="$2" found
+  found="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CONFIG_FILE" | head -1)"
+  [[ -n "$found" ]] || return 0
+  [[ "$found" == "$want" ]] && return 0
+  echo "==> warning: $CONFIG_FILE has ${key} = \"${found}\", this run would use \"${want}\"" >&2
+  return 1
+}
+
+companion_running() {
+  [[ -n "$(companion_field '{{.Names}}')" ]]
+}
+
+# companion_field reads one field of the running container, or nothing if there
+# is none.
+companion_field() {
+  local eng
+  # Resolved outside the pipeline: engine() dies when nothing is installed, and
+  # inside the substitution that message would go to the discarded stderr.
+  eng="$(engine)"
+  "$eng" ps --filter "name=^${CONTAINER}$" --format "$1" 2>/dev/null | head -1
+}
+
+# companion_is_current reports whether the running container came from the image
+# this run wants. Matching on the name alone would leave a container built from
+# an older DEVSTACK_COMPANION_VERSION serving, which is the difference between
+# testing an upgrade and believing you have.
+companion_is_current() {
+  local running
+  running="$(companion_field '{{.Image}}')"
+  [[ -n "$running" ]] || return 1
+  [[ "$running" == "$IMAGE" || "$running" == "docker.io/$IMAGE" ]]
+}
+
+# server_running is true only when the pidfile names a live process that is
+# this stack's server. A pid number is reused once the process is gone, so a
+# bare kill -0 answers for whatever inherited it — enough for `down` to kill an
+# unrelated process and for `status` to report a server that is not there.
+server_running() {
+  local pid
+  [[ -f "$SERVER_PID" ]] || return 1
+  pid="$(cat "$SERVER_PID" 2>/dev/null)" || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  server_pid_matches "$pid"
+}
+
+# server_pid_matches compares the process's own image against the binary this
+# script builds. A rebuild replaces that file by rename, so the kernel reports
+# the old path with " (deleted)" appended while the process still runs.
+server_pid_matches() {
+  local exe
+  exe="$(readlink "/proc/$1/exe" 2>/dev/null || true)"
+  exe="${exe% (deleted)}"
+  [[ -n "$exe" && "$exe" == "$SERVER_BIN" ]]
+}
+
+start_companion() {
+  local bind="$1" eng
+  eng="$(engine)"
+  if companion_running; then
+    if companion_is_current; then
+      companion_publishes "$bind" || echo "==> warning: companion publishes $(companion_field '{{.Ports}}'), not what this run would ask for — 'down' then 'up' to republish" >&2
+      echo "==> companion already running"
+      return
+    fi
+    echo "==> companion is running $(companion_field '{{.Image}}'), not $IMAGE — recreating"
+  fi
+  # Pull before removing anything: a pull that fails on an offline machine
+  # would otherwise leave no container and no way to start one.
+  echo "==> pulling $IMAGE"
+  if ! "$eng" pull "$IMAGE" >/dev/null 2>&1; then
+    "$eng" image inspect "$IMAGE" >/dev/null 2>&1 \
+      || die "could not pull $IMAGE, and there is no local copy to fall back on"
+    echo "==> pull failed; using the local copy of $IMAGE"
+  fi
+
+  "$eng" stop -t 15 "$CONTAINER" >/dev/null 2>&1 || true
+  "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  mkdir -p "$COMPANION_DIR"
+
+  # The image runs as uid 1000. Under rootless podman that maps to a subuid, so
+  # a directory owned by the invoking user is not writable inside the container;
+  # keep-id maps them onto each other, which also leaves the config readable on
+  # the host. Docker has no equivalent, so it gets a managed volume instead —
+  # persistent either way, just less convenient to inspect.
+  local storage=()
+  if [[ "$(basename "$eng")" == "podman" ]]; then
+    storage=(--userns "keep-id:uid=1000,gid=1000" -v "$COMPANION_DIR:/companion:Z")
+  else
+    storage=(-v "cuebooth-devstack-config:/companion")
+  fi
+
+  local publish=()
+  read -r -a publish <<< "$(publish_flags "$bind")"
+
+  check_config_version
+
+  echo "==> starting companion"
+  "$eng" run -d --name "$CONTAINER" \
+    "${storage[@]}" \
+    "${publish[@]}" \
+    "$IMAGE" >/dev/null
+
+  echo -n "==> waiting for companion's satellite port"
+  local deadline=$((SECONDS + 90))
+  while ((SECONDS < deadline)); do
+    if companion_ready; then
+      echo " ok"
+      return
+    fi
+    echo -n "."
+    sleep 1
+  done
+  echo
+  die "companion did not answer on ${SAT_PORT} within 90s — check: $eng logs $CONTAINER"
+}
+
+# check_config_version warns when Companion's config directory was last used by
+# a different image tag. The directory is shared across tags — moving it per
+# tag would look like losing a config that took real work to set up — but a
+# newer Companion migrates it in place, and the older one then reads what the
+# newer one wrote.
+check_config_version() {
+  local marker="$STATE_DIR/companion-version" previous
+  previous="$(cat "$marker" 2>/dev/null || true)"
+  if [[ -n "$previous" && "$previous" != "$VERSION" ]]; then
+    echo "==> warning: $(config_home) was last used by Companion $previous, now starting $VERSION" >&2
+    # Compared as versions, not as strings: "v9.0.0" sorts after "v10.0.0".
+    if [[ "$(printf '%s\n%s\n' "$previous" "$VERSION" | sort -V | tail -1)" == "$previous" ]]; then
+      echo "    that is a downgrade; $previous may have migrated the config in place" >&2
+    fi
+  fi
+  echo "$VERSION" > "$marker"
+}
+
+# companion_publishes reports whether the running container publishes exactly
+# what this run would ask for.
+#
+# `up` recomputes the publish list every run, but a container keeps the one it
+# was created with — so the connect instructions can name an address nothing
+# listens on, a changed port knob can be silently ignored, and a container
+# created before the Satellite port came off the tailnet keeps it there.
+# Extra mappings count as a mismatch for that last reason.
+companion_publishes() {
+  local ports mapping wanted=0 published
+  ports="$(companion_field '{{.Ports}}')"
+
+  # shellcheck disable=SC2013  # publish_flags emits a plain space-separated list
+  for mapping in $(publish_flags "$1"); do
+    [[ "$mapping" == "-p" ]] && continue
+    wanted=$((wanted + 1))
+    # Trailing container port dropped: what matters is the host side.
+    grep -qF -- "${mapping%:*}->" <<< "$ports" || return 1
+  done
+
+  # And no more than this run asks for, so a container created before the
+  # Satellite port came off the tailnet does not pass.
+  published="$(grep -o -- '->' <<< "$ports" | grep -c .)"
+  [[ "$published" == "$wanted" ]]
+}
+
+# companion_ready reports whether Companion is answering on the Satellite port,
+# which a bare connect does not establish: rootless podman's port forwarder
+# binds a published port when the container is created, so the connect succeeds
+# from the moment `run` returns and the wait can never fail. Companion greets a
+# new satellite connection with a BEGIN line, so reading one is the first proof
+# that Companion itself is up.
+companion_ready() {
+  local greeting=""
+  # The group is what carries the redirection: bash reports a failed exec
+  # redirect before applying a 2>/dev/null on the same command, so a refused
+  # connection would print on every poll.
+  { exec 3<>"/dev/tcp/127.0.0.1/${SAT_PORT}"; } 2>/dev/null || return 1
+  # Companion greets as soon as it accepts, so a second is generous; a longer
+  # wait here would make the caller's timeout mean something other than it says.
+  read -r -t 1 greeting <&3 || true
+  { exec 3>&-; } 2>/dev/null || true
+  { exec 3<&-; } 2>/dev/null || true
+  [[ "$greeting" == BEGIN* ]]
+}
+
+# build_server is separate from starting one so a restart can fail on a compile
+# error while the running server is still up.
+build_server() {
+  echo "==> building server"
+  (cd "$REPO_ROOT/server" && go build -o "$SERVER_BIN.new" ./cmd/cuebooth-server)
+  mv "$SERVER_BIN.new" "$SERVER_BIN"
+}
+
+launch_server() {
+  local foreign
+  if server_running; then
+    die "refusing to overwrite $SERVER_PID: pid $(cat "$SERVER_PID") is this stack's server and is still running"
+  fi
+  if foreign="$(unrecognised_server)"; then
+    die "refusing to overwrite $SERVER_PID, which names live pid $foreign"
+  fi
+  echo "==> starting server"
+  # setsid so the stack outlives the shell that started it.
+  setsid "$SERVER_BIN" -config "$CONFIG_FILE" >>"$SERVER_LOG" 2>&1 &
+  echo $! > "$SERVER_PID"
+  sleep 1
+  if ! server_running; then
+    # The pid just written is dead; leaving it lets an unrelated process inherit
+    # the number and make every later up and down refuse to touch anything.
+    rm -f "$SERVER_PID"
+    die "server exited immediately — see $SERVER_LOG"
+  fi
+}
+
+# stop_server does not return until the process is gone. Removing the pidfile
+# while the server still holds the port leaves nothing pointing at it, and the
+# next `up` starts a second one that cannot bind.
+# unrecognised_server prints the pid when the pidfile names a live process that
+# is not this stack's server — a server started by hand, or one left by a
+# different checkout. It is neither "running" nor a stale pidfile, and treating
+# it as the latter loses the only handle to a process holding the port.
+unrecognised_server() {
+  local pid
+  server_running && return 1
+  pid="$(cat "$SERVER_PID" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  echo "$pid"
+}
+
+stop_server() {
+  local pid
+  if ! server_running; then
+    if pid="$(unrecognised_server)"; then
+      echo "==> $SERVER_PID names live pid $pid, which is not $SERVER_BIN — leaving both alone" >&2
+      return 0
+    fi
+    rm -f "$SERVER_PID"
+    return 0
+  fi
+  pid="$(cat "$SERVER_PID")"
+  echo "==> stopping server (pid $pid)"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "==> server ignored SIGTERM; sending SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    # Unkillable for now — blocked in the kernel. Dropping the pidfile here
+    # would lose the handle to a process still holding the port.
+    echo "==> pid $pid survived SIGKILL; keeping $SERVER_PID" >&2
+    return 0
+  fi
+  rm -f "$SERVER_PID"
+}
+
+start_server() {
+  local foreign
+  if server_running; then
+    echo "==> server already running (pid $(cat "$SERVER_PID"))"
+    return
+  fi
+  if foreign="$(unrecognised_server)"; then
+    die "$SERVER_PID names live pid $foreign, which is not $SERVER_BIN.
+    Starting would overwrite the pidfile and lose the only handle to it. If that
+    process is a server holding ${SERVER_PORT}, stop it; if the pid was reused
+    after a reboot and belongs to something else, delete $SERVER_PID."
+  fi
+  build_server
+  launch_server
+}
+
+# surface_registered reports whether Companion currently has the CueBooth
+# surface, which is the difference between "both processes are up" and "they
+# found each other". The server logs one line when a satellite session registers
+# and another when it ends, so the later of the two is the current state — a log
+# that merely contains a registration may be describing a session since dropped.
+surface_registered() {
+  local last
+  # The log spans every run the stack has had, so lines before the newest
+  # "starting" describe a server that is no longer here.
+  # Matched on the whole msg= field rather than anywhere in the line. The server
+  # logs a rejected upgrade's Origin header, which a client sets to whatever it
+  # likes; slog escapes the quotes inside a value, so an unescaped msg="..." can
+  # only be the server's own message.
+  last="$(awk '
+    /msg="cuebooth-server starting"/           { latest = "" }
+    /msg="companion satellite registered"/     { latest = "up" }
+    /msg="companion satellite session ended"/  { latest = "down" }
+    END                                        { print latest }
+  ' "$SERVER_LOG" 2>/dev/null)"
+  [[ "$last" == "up" ]]
+}
+
+# wait_for_surface gives the first connection a moment to land, so `up` reports
+# what will be true a second later rather than what is true immediately.
+wait_for_surface() {
+  for _ in $(seq 1 20); do
+    surface_registered && return 0
+    sleep 1
+  done
+  return 1
+}
+
+cmd_up() {
+  mkdir -p "$STATE_DIR"
+  warn_wildcard_bind
+  # An imported production Companion export carries module credentials.
+  chmod 700 "$STATE_DIR"
+  local bind host
+  bind="$(bind_addr)"
+  host="$(host_name)"
+  write_config "$bind"
+  start_companion "$bind"
+  start_server
+  wait_for_surface || true
+  echo
+  cmd_status
+  cat <<EOF
+
+Next, once only:
+  1. Open Companion at  http://${host}:${ADMIN_PORT}
+  2. Build a page of buttons (Buttons tab). The "internal" connection has
+     useful ones — page up/down, a variable display — with no hardware.
+  3. Surfaces tab: assign a page to the "cuebooth" surface.
+
+Then, from your laptop:
+  cd client && flutter run -d macos      # or windows, or a device
+  ...and connect to  ${host}:${SERVER_PORT}
+
+Not -d chrome: a Flutter dev server serves the page from its own port, and
+/ws refuses a page whose origin is not the server's.
+EOF
+}
+
+cmd_down() {
+  local eng
+  eng="$(engine)"
+  stop_server
+  echo "==> stopping companion (config kept in $(config_home))"
+  # Stopped before removal: Companion writes its config on a timer, and
+  # `docker rm -f` is an immediate SIGKILL with no grace period.
+  "$eng" stop -t 15 "$CONTAINER" >/dev/null 2>&1 || true
+  "$eng" rm -f "$CONTAINER" >/dev/null 2>&1 || true
+}
+
+cmd_restart() {
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+  [[ -f "$CONFIG_FILE" ]] && check_config_drift "$(bind_addr)"
+  # Built before the running server is stopped, so a compile error leaves the
+  # stack as it was rather than down.
+  build_server
+  stop_server
+  launch_server
+  wait_for_surface || true
+  cmd_status
+}
+
+# config_home is where Companion's config actually survives a `down` — a bind
+# mount under podman, a managed volume under docker, which start_companion
+# chooses between.
+config_home() {
+  if [[ "$(basename "$(engine)")" == "podman" ]]; then
+    echo "$COMPANION_DIR"
+  else
+    echo "the $(engine) volume cuebooth-devstack-config"
+  fi
+}
+
+cmd_status() {
+  local host foreign_pid
+  host="$(host_name)"
+  if companion_running; then
+    echo "companion   up     http://${host}:${ADMIN_PORT}   (satellite ${SAT_PORT})"
+  else
+    echo "companion   down"
+  fi
+  if server_running; then
+    echo "server      up     ws://${host}:${SERVER_PORT}/ws   (pid $(cat "$SERVER_PID"))"
+  elif foreign_pid="$(unrecognised_server)"; then
+    echo "server      down   (but pid ${foreign_pid} in $SERVER_PID is alive and is not $SERVER_BIN)"
+  else
+    echo "server      down"
+  fi
+  if companion_running && server_running; then
+    if surface_registered; then
+      echo "surface     registered with Companion — assign it a page in Surfaces"
+    else
+      echo "surface     NOT registered — check $SERVER_LOG and Companion's Satellite API setting"
+    fi
+  fi
+}
+
+cmd_logs() {
+  case "${1:-server}" in
+    companion) "$(engine)" logs -f "$CONTAINER" ;;
+    server)    tail -f "$SERVER_LOG" ;;
+    *)         die "logs takes 'companion' or 'server'" ;;
+  esac
+}
+
+# Sourcing this file defines its functions and dispatches nothing, which is how
+# devstack-test.sh drives them.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    up)      cmd_up ;;
+    down)    cmd_down ;;
+    restart) cmd_restart ;;
+    status)  cmd_status ;;
+    logs)    shift; cmd_logs "$@" ;;
+    *)       usage; exit 1 ;;
+  esac
+fi

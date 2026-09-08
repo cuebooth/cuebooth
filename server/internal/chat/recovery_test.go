@@ -106,6 +106,41 @@ func TestPendingAuthorizationsAreBounded(t *testing.T) {
 	}
 }
 
+// Eviction has to follow the order starts arrived in, and every start minted
+// within one clock tick shares a deadline — which is every start, under a fake
+// clock. Comparing deadlines alone leaves the choice to Go's map iteration, so
+// the assertion above ("the oldest is gone") held only about 98 runs in 100.
+//
+// Asserting the whole eviction order is what makes that deterministic: a
+// comparator that picks arbitrarily among ties would have to reproduce one
+// exact permutation of 64 to pass.
+func TestPendingEvictionFollowsArrivalOrder(t *testing.T) {
+	r, _, _ := newTestProvider(t, newFakeRestream())
+
+	minted := make([]string, 0, maxPendingLogins)
+	for range maxPendingLogins {
+		u, err := r.LoginURL()
+		if err != nil {
+			t.Fatalf("LoginURL: %v", err)
+		}
+		minted = append(minted, stateFrom(t, u))
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range len(minted) - 1 {
+		r.evictOldestPendingLocked()
+		if _, still := r.pending[minted[i]]; still {
+			t.Fatalf("eviction %d left the oldest start in place", i)
+		}
+		for _, later := range minted[i+1:] {
+			if _, ok := r.pending[later]; !ok {
+				t.Fatalf("eviction %d took a later start instead of the oldest", i)
+			}
+		}
+	}
+}
+
 // An access token Restream retires early is recoverable without an operator:
 // one refresh distinguishes it from a credential that is genuinely spent.
 func TestEarlyRetiredAccessTokenIsRefreshedOnce(t *testing.T) {

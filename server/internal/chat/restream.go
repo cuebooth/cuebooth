@@ -143,7 +143,11 @@ type Restream struct {
 	// tok is the live credential; pending maps the state parameter of each
 	// started-but-unfinished authorization to its deadline.
 	tok     tokens
-	pending map[string]time.Time
+	pending map[string]pendingLogin
+	// pendingSeq orders starts that share a deadline. Every state minted in one
+	// clock tick expires at the same instant, and eviction has to tell them
+	// apart by age rather than by whichever the map hands over first.
+	pendingSeq uint64
 	// refusedUntil holds off further attempts after the platform refused a
 	// freshly refreshed token, so a panel left open on a misconfigured
 	// application does not rotate the credential once per state change.
@@ -218,7 +222,7 @@ func NewRestream(cfg RestreamConfig, opts ...RestreamOption) (*Restream, error) 
 		http:    &http.Client{},
 		logger:  slog.Default(),
 		now:     time.Now,
-		pending: make(map[string]time.Time),
+		pending: make(map[string]pendingLogin),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -273,7 +277,8 @@ func (r *Restream) LoginURL() (string, error) {
 	for len(r.pending) >= maxPendingLogins {
 		r.evictOldestPendingLocked()
 	}
-	r.pending[state] = now.Add(loginStateTTL)
+	r.pendingSeq++
+	r.pending[state] = pendingLogin{expires: now.Add(loginStateTTL), seq: r.pendingSeq}
 	r.mu.Unlock()
 
 	q := url.Values{}
@@ -295,11 +300,11 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	now := r.now()
 	r.mu.Lock()
 	r.prunePendingLocked(now)
-	deadline, ok := r.pending[state]
+	login, ok := r.pending[state]
 	delete(r.pending, state)
 	r.mu.Unlock()
 
-	if !ok || now.After(deadline) {
+	if !ok || now.After(login.expires) {
 		return errors.New("restream callback state is unknown or expired")
 	}
 
@@ -642,11 +647,17 @@ func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, erro
 	return tok, nil
 }
 
+// pendingLogin is one authorization started and not yet completed.
+type pendingLogin struct {
+	expires time.Time
+	seq     uint64
+}
+
 // prunePendingLocked drops authorization states that were never completed.
 // Callers hold r.mu.
 func (r *Restream) prunePendingLocked(now time.Time) {
-	for state, deadline := range r.pending {
-		if now.After(deadline) {
+	for state, login := range r.pending {
+		if now.After(login.expires) {
 			delete(r.pending, state)
 		}
 	}
@@ -657,10 +668,10 @@ func (r *Restream) prunePendingLocked(now time.Time) {
 // hold r.mu.
 func (r *Restream) evictOldestPendingLocked() {
 	var oldest string
-	var deadline time.Time
-	for state, d := range r.pending {
-		if oldest == "" || d.Before(deadline) {
-			oldest, deadline = state, d
+	var found pendingLogin
+	for state, login := range r.pending {
+		if oldest == "" || login.seq < found.seq {
+			oldest, found = state, login
 		}
 	}
 	delete(r.pending, oldest)

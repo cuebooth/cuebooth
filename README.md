@@ -18,9 +18,15 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 ## Status
 
-**Phase 1 — server core and Companion integration — is implemented.** The Go server loads a TOML deployment config, drives Bitfocus Companion over its HTTP API, registers a Companion Satellite surface whose buttons the Flutter client renders natively, serves the WebSocket protocol in [`docs/protocol.md`](docs/protocol.md), and surfaces the stream's chat. Chat renders inside the app on iPad, iPhone, Android, and macOS; on Windows, Linux, and Web it opens in the system browser instead, because Flutter endorses no webview implementation for those platforms. CI exercises the Satellite integration against real Companion releases; none of it has yet been run against a full production rig.
+**Phase 1 — the Companion control surface — works.** The server registers with Bitfocus Companion as a Satellite surface, streams the rendered button grid to the Flutter client over a WebSocket, and routes presses back. Companion's own page navigation comes with it, so a surface that links to other surfaces behaves as it does on hardware. The server also carries the web client and serves it at `/`, so a browser on any machine on the network is a working client with nothing installed.
 
-Phases 2 onward are designed but **not** implemented — direct OSC audio control and metering, VISCA camera control, the PowerPoint sidecar and slide-driven automation, HID clicker handling, and video preview relay. Those server packages are placeholders today. See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
+It also surfaces the stream's chat. That renders inside the app on iPad, iPhone, Android and macOS; on Windows, Linux and Web it opens in the system browser instead, because Flutter endorses no webview implementation for those platforms.
+
+CI exercises the Satellite integration against real Companion releases. None of it has yet been run against a full production rig.
+
+Phases 2 onward — direct OSC audio control and metering, VISCA camera, the slide engine, HID input, video preview — are not implemented; `server/internal/{audio,camera,obs,slides,hid}` are package stubs, and the C# sidecar does not yet drive anything. There are no prebuilt downloads: [building from source](docs/development.md) is the only way to run it, and release packaging is tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71).
+
+See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
 ## Repository Layout
 
@@ -30,7 +36,7 @@ cuebooth/
 ├── server/                  Go server (orchestration + automation)
 ├── client/                  Flutter app (cross-platform control surface)
 ├── sidecar/                 C# PowerPoint COM monitor
-└── .github/workflows/       CI: build server, client, sidecar, and Windows installers
+└── .github/workflows/       CI: vet/build/test the server, analyze/test the client, build the sidecar
 ```
 
 ## Distribution
