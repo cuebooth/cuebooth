@@ -36,15 +36,84 @@ const chatCallbackPath = config.ChatCallbackPath
 // deadline, so a rotation is still read back after this gives up.
 const chatMintDeadline = 40 * time.Second
 
+// chatCompleteDeadline bounds one callback the same way. Without it the handler
+// waits on the exchange mutex for however long the queue ahead of it takes, and
+// then on a POST that deliberately ignores client cancellation.
+const chatCompleteDeadline = 40 * time.Second
+
+// chatCallbackSlots bounds callbacks completing at once. Each holds a goroutine,
+// its inbound connection, and an authorization_code POST carrying the operator's
+// client credentials — so an unbounded queue is an unauthenticated amplifier
+// onto the operator's own Restream application.
+const chatCallbackSlots = 4
+
+// Starting an authorization allocates a pending state in a bounded map, and the
+// map evicts to stay bounded. Without a rate the eviction is the weapon: enough
+// starts inside the seconds an operator spends at the consent screen and their
+// own state is gone by the time they come back, leaving them with a failure
+// page that tells them to try again, forever. A person starts one authorization
+// and occasionally retries it.
+const (
+	chatStartBurst = 5
+	chatStartEvery = 12 * time.Second
+)
+
+// chatPublicHost is the address chat answers on, from the public_url the config
+// requires whenever chat is enabled.
+func (s *Server) chatPublicHost() string {
+	u, err := url.Parse(strings.TrimRight(s.cfg.Chat.PublicURL, "/"))
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// chatHostAllowed reports whether a request arrived on that address.
+//
+// Nothing else in this server inspects Host, and the WebSocket's same-origin
+// policy cannot stand in for it: that compares Origin against Host, both of
+// which the requesting page supplies, so a page that has made this server's
+// address into its own name satisfies it and is same-origin by the browser's
+// own rules. Against an API that presses buttons in a room, the network is a
+// fair boundary. Against a route that hands out a credential which keeps
+// working after the attacker has gone home, it is not.
+func (s *Server) chatHostAllowed(r *http.Request) bool {
+	public := s.chatPublicHost()
+	return public == "" || strings.EqualFold(public, r.Host)
+}
+
+// chatSiteAllowed rejects a request a browser has told us came from another
+// site. An absent header is allowed: a native client, curl, or an older browser
+// sends none, and chatHostAllowed is what covers those.
+func chatSiteAllowed(r *http.Request) bool {
+	return r.Header.Get("Sec-Fetch-Site") != "cross-site"
+}
+
+// chatGuard applies both to one request, answering it when either refuses.
+func (s *Server) chatGuard(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if !chatSiteAllowed(r) {
+		http.Error(w, "cross-site requests are not accepted here", http.StatusForbidden)
+		return false
+	}
+	if !s.chatHostAllowed(r) {
+		http.Error(w, "not the configured chat address", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // serveChatURL mints a chat URL for a client about to display chat.
 //
 // The client calls this each time it needs one rather than caching: the token
 // inside the URL is the platform's to expire, and minting another is a cheap
 // server-side refresh instead of an operator re-authorizing.
 func (s *Server) serveChatURL(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !s.chatGuard(w, r) {
 		return
 	}
 
@@ -85,13 +154,27 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !chatSiteAllowed(r) {
+		http.Error(w, "cross-site requests are not accepted here", http.StatusForbidden)
+		return
+	}
 
 	// The callback lands on the configured public URL, so a start that arrived
-	// anywhere else is sent there first. It keeps the whole handshake on one
-	// address, and surfaces a public_url the operator's browser cannot reach at
-	// the point they are standing in front of it.
+	// anywhere else is sent there first rather than refused: it keeps the whole
+	// handshake on one address, and surfaces a public_url the operator's browser
+	// cannot reach at the point they are standing in front of it. After the
+	// redirect the Host matches, so this cannot loop.
 	if target, ok := s.chatAuthPublicRedirect(r); ok {
 		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+
+	// Rate-limited only once the address is settled, so a redirect toward
+	// public_url does not spend the operator's budget.
+	if !s.chatStarts.allow(time.Now()) {
+		w.Header().Set("Retry-After", "12")
+		http.Error(w, "too many authorization attempts; wait a moment and try again",
+			http.StatusTooManyRequests)
 		return
 	}
 
@@ -107,9 +190,17 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 // serveChatAuthCallback completes authorization from the platform's redirect.
 // It renders a page rather than JSON because the operator's browser lands here.
 func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !s.chatGuard(w, r) {
+		return
+	}
+
+	// One slot per exchange in flight. Restream redirects one browser here, so
+	// a queue is something else.
+	select {
+	case s.chatCallbacks <- struct{}{}:
+		defer func() { <-s.chatCallbacks }()
+	default:
+		http.Error(w, "too many authorizations in flight", http.StatusTooManyRequests)
 		return
 	}
 
@@ -121,7 +212,10 @@ func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.chat.Complete(r.Context(), code, r.URL.Query().Get("state")); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), chatCompleteDeadline)
+	defer cancel()
+
+	if err := s.chat.Complete(ctx, code, r.URL.Query().Get("state")); err != nil {
 		s.logger.Error("chat authorization failed", "provider", s.chat.Name(), "err", err)
 		// A missing scope is the one failure the operator can act on directly, so
 		// the page names it rather than sending them round the same loop.
@@ -160,25 +254,14 @@ func (s *Server) publishChatStatus() {
 	}
 }
 
-// chatAuthViaPublic marks a start request that has already been sent to the
-// public URL, so a Host that still doesn't match cannot loop.
-const chatAuthViaPublic = "via_public"
-
 // chatAuthPublicRedirect reports where to send a start request that arrived at
 // an address other than the configured public URL, and whether to send it.
 func (s *Server) chatAuthPublicRedirect(r *http.Request) (string, bool) {
-	if r.URL.Query().Get(chatAuthViaPublic) != "" {
-		return "", false
-	}
 	public := strings.TrimRight(s.cfg.Chat.PublicURL, "/")
-	if public == "" {
+	if public == "" || s.chatHostAllowed(r) {
 		return "", false
 	}
-	u, err := url.Parse(public)
-	if err != nil || u.Host == "" || strings.EqualFold(u.Host, r.Host) {
-		return "", false
-	}
-	return public + chatAuthPath + "?" + chatAuthViaPublic + "=1", true
+	return public + chatAuthPath, true
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
@@ -214,6 +297,10 @@ var chatCallbackPage = template.Must(template.New("chat-callback").Parse(`<!doct
 
 func (s *Server) renderChatCallback(w http.ResponseWriter, code int, title, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// This page's own URL carries the authorization code, so it is kept out of
+	// shared caches and out of any Referer the page could ever send.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(code)
 	if err := chatCallbackPage.Execute(w, struct{ Title, Message string }{title, message}); err != nil {
 		s.logger.Error("could not render chat callback page", "err", err)

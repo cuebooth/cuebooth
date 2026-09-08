@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,14 +25,33 @@ type fakeChat struct {
 	loginErr    error
 	completeErr error
 	completes   int
+
+	// completeBlock parks Complete until it is closed, and reached counts how
+	// many calls got that far — so a test can hold callbacks in flight and
+	// reach the handler's cap the way a flood would.
+	mu            sync.Mutex
+	completeBlock chan struct{}
+	reachedCount  int
 	// urlDeadline records whether the context the handler passed carried one,
 	// and how long it had left.
 	urlHadDeadline bool
 	urlBudget      time.Duration
 }
 
-func (f *fakeChat) Name() string     { return "fake" }
-func (f *fakeChat) Authorized() bool { return f.authorized }
+// reached reports how many calls have entered Complete.
+func (f *fakeChat) reached() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reachedCount
+}
+
+func (f *fakeChat) Name() string { return "fake" }
+
+func (f *fakeChat) Authorized() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authorized
+}
 
 func (f *fakeChat) URL(ctx context.Context) (string, error) {
 	if deadline, ok := ctx.Deadline(); ok {
@@ -55,6 +75,16 @@ func (f *fakeChat) LoginURL() (string, error) {
 }
 
 func (f *fakeChat) Complete(_ context.Context, code, state string) error {
+	if f.completeBlock != nil {
+		f.mu.Lock()
+		f.reachedCount++
+		f.mu.Unlock()
+		<-f.completeBlock
+	}
+	// Guarded because TestChatCallbacksAreBounded drives several at once, which
+	// is the only way to reach the handler's cap through the handler.
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.completes++
 	if f.completeErr != nil {
 		return f.completeErr
@@ -297,20 +327,39 @@ func TestChatAuthStartRedirectsToThePublicURLFirst(t *testing.T) {
 		t.Fatalf("status = %d, want 302", resp.StatusCode)
 	}
 	got := resp.Header.Get("Location")
-	want := "http://production-pc.tailnet.test:7878" + chatAuthPath + "?" + chatAuthViaPublic + "=1"
+	want := "http://production-pc.tailnet.test:7878" + chatAuthPath
 	if got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
 
-	// Arriving with the marker must not bounce again, whatever the Host, or a
-	// proxy that rewrites it would loop the browser forever.
-	marked, err := client.Get(hs.URL + chatAuthPath + "?" + chatAuthViaPublic + "=1")
-	if err != nil {
-		t.Fatalf("GET marked: %v", err)
+	// Nothing in the redirect target says "already redirected". It used to
+	// carry a marker that suppressed the host comparison on arrival, which any
+	// caller could set for itself — turning the comparison off is what let a
+	// request mint a pending state from an address the server had just said was
+	// not its own. Arriving at the public host is what stops the bounce, and
+	// the request has to actually arrive there.
+	if strings.Contains(got, "?") {
+		t.Errorf("Location = %q carries a query the caller could forge", got)
 	}
-	marked.Body.Close()
-	if loc := marked.Header.Get("Location"); loc != provider.loginURL {
-		t.Errorf("marked request redirected to %q, want the platform login %q", loc, provider.loginURL)
+
+	arrived, err := client.Get(hs.URL + chatAuthPath)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	arrived.Body.Close()
+	arrivedReq, err := http.NewRequest(http.MethodGet, hs.URL+chatAuthPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	arrivedReq.Host = "production-pc.tailnet.test:7878"
+	onPublic, err := client.Do(arrivedReq)
+	if err != nil {
+		t.Fatalf("GET on the public host: %v", err)
+	}
+	onPublic.Body.Close()
+	if loc := onPublic.Header.Get("Location"); loc != provider.loginURL {
+		t.Errorf("a request on the public host redirected to %q, want the platform login %q",
+			loc, provider.loginURL)
 	}
 }
 

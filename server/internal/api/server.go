@@ -65,6 +65,13 @@ type Server struct {
 	// so shutdown can wait for them — http.Server.Shutdown does not wait for
 	// hijacked connections.
 	conns sync.WaitGroup
+
+	// chatStarts bounds how fast authorizations may be started, and
+	// chatCallbacks how many may be completing at once. Both routes are
+	// unauthenticated by design (protocol.md §11), so neither is bounded by
+	// anything else.
+	chatStarts    *rateLimiter
+	chatCallbacks chan struct{}
 }
 
 // Option configures a Server.
@@ -142,6 +149,9 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 		logger:   slog.Default(),
 		version:  "0.1.0",
 		serverID: hostname,
+
+		chatStarts:    newRateLimiter(chatStartBurst, chatStartEvery),
+		chatCallbacks: make(chan struct{}, chatCallbackSlots),
 	}
 	s.dispatcher = newCompanionDispatcher(cfg, comp)
 	for _, opt := range opts {
@@ -176,7 +186,24 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 }
 
 // Handler exposes the HTTP handler for tests (httptest) and embedding.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return withCommonHeaders(s.mux) }
+
+// withCommonHeaders applies what holds for every response this server makes.
+//
+// These used to be set by the web UI's own handler, which meant they covered
+// the routes mounted under "/" and nothing registered ahead of it — so the chat
+// routes, including the HTML page the OAuth callback renders, carried none of
+// them. Setting them for the whole listener is what makes the comment on them
+// true, and stops the next route added inheriting nothing.
+func withCommonHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
 
 // applyState mutates the store; the Store observer (set in NewServer) broadcasts
 // the resulting delta in revision order. This is the single funnel for
@@ -207,8 +234,14 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	}
 
 	s.httpServer = &http.Server{
-		Handler:     s.mux,
+		Handler:     withCommonHeaders(s.mux),
 		BaseContext: func(net.Listener) context.Context { return ctx },
+
+		// A connection that opens and then says nothing costs a goroutine and a
+		// file descriptor until it does. Nothing else bounds that, and the
+		// listener is reachable by anything on the network.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errc := make(chan error, 1)

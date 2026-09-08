@@ -539,6 +539,19 @@ void main() {
       );
     });
 
+    // The panel URL carries a credential. A link that kept the host but dropped
+    // to http:// would stay in the panel and put it on the wire in the clear.
+    test('a downgrade to http on the same host does not stay', () {
+      expect(
+        chatNavigationStaysInPanel(
+          requestUrl: 'http://chat.restream.io/embed?token=def',
+          panelUrl: panel,
+          isMainFrame: true,
+        ),
+        isFalse,
+      );
+    });
+
     test('sends a link to another host out to the browser', () {
       expect(
         chatNavigationStaysInPanel(

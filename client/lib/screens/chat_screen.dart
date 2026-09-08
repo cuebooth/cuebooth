@@ -47,10 +47,15 @@ bool chatNavigationStaysInPanel({
   required bool isMainFrame,
 }) {
   if (!isMainFrame) return true;
-  final target = Uri.tryParse(requestUrl)?.host;
-  final panel = Uri.tryParse(panelUrl)?.host;
+  final target = Uri.tryParse(requestUrl);
+  final panel = Uri.tryParse(panelUrl);
   if (target == null || panel == null) return false;
-  return target.isNotEmpty && target == panel;
+  // Scheme as well as host: the panel URL carries a credential, and a link that
+  // kept the host but dropped to http:// would stay in the panel and put that
+  // credential on the wire in the clear.
+  return target.host.isNotEmpty &&
+      target.host == panel.host &&
+      target.scheme == panel.scheme;
 }
 
 /// Hands a link that leaves the panel to the platform browser.

@@ -319,6 +319,9 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
+	r.beginExchange()
+	defer r.endExchange()
+
 	tok, err := r.postToken(ctx, form)
 	if err != nil {
 		// A rejected code says nothing about the credential already held, so an
@@ -450,6 +453,14 @@ func (r *Restream) mint(ctx context.Context, retire string) (chatURL, used strin
 // accessToken returns a usable bearer token, refreshing when the held one is
 // spent or close enough to expiry that a request could outlive it.
 func (r *Restream) accessToken(ctx context.Context, retire string) (string, error) {
+	// Answered without refreshMu when the held token is already usable. Taking
+	// it unconditionally puts every mint behind whatever exchange happens to
+	// hold it — and Complete holds it across a full round trip, on a route
+	// anything that can reach the listener may call.
+	if tok, ok := r.usableToken(retire); ok {
+		return tok, nil
+	}
+
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
@@ -470,6 +481,9 @@ func (r *Restream) accessToken(ctx context.Context, retire string) (string, erro
 	if !forced && tok.AccessToken != "" && now.Add(refreshSkew).Before(tok.AccessExpiry) {
 		return tok.AccessToken, nil
 	}
+
+	r.beginExchange()
+	defer r.endExchange()
 
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -495,8 +509,50 @@ func (r *Restream) accessToken(ctx context.Context, retire string) (string, erro
 	return fresh.AccessToken, nil
 }
 
-// Drain waits for token requests already issued, so a rotation the platform has
-// performed is read back and persisted before the process exits. It returns
+// beginExchange and endExchange bracket a token exchange *and everything it
+// persists*.
+//
+// Counting only the HTTP request would leave Drain free to return between the
+// platform rotating the credential and the new pair reaching disk — the exact
+// loss Drain exists to prevent, and a silent one: the file still holds a
+// refresh token Restream retired on issuing its replacement, so the next start
+// reports itself authorized and fails on the first mint.
+func (r *Restream) beginExchange() {
+	r.mu.Lock()
+	r.tokenCalls++
+	r.mu.Unlock()
+}
+
+func (r *Restream) endExchange() {
+	r.mu.Lock()
+	r.tokenCalls--
+	r.mu.Unlock()
+}
+
+// usableToken reports the held access token when it is good enough to use
+// without refreshing. It answers only in that case, so every path that might
+// exchange still goes through refreshMu.
+func (r *Restream) usableToken(retire string) (string, bool) {
+	r.mu.Lock()
+	tok := r.tok
+	refusedUntil := r.refusedUntil
+	r.mu.Unlock()
+
+	now := r.now()
+	if !tok.valid(now) || now.Before(refusedUntil) {
+		return "", false
+	}
+	if retire != "" && retire == tok.AccessToken {
+		return "", false
+	}
+	if tok.AccessToken == "" || !now.Add(refreshSkew).Before(tok.AccessExpiry) {
+		return "", false
+	}
+	return tok.AccessToken, true
+}
+
+// Drain waits for token exchanges already issued, so a rotation the platform
+// has performed is read back and persisted before the process exits. It returns
 // when they finish or ctx is done.
 func (r *Restream) Drain(ctx context.Context) {
 	tick := time.NewTicker(drainPollInterval)
@@ -571,15 +627,6 @@ func (r *Restream) adopt(t tokens, authorized bool) {
 func (r *Restream) postToken(ctx context.Context, form url.Values) (tokens, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenRequestTimeout)
 	defer cancel()
-
-	r.mu.Lock()
-	r.tokenCalls++
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		r.tokenCalls--
-		r.mu.Unlock()
-	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {

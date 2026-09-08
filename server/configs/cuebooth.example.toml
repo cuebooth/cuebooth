@@ -43,6 +43,12 @@ bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256,
 # on Tailscale, use the Tailscale name — a LAN-only name leaves the approval
 # redirecting somewhere that device cannot load, and nothing completes.
 #
+# It is also the only address the chat routes answer on. The minted chat URL is
+# a live credential, so /chat/* refuses a request that arrived on any other
+# name — which is what a page using DNS rebinding to make this server'"'"'s address
+# its own would present. Reaching the client at several addresses is fine; chat
+# works at this one.
+#
 # token_file holds a live credential. A relative path resolves against this
 # file's directory, which is also where client_secret lives — so restrict that
 # directory's permissions. On Windows the file inherits the directory's ACL;

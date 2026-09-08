@@ -74,6 +74,13 @@ func (s *tokenStore) save(t tokens) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create chat token directory %s: %w", dir, err)
 	}
+	// MkdirAll leaves an existing directory's mode alone, and the default path
+	// puts the token beside the config file — a directory the installer made,
+	// not this one. The token file itself is 0600, so this is about who can
+	// list and replace it. Ignored on failure rather than refused: a directory
+	// owned by someone else is the operator's arrangement to make, and losing
+	// the credential over its mode would be the worse outcome.
+	_ = os.Chmod(dir, 0o700)
 
 	// The temporary file shares a directory with the target so the rename is
 	// within one filesystem, which is what makes it atomic.
