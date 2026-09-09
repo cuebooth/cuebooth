@@ -20,6 +20,10 @@ enum ChatUrlError {
   /// The server is reachable but the chat platform is not answering.
   platformUnavailable,
 
+  /// The server was reached, and refused: chat answers only on the address
+  /// its `chat.public_url` names, and this client is at a different one.
+  wrongAddress,
+
   /// The server could not be reached, or answered something unexpected.
   unreachable,
 }
@@ -75,6 +79,8 @@ class ChatService {
             : ChatUrlResult.ready(url);
       case 409:
         return const ChatUrlResult.failed(ChatUrlError.needsAuth);
+      case 403:
+        return const ChatUrlResult.failed(ChatUrlError.wrongAddress);
       case 502:
         return const ChatUrlResult.failed(ChatUrlError.platformUnavailable);
       default:

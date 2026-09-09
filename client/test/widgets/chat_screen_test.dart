@@ -685,6 +685,28 @@ void main() {
     });
   }
 
+  // A 403 means the server was reached and refused on a ground retrying cannot
+  // change: chat answers only on the address chat.public_url names. Falling
+  // through to "Could not reach the server" would tell the operator to check
+  // their network and offer a button that fails identically every time.
+  testWidgets('names the address when chat is configured for another one',
+      (tester) async {
+    final session = await sessionWithChat(tester, {
+      'provider': 'restream',
+      'status': 'ready',
+    });
+
+    await pumpChat(
+      tester,
+      session: session,
+      chat: serviceReturning(() => http.Response('forbidden', 403)),
+    );
+
+    expect(find.text('Chat is on another address'), findsOneWidget);
+    expect(find.text('Could not reach the server'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'Try again'), findsNothing);
+  });
+
   testWidgets('retrying re-asks the server', (tester) async {
     var calls = 0;
     final session = await sessionWithChat(tester, {

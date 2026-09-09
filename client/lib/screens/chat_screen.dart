@@ -323,6 +323,17 @@ class _ChatScreenState extends State<ChatScreen> {
           detail: 'The server reached out but got no answer. Streaming is unaffected.',
           action: _retryAndReconnect(),
         );
+      // Retrying cannot help: the address is the problem, and the operator
+      // is the only one who can pick a different one.
+      case ChatUrlError.wrongAddress:
+        return const _ChatMessage(
+          icon: Icons.alt_route,
+          title: 'Chat is on another address',
+          detail: 'The chat panel answers only on the address set as '
+              'chat.public_url on the server. Open CueBooth at that address, '
+              'or change the setting to the one you use. Everything else works '
+              'here as normal.',
+        );
       case ChatUrlError.unreachable:
         return _ChatMessage(
           icon: Icons.wifi_off,
