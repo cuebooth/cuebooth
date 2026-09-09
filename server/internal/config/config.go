@@ -84,14 +84,67 @@ type ChatConfig struct {
 	// CUEBOOTH_CHAT_CLIENT_SECRET instead, keeping it out of the config file.
 	ClientID     string `toml:"client_id"`
 	ClientSecret string `toml:"client_secret"`
-	// PublicURL is the address operators reach this server at. The OAuth
-	// redirect is derived from it so the two cannot drift apart; the result must
-	// match a redirect URI registered on the Restream application.
-	PublicURL string `toml:"public_url"`
+	// PublicURL is the addresses operators reach this server at. A server on a
+	// tailnet is often also reachable by LAN address and on localhost at the
+	// production PC itself, and chat answers on any of them.
+	//
+	// The first is the one that reaches Restream: the OAuth redirect is derived
+	// from it so the two cannot drift apart, and the result must match a redirect
+	// URI registered on the application. The rest are addresses this server will
+	// serve chat on, and appear nowhere in the handshake.
+	PublicURL URLList `toml:"public_url"`
 	// TokenFile is where the rotating credential is stored. Restream invalidates
 	// the previous token on every refresh, so this file is state: deleting it
 	// costs a re-authorization.
 	TokenFile string `toml:"token_file"`
+}
+
+// URLList is one address or several. A single string stays valid, because one
+// address is the ordinary case and an array would be ceremony for it.
+type URLList []string
+
+// UnmarshalTOML accepts either form.
+func (l *URLList) UnmarshalTOML(v any) error {
+	switch value := v.(type) {
+	case string:
+		*l = URLList{value}
+		return nil
+	case []any:
+		out := make(URLList, 0, len(value))
+		for i, item := range value {
+			s, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("entry %d is %T, want a string", i+1, item)
+			}
+			out = append(out, s)
+		}
+		*l = out
+		return nil
+	default:
+		return fmt.Errorf("want a string or an array of strings, got %T", v)
+	}
+}
+
+// Primary is the address the OAuth handshake uses. Empty when none is set.
+func (l URLList) Primary() string {
+	if len(l) == 0 {
+		return ""
+	}
+	return strings.TrimRight(l[0], "/")
+}
+
+// Hosts is every configured address's host, for deciding which requests chat
+// will answer.
+func (l URLList) Hosts() []string {
+	hosts := make([]string, 0, len(l))
+	for _, raw := range l {
+		u, err := url.Parse(strings.TrimRight(raw, "/"))
+		if err != nil || u.Host == "" {
+			continue
+		}
+		hosts = append(hosts, u.Host)
+	}
+	return hosts
 }
 
 // ChatSecretEnv supplies chat.client_secret when the config file omits it.
@@ -112,9 +165,11 @@ func (c ChatConfig) Disabled() bool {
 	}
 }
 
-// RedirectURI is the OAuth callback registered with the chat platform.
+// RedirectURI is the OAuth callback registered with the chat platform. It comes
+// from the first public_url: the platform matches it exactly, so only one of
+// them can be it.
 func (c ChatConfig) RedirectURI() string {
-	return strings.TrimRight(c.PublicURL, "/") + ChatCallbackPath
+	return c.PublicURL.Primary() + ChatCallbackPath
 }
 
 // maxSatelliteKeys bounds how many keys a surface may have. A Companion page is
@@ -258,23 +313,36 @@ func (c ChatConfig) validate() error {
 	if c.ClientSecret == "" {
 		return fmt.Errorf("chat.client_secret is required when chat is enabled (or set %s)", ChatSecretEnv)
 	}
-	if c.PublicURL == "" {
+	if len(c.PublicURL) == 0 {
 		return fmt.Errorf("chat.public_url is required when chat is enabled")
 	}
-	// The redirect is built from public_url and must match one registered on the
-	// Restream application, so a value that can't form an absolute URL would only
-	// fail later, at the point an operator is standing in front of a browser.
-	u, err := url.Parse(strings.TrimRight(c.PublicURL, "/"))
-	if err != nil {
-		return fmt.Errorf("chat.public_url is not a valid URL: %w", err)
-	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("chat.public_url must be an absolute http:// or https:// URL, e.g. http://production-pc:7878")
-	}
-	// The callback route is appended to this, so a path here would send the
-	// platform's redirect somewhere the server does not serve.
-	if u.Path != "" {
-		return fmt.Errorf("chat.public_url must not include a path (got %q)", u.Path)
+	// Every entry is validated, not only the first: the rest decide which
+	// requests chat answers, and one that cannot form a host would silently
+	// widen nothing while looking as though it had.
+	for i, raw := range c.PublicURL {
+		where := "chat.public_url"
+		if len(c.PublicURL) > 1 {
+			where = fmt.Sprintf("chat.public_url[%d]", i)
+		}
+		if raw == "" {
+			return fmt.Errorf("%s is empty", where)
+		}
+		// The redirect is built from the first of these and must match one
+		// registered on the Restream application, so a value that can't form an
+		// absolute URL would only fail later, at the point an operator is
+		// standing in front of a browser.
+		u, err := url.Parse(strings.TrimRight(raw, "/"))
+		if err != nil {
+			return fmt.Errorf("%s is not a valid URL: %w", where, err)
+		}
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s must be an absolute http:// or https:// URL, e.g. http://production-pc:7878", where)
+		}
+		// The callback route is appended to this, so a path here would send the
+		// platform's redirect somewhere the server does not serve.
+		if u.Path != "" {
+			return fmt.Errorf("%s must not include a path (got %q)", where, u.Path)
+		}
 	}
 	return nil
 }

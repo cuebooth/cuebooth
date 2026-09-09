@@ -12,7 +12,7 @@ func TestChatConfigValidate(t *testing.T) {
 			Provider:     "restream",
 			ClientID:     "id",
 			ClientSecret: "secret",
-			PublicURL:    "http://production-pc:7878",
+			PublicURL:    URLList{"http://production-pc:7878"},
 		}
 		if mutate != nil {
 			mutate(&c)
@@ -31,21 +31,21 @@ func TestChatConfigValidate(t *testing.T) {
 		// are a config an operator is mid-way through writing, not an error.
 		{"off with leftover fields", ChatConfig{Provider: "none", ClientID: "id"}, true},
 		{"complete", complete(nil), true},
-		{"https public url", complete(func(c *ChatConfig) { c.PublicURL = "https://cuebooth.example" }), true},
-		{"trailing slash tolerated", complete(func(c *ChatConfig) { c.PublicURL = "http://pc:7878/" }), true},
+		{"https public url", complete(func(c *ChatConfig) { c.PublicURL = URLList{"https://cuebooth.example"} }), true},
+		{"trailing slash tolerated", complete(func(c *ChatConfig) { c.PublicURL = URLList{"http://pc:7878/"} }), true},
 
 		{"unknown provider", complete(func(c *ChatConfig) { c.Provider = "youtube" }), false},
 		{"no client id", complete(func(c *ChatConfig) { c.ClientID = "" }), false},
 		{"no client secret", complete(func(c *ChatConfig) { c.ClientSecret = "" }), false},
-		{"no public url", complete(func(c *ChatConfig) { c.PublicURL = "" }), false},
+		{"no public url", complete(func(c *ChatConfig) { c.PublicURL = URLList{""} }), false},
 		// A bare host has no scheme, so the redirect built from it would not be
 		// an absolute URL and Restream would reject the exchange.
-		{"public url without a scheme", complete(func(c *ChatConfig) { c.PublicURL = "production-pc:7878" }), false},
-		{"public url with the wrong scheme", complete(func(c *ChatConfig) { c.PublicURL = "ws://pc:7878" }), false},
-		{"public url with no host", complete(func(c *ChatConfig) { c.PublicURL = "http://" }), false},
+		{"public url without a scheme", complete(func(c *ChatConfig) { c.PublicURL = URLList{"production-pc:7878"} }), false},
+		{"public url with the wrong scheme", complete(func(c *ChatConfig) { c.PublicURL = URLList{"ws://pc:7878"} }), false},
+		{"public url with no host", complete(func(c *ChatConfig) { c.PublicURL = URLList{"http://"} }), false},
 		// The callback route is appended to this, so a path would send the
 		// platform's redirect somewhere the server does not serve.
-		{"public url with a path", complete(func(c *ChatConfig) { c.PublicURL = "http://pc:7878/cuebooth" }), false},
+		{"public url with a path", complete(func(c *ChatConfig) { c.PublicURL = URLList{"http://pc:7878/cuebooth"} }), false},
 	}
 
 	for _, tc := range cases {
@@ -81,7 +81,7 @@ func TestChatRedirectURI(t *testing.T) {
 		{"https://cuebooth.example", "https://cuebooth.example/chat/auth/callback"},
 	}
 	for _, tc := range cases {
-		got := ChatConfig{PublicURL: tc.public}.RedirectURI()
+		got := ChatConfig{PublicURL: URLList{tc.public}}.RedirectURI()
 		if got != tc.want {
 			t.Errorf("RedirectURI(%q) = %q, want %q", tc.public, got, tc.want)
 		}

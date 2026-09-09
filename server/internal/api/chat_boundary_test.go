@@ -17,7 +17,7 @@ func boundaryServer(t *testing.T) (*Server, *httptest.Server) {
 	cfg := testConfig()
 	cfg.Chat = config.ChatConfig{
 		Provider: "restream", ClientID: "id", ClientSecret: "s",
-		PublicURL: boundaryPublic,
+		PublicURL: config.URLList{boundaryPublic},
 	}
 	srv := NewServer(cfg, &fakePresser{}, WithChat(&fakeChat{
 		authorized: true,
@@ -73,6 +73,69 @@ func TestChatURLAnswersOnlyOnTheConfiguredAddress(t *testing.T) {
 	if rebound.StatusCode != http.StatusForbidden {
 		t.Errorf("on a rebound address: status = %d, want 403 — the credential is reachable",
 			rebound.StatusCode)
+	}
+}
+
+// A server on a tailnet is usually also reachable by LAN address, and on
+// localhost at the production PC itself. Chat answers on every address
+// public_url names, so the panel works wherever the client was opened.
+func TestChatURLAnswersOnEveryConfiguredAddress(t *testing.T) {
+	cfg := testConfig()
+	cfg.Chat = config.ChatConfig{
+		Provider: "restream", ClientID: "id", ClientSecret: "s",
+		PublicURL: config.URLList{
+			"http://pc.tailnet.test:7878",
+			"http://192.168.1.50:7878",
+			"http://localhost:7878",
+		},
+	}
+	hs := httptest.NewServer(NewServer(cfg, &fakePresser{}, WithChat(&fakeChat{
+		authorized: true,
+		url:        "https://chat.restream.io/embed?token=SECRET",
+		loginURL:   "https://api.restream.io/login?state=xyz",
+	})).Handler())
+	t.Cleanup(hs.Close)
+
+	for _, host := range []string{
+		"pc.tailnet.test:7878", "192.168.1.50:7878", "localhost:7878",
+	} {
+		if got := ask(t, hs, chatURLPath, host, "same-origin").StatusCode; got != http.StatusOK {
+			t.Errorf("on %s: status = %d, want 200", host, got)
+		}
+	}
+
+	// An address nobody configured is still refused — that is the whole point.
+	if got := ask(t, hs, chatURLPath, "evil.example:7878", "same-origin").StatusCode; got != http.StatusForbidden {
+		t.Errorf("on an unconfigured address: status = %d, want 403", got)
+	}
+}
+
+// The platform redirects back to the URI derived from the first address, so a
+// handshake begun anywhere else has to be sent there before it starts — even
+// when the address it began on is one chat happily serves.
+func TestChatAuthStartAlwaysBeginsAtTheFirstAddress(t *testing.T) {
+	cfg := testConfig()
+	cfg.Chat = config.ChatConfig{
+		Provider: "restream", ClientID: "id", ClientSecret: "s",
+		PublicURL: config.URLList{"http://pc.tailnet.test:7878", "http://192.168.1.50:7878"},
+	}
+	provider := &fakeChat{authorized: true, loginURL: "https://api.restream.io/login?state=xyz"}
+	hs := httptest.NewServer(NewServer(cfg, &fakePresser{}, WithChat(provider)).Handler())
+	t.Cleanup(hs.Close)
+
+	// Begun on the second address: served, but sent to the first.
+	onSecond := ask(t, hs, chatAuthPath, "192.168.1.50:7878", "same-origin")
+	if onSecond.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", onSecond.StatusCode)
+	}
+	if got, want := onSecond.Header.Get("Location"), "http://pc.tailnet.test:7878"+chatAuthPath; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+
+	// Begun on the first: straight to the platform.
+	onFirst := ask(t, hs, chatAuthPath, "pc.tailnet.test:7878", "same-origin")
+	if got := onFirst.Header.Get("Location"); got != provider.loginURL {
+		t.Errorf("on the first address, Location = %q, want the platform login", got)
 	}
 }
 
@@ -151,7 +214,7 @@ func TestChatCallbacksAreBounded(t *testing.T) {
 	cfg := testConfig()
 	cfg.Chat = config.ChatConfig{
 		Provider: "restream", ClientID: "id", ClientSecret: "s",
-		PublicURL: boundaryPublic,
+		PublicURL: config.URLList{boundaryPublic},
 	}
 	hs := httptest.NewServer(NewServer(cfg, &fakePresser{}, WithChat(provider)).Handler())
 	t.Cleanup(hs.Close)

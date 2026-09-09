@@ -309,7 +309,7 @@ func TestChatAuthStartRedirectsToThePublicURLFirst(t *testing.T) {
 	cfg := testConfig()
 	cfg.Chat = config.ChatConfig{
 		Provider: "restream", ClientID: "id", ClientSecret: "s",
-		PublicURL: "http://production-pc.tailnet.test:7878",
+		PublicURL: config.URLList{"http://production-pc.tailnet.test:7878"},
 	}
 	srv := NewServer(cfg, &fakePresser{}, WithChat(provider))
 	hs := httptest.NewServer(srv.Handler())
@@ -375,7 +375,7 @@ func TestChatAuthStartDoesNotRedirectWhenAlreadyPublic(t *testing.T) {
 	t.Cleanup(hs.Close)
 	// The address is only known once the server is listening, and the config is
 	// held by pointer, so it can be pointed at itself here.
-	cfg.Chat.PublicURL = hs.URL
+	cfg.Chat.PublicURL = config.URLList{hs.URL}
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse

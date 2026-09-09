@@ -93,7 +93,7 @@ Then open `http://<server-host>:7878`. The connect screen prefills the address t
 
 **It has to be the same port.** `/ws` enforces a same-origin policy (coder/websocket's default compares `Origin` against `Host`), so a client page served from anywhere else is refused with a 403. Serving it here satisfies that check rather than weakening it — worth keeping, since v1 has no in-protocol auth ([protocol.md](protocol.md) §1).
 
-Be clear about what that check is, though: it compares two headers the requesting page supplies, so it stops an ordinary cross-origin page and not one that has made this server's address into its own name. v1's real boundary is the network. The chat routes, which hand out a credential rather than press a button, additionally check `Host` against the configured `public_url` — see [protocol.md](protocol.md) §11.
+Be clear about what that check is, though: it compares two headers the requesting page supplies, so it stops an ordinary cross-origin page and not one that has made this server's address into its own name. v1's real boundary is the network. The chat routes, which hand out a credential rather than press a button, additionally check `Host` against the addresses `chat.public_url` names — it takes a list, so a tailnet name, a LAN address and `localhost` can all work. See [protocol.md](protocol.md) §11.
 
 `make web` is optional. A server built without it starts normally, serves everything else, and answers `/` with a page saying no client is bundled — the WebSocket API and any native client are unaffected. The staged build is gitignored; it is a build artifact of `client/`, not source.
 

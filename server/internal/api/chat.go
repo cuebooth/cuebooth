@@ -58,17 +58,8 @@ const (
 	chatStartEvery = 12 * time.Second
 )
 
-// chatPublicHost is the address chat answers on, from the public_url the config
-// requires whenever chat is enabled.
-func (s *Server) chatPublicHost() string {
-	u, err := url.Parse(strings.TrimRight(s.cfg.Chat.PublicURL, "/"))
-	if err != nil {
-		return ""
-	}
-	return u.Host
-}
-
-// chatHostAllowed reports whether a request arrived on that address.
+// chatHostAllowed reports whether a request arrived on one of the addresses
+// public_url names.
 //
 // Nothing else in this server inspects Host, and the WebSocket's same-origin
 // policy cannot stand in for it: that compares Origin against Host, both of
@@ -78,8 +69,16 @@ func (s *Server) chatPublicHost() string {
 // fair boundary. Against a route that hands out a credential which keeps
 // working after the attacker has gone home, it is not.
 func (s *Server) chatHostAllowed(r *http.Request) bool {
-	public := s.chatPublicHost()
-	return public == "" || strings.EqualFold(public, r.Host)
+	hosts := s.cfg.Chat.PublicURL.Hosts()
+	if len(hosts) == 0 {
+		return true
+	}
+	for _, host := range hosts {
+		if strings.EqualFold(host, r.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 // chatSiteAllowed rejects a request a browser has told us came from another
@@ -256,12 +255,18 @@ func (s *Server) publishChatStatus() {
 
 // chatAuthPublicRedirect reports where to send a start request that arrived at
 // an address other than the configured public URL, and whether to send it.
+// It sends them to the first, not merely to one that is allowed: the platform
+// redirects back to exactly the URI derived from that one, so a handshake begun
+// anywhere else would end somewhere the browser may not be.
 func (s *Server) chatAuthPublicRedirect(r *http.Request) (string, bool) {
-	public := strings.TrimRight(s.cfg.Chat.PublicURL, "/")
-	if public == "" || s.chatHostAllowed(r) {
+	primary := s.cfg.Chat.PublicURL.Primary()
+	if primary == "" {
 		return "", false
 	}
-	return public + chatAuthPath, true
+	if u, err := url.Parse(primary); err == nil && strings.EqualFold(u.Host, r.Host) {
+		return "", false
+	}
+	return primary + chatAuthPath, true
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
