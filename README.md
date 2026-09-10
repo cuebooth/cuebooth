@@ -20,7 +20,11 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 **Phase 1 — the Companion control surface — works.** The server registers with Bitfocus Companion as a Satellite surface, streams the rendered button grid to the Flutter client over a WebSocket, and routes presses back. Companion's own page navigation comes with it, so a surface that links to other surfaces behaves as it does on hardware. The server also carries the web client and serves it at `/`, so a browser on any machine on the network is a working client with nothing installed.
 
-Phases 2 onward — direct OSC audio control, VISCA camera, the slide engine, HID input, video preview — are not implemented; `server/internal/{audio,camera,obs,slides,hid}` are package stubs, and the C# sidecar does not yet drive anything. There are no prebuilt downloads: [building from source](docs/development.md) is the only way to run it, and release packaging is tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71).
+It also surfaces the stream's chat. That renders inside the app on iPad, iPhone, Android and macOS; on Windows, Linux and Web it opens in the system browser instead, because Flutter endorses no webview implementation for those platforms.
+
+CI exercises the Satellite integration against real Companion releases. None of it has yet been run against a full production rig.
+
+Phases 2 onward — direct OSC audio control and metering, VISCA camera, the slide engine, HID input, video preview — are not implemented; `server/internal/{audio,camera,obs,slides,hid}` are package stubs, and the C# sidecar does not yet drive anything. There are no prebuilt downloads: [building from source](docs/development.md) is the only way to run it, and release packaging is tracked in [CB-087](https://github.com/cuebooth/cuebooth/issues/71).
 
 See [`docs/design.md`](docs/design.md) for the full architecture and phased plan.
 
@@ -48,7 +52,7 @@ Every CueBooth component that runs on Windows is intended to ship as a real Wind
 - [WebSocket protocol](docs/protocol.md) — client/server wire spec
 - [Sample deployment](docs/sample-deployment.md) — worked end-to-end example tying the docs together
 
-Sample configuration files will be added as the implementation phases land.
+A documented example configuration lives at [`server/configs/cuebooth.example.toml`](server/configs/cuebooth.example.toml); sections for phases that aren't implemented yet are sketched there as comments.
 
 ## License
 

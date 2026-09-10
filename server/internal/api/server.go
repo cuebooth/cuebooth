@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/cuebooth/cuebooth/server/internal/chat"
 	"github.com/cuebooth/cuebooth/server/internal/config"
 	"github.com/cuebooth/cuebooth/server/internal/state"
 	"github.com/cuebooth/cuebooth/server/internal/webui"
@@ -25,6 +26,16 @@ import (
 
 // shutdownTimeout bounds graceful HTTP shutdown.
 const shutdownTimeout = 5 * time.Second
+
+// StopBudget is the longest a graceful shutdown can take, for callers that must
+// declare it — the Windows SCM expects a wait hint covering the whole stop.
+func StopBudget() time.Duration { return shutdownTimeout + chatDrainTimeout }
+
+// chatDrainTimeout bounds the wait for a chat token exchange still in flight at
+// shutdown. It exceeds the provider's own request deadline, because the platform
+// rotates the credential on receipt: exiting before the response is read loses
+// the replacement and costs an operator a re-authorization.
+const chatDrainTimeout = 25 * time.Second
 
 // Server is the WebSocket API server.
 type Server struct {
@@ -43,6 +54,10 @@ type Server struct {
 	// no satellite is configured (see WithSatellite).
 	surface *surfaceManager
 
+	// chat mints the stream-chat URL clients display; nil when no chat provider
+	// is configured (see WithChat).
+	chat chat.Provider
+
 	pollInterval time.Duration
 	sources      []state.Source
 
@@ -50,6 +65,13 @@ type Server struct {
 	// so shutdown can wait for them — http.Server.Shutdown does not wait for
 	// hijacked connections.
 	conns sync.WaitGroup
+
+	// chatStarts bounds how fast authorizations may be started, and
+	// chatCallbacks how many may be completing at once. Both routes are
+	// unauthenticated by design (protocol.md §11), so neither is bounded by
+	// anything else.
+	chatStarts    *rateLimiter
+	chatCallbacks chan struct{}
 }
 
 // Option configures a Server.
@@ -107,6 +129,15 @@ func WithSatellite(sat satelliteSurface) Option {
 	}
 }
 
+// WithChat enables the stream-chat panel, served by p (see internal/chat).
+func WithChat(p chat.Provider) Option {
+	return func(s *Server) {
+		if p != nil {
+			s.chat = p
+		}
+	}
+}
+
 // NewServer builds the API server. comp is the Companion button presser the
 // command dispatcher routes to (typically *companion.Client).
 func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
@@ -118,6 +149,9 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 		logger:   slog.Default(),
 		version:  "0.1.0",
 		serverID: hostname,
+
+		chatStarts:    newRateLimiter(chatStartBurst, chatStartEvery),
+		chatCallbacks: make(chan struct{}, chatCallbackSlots),
 	}
 	s.dispatcher = newCompanionDispatcher(cfg, comp)
 	for _, opt := range opts {
@@ -136,6 +170,14 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/ws", s.serveWS)
 	s.mux.HandleFunc("/ws/meters", s.serveMeters)
+	// Registered only when a provider exists, so a deployment without chat
+	// answers 404 rather than an endpoint that always fails.
+	if s.chat != nil {
+		s.mux.HandleFunc(chatURLPath, s.serveChatURL)
+		s.mux.HandleFunc(chatAuthPath, s.serveChatAuthStart)
+		s.mux.HandleFunc(chatCallbackPath, s.serveChatAuthCallback)
+		s.publishChatStatus()
+	}
 	// Registered last and least specific, so the API routes above win. Serving
 	// the client from this listener is what lets a browser open /ws at all:
 	// acceptWS enforces same-origin, which a page served elsewhere fails.
@@ -144,7 +186,22 @@ func NewServer(cfg *config.Config, comp buttonPresser, opts ...Option) *Server {
 }
 
 // Handler exposes the HTTP handler for tests (httptest) and embedding.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return withCommonHeaders(s.mux) }
+
+// withCommonHeaders applies what holds for every response this server makes.
+//
+// It wraps the whole listener rather than any one handler: the chat routes and
+// the HTML page the OAuth callback renders are registered ahead of the web UI,
+// so a guard inside that handler would not reach them.
+func withCommonHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
 
 // applyState mutates the store; the Store observer (set in NewServer) broadcasts
 // the resulting delta in revision order. This is the single funnel for
@@ -175,8 +232,14 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	}
 
 	s.httpServer = &http.Server{
-		Handler:     s.mux,
+		Handler:     withCommonHeaders(s.mux),
 		BaseContext: func(net.Listener) context.Context { return ctx },
+
+		// A connection that opens and then says nothing costs a goroutine and a
+		// file descriptor until it does. Nothing else bounds that, and the
+		// listener is reachable by anything on the network.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errc := make(chan error, 1)
@@ -198,6 +261,11 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		err := s.httpServer.Shutdown(sctx)
 		s.hub.closeAll("server shutting down")
 		s.waitConns(sctx)
+		if s.chat != nil {
+			dctx, dcancel := context.WithTimeout(context.Background(), chatDrainTimeout)
+			chat.Drain(dctx, s.chat)
+			dcancel()
+		}
 		return err
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {

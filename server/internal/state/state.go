@@ -57,6 +57,18 @@ type SlidesState struct {
 type StreamState struct {
 	Platform string `json:"platform,omitempty"`
 	Viewers  int    `json:"viewers,omitempty"`
+	// Chat is absent when no chat provider is configured, which a client shows
+	// differently from a configured provider awaiting authorization.
+	Chat *ChatState `json:"chat,omitempty"`
+}
+
+// ChatState tells a client whether to render the chat panel or an authorize
+// prompt (protocol.md §4). The chat URL is deliberately not here: it carries a
+// credential and would be re-broadcast to every subscriber on each refresh, so
+// clients fetch one from /chat/url when they need it (protocol.md §11).
+type ChatState struct {
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
 }
 
 // AudioState is populated by the direct-OSC audio engine in Phase 2.

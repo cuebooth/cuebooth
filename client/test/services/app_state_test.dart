@@ -102,4 +102,68 @@ void main() {
       expect(notified, 1);
     });
   });
+
+  group('AppState chat (protocol.md §4 stream.chat)', () {
+    AppState withChat(Map<String, dynamic>? chat) {
+      final s = AppState();
+      s.applySnapshot(1, {
+        'stream': {'platform': 'restream', 'chat': ?chat},
+      });
+      return s;
+    }
+
+    // No provider configured is a different thing from a provider awaiting
+    // authorization, and the UI shows each differently.
+    test('an absent chat object is unconfigured, not unauthorized', () {
+      final s = withChat(null);
+      expect(s.chatConfigured, isFalse);
+      expect(s.chatNeedsAuth, isFalse);
+      expect(s.chatReady, isFalse);
+      expect(s.chatProvider, isNull);
+    });
+
+    test('needs_auth is configured but not ready', () {
+      final s = withChat({'provider': 'restream', 'status': 'needs_auth'});
+      expect(s.chatConfigured, isTrue);
+      expect(s.chatNeedsAuth, isTrue);
+      expect(s.chatReady, isFalse);
+      expect(s.chatProvider, 'restream');
+    });
+
+    test('ready is configured and ready', () {
+      final s = withChat({'provider': 'restream', 'status': 'ready'});
+      expect(s.chatConfigured, isTrue);
+      expect(s.chatNeedsAuth, isFalse);
+      expect(s.chatReady, isTrue);
+    });
+
+    // A status the client doesn't know is neither ready nor needs_auth, so a
+    // future server value shows an inert panel rather than a wrong one.
+    test('an unknown status is neither ready nor needing auth', () {
+      final s = withChat({'provider': 'restream', 'status': 'something-new'});
+      expect(s.chatConfigured, isTrue);
+      expect(s.chatNeedsAuth, isFalse);
+      expect(s.chatReady, isFalse);
+    });
+
+    test('a delta can flip the status without a new snapshot', () {
+      final s = withChat({'provider': 'restream', 'status': 'needs_auth'});
+      s.applyDelta(2, {
+        'stream': {
+          'chat': {'status': 'ready'},
+        },
+      });
+      expect(s.chatReady, isTrue);
+      expect(s.chatNeedsAuth, isFalse);
+      expect(s.chatProvider, 'restream');
+    });
+
+    test('no stream topic at all is unconfigured', () {
+      final s = AppState();
+      s.applySnapshot(1, {
+        'obs': {'scene': 'a'},
+      });
+      expect(s.chatConfigured, isFalse);
+    });
+  });
 }

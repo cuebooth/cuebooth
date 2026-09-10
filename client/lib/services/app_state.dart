@@ -90,6 +90,26 @@ class AppState extends ChangeNotifier {
   /// Streaming-platform metadata (protocol.md §4 `stream`), e.g. viewers.
   String? get streamPlatform => _topic('stream')?['platform'] as String?;
   int? get streamViewers => (_topic('stream')?['viewers'] as num?)?.toInt();
+
+  Map<String, dynamic>? get _chat {
+    final v = _topic('stream')?['chat'];
+    return v is Map<String, dynamic> ? v : null;
+  }
+
+  /// Whether the server has a chat provider configured at all. A configured but
+  /// unauthorized provider is [chatNeedsAuth]; no provider is neither
+  /// (protocol.md §4).
+  bool get chatConfigured => _chat != null;
+
+  /// The chat platform's name, or null when no provider is configured.
+  String? get chatProvider => _chat?['provider'] as String?;
+
+  /// Whether an operator has to authorize the chat platform before chat can be
+  /// shown. False when unconfigured, so callers gate on [chatConfigured] first.
+  bool get chatNeedsAuth => _chat?['status'] == chatStatusNeedsAuth;
+
+  /// Whether the server can currently produce a chat URL.
+  bool get chatReady => _chat?['status'] == chatStatusReady;
 }
 
 /// Outcome of applying a `state-delta`.

@@ -5,7 +5,7 @@
 library;
 
 /// On-wire protocol version the client implements (protocol.md §1).
-const String protoVersion = '1.0';
+const String protoVersion = '1.1';
 
 /// Frame `type` values (protocol.md §2).
 class FrameType {
@@ -42,6 +42,16 @@ class Target {
 
 /// State topics (protocol.md §3). The default subscription is all of these.
 const List<String> topics = ['audio', 'camera', 'obs', 'slides', 'stream'];
+
+/// Values of `stream.chat.status` (protocol.md §4).
+const String chatStatusNeedsAuth = 'needs_auth';
+const String chatStatusReady = 'ready';
+
+/// Server routes for chat (protocol.md §11). These are plain HTTP rather than
+/// WebSocket frames: authorization is a browser round-trip, and the minted URL
+/// carries a credential that has no business in a broadcast state snapshot.
+const String chatURLPath = '/chat/url';
+const String chatAuthStartPath = '/chat/auth/start';
 
 /// Returns the major component of a `MAJOR.MINOR` protocol version string, or
 /// null if it isn't well-formed (protocol.md §1: integer before the first dot,

@@ -8,7 +8,7 @@ import "encoding/json"
 // ProtoVersion is the on-wire protocol version advertised in the hello frame
 // (protocol.md §1 "Versioning"). Major version "1" must match between client
 // and server.
-const ProtoVersion = "1.0"
+const ProtoVersion = "1.1"
 
 // Message type strings (the `type` envelope field, protocol.md §2).
 const (

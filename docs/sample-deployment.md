@@ -115,12 +115,21 @@ CueBooth presets in `cuebooth.toml` (§6 below) reference these Companion button
 
 This is what wires logical preset names (used in slides and the client) to concrete Companion buttons and OSC commands. Edit it once per deployment.
 
+Note `chat.public_url`: the OAuth redirect is built from it, so it must be an address the **operator's browser** can reach — and it must match a redirect URI registered on the Restream application. Here the operator authorizes from the iPad over Tailscale (§3), so the Tailscale name is the one to use; the LAN name `production-pc` would leave the approval screen redirecting somewhere that device cannot load, and authorization would never complete.
+
 ```toml
 [server]
 listen = "0.0.0.0:7878"
 
 [companion]
 base_url = "http://localhost:8000"
+
+[chat]
+provider = "restream"
+client_id = "..."                       # from developers.restream.io/apps
+# client_secret supplied via CUEBOOTH_CHAT_CLIENT_SECRET
+public_url = "http://production-pc.tailnet.ts.net:7878"
+token_file = "chat-token.json"
 
 [mixer]
 host = "10.0.0.50"
@@ -362,6 +371,7 @@ The operator runs the event from an iPad in the audience, connected to the serve
 - Center-right: fader strips for the channels declared visible in §6.
 - Bottom: the Companion button grid itself, rendered natively from Companion's Satellite surface — the same combined presets, OBS scenes, and stream/record buttons the operator's Companion page is configured with, with no separate client-side definition (see [protocol.md](protocol.md) §10).
 - Side panel: pending actions queue with confirm/cancel buttons.
+- Chat: the stream's combined chat, opened from the toolbar. On the iPad it renders in the app; on the Windows production PC it opens in a browser window beside CueBooth (see [protocol.md](protocol.md) §11). Authorizing it is a one-time step — see §6's note on `chat.public_url`.
 
 A typical event run:
 
