@@ -108,6 +108,9 @@ class ChatService {
       if (!parsed.isAbsolute || (parsed.scheme != 'http' && parsed.scheme != 'https')) {
         return null;
       }
+      // "https://" is absolute and carries the right scheme, so the checks
+      // above admit it. Nothing can load it.
+      if (parsed.host.isEmpty) return null;
       return url;
     } on FormatException {
       // Falls through to null: a body that isn't the documented shape is

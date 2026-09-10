@@ -357,12 +357,10 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 		chatURL, _, err = r.mint(ctx, used)
 	}
 	if errors.Is(err, errUnauthorized) || errors.Is(err, errForbidden) {
-		// Either a token minted moments ago was still refused, or the platform
-		// accepted it and refused the permission. Neither improves unattended —
-		// most often the application was registered without chat.read. Held off
-		// for a while so a panel left open cannot rotate the credential once per
-		// attempt, and reported as needing authorization so the operator has a
-		// route to it.
+		// A token minted moments ago was refused, or the permission was. Neither
+		// improves unattended, so it is held off — a panel left open would otherwise
+		// rotate the credential once per attempt — and reported as needing
+		// authorization, which is the operator's route back.
 		r.logger.Error("restream will not serve chat with this credential; check the application's chat.read scope", "err", err)
 		r.holdOff(gen)
 		return "", ErrNeedsAuth
@@ -509,14 +507,10 @@ func (r *Restream) accessToken(ctx context.Context, retire string) (string, erro
 	return fresh.AccessToken, nil
 }
 
-// beginExchange and endExchange bracket a token exchange *and everything it
-// persists*.
-//
-// Counting only the HTTP request would leave Drain free to return between the
-// platform rotating the credential and the new pair reaching disk — the exact
-// loss Drain exists to prevent, and a silent one: the file still holds a
-// refresh token Restream retired on issuing its replacement, so the next start
-// reports itself authorized and fails on the first mint.
+// beginExchange and endExchange bracket a token exchange and everything it
+// persists. The bracket has to span the write: Restream retires the old pair on
+// issuing the new one, so a Drain that returned before the write landed would
+// leave the stored credential dead.
 func (r *Restream) beginExchange() {
 	r.mu.Lock()
 	r.tokenCalls++
@@ -593,11 +587,10 @@ func (r *Restream) discard() {
 
 // adopt takes a newly issued pair as the live credential and persists it.
 //
-// The write happens before the token is handed back because the exchange that
-// produced it has already invalidated its predecessor: from here on, the copy
-// on disk is the only thing that survives a restart. A failed write is logged
-// rather than propagated — the process still holds a working token, and failing
-// chat outright would turn a storage problem into an outage.
+// The write precedes the handback: the exchange has already invalidated the
+// predecessor, so the copy on disk is the only thing that survives a restart. A
+// failed write is logged rather than propagated, since the process still holds
+// a working token.
 func (r *Restream) adopt(t tokens, authorized bool) {
 	r.mu.Lock()
 	r.tok = t

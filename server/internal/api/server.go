@@ -190,11 +190,9 @@ func (s *Server) Handler() http.Handler { return withCommonHeaders(s.mux) }
 
 // withCommonHeaders applies what holds for every response this server makes.
 //
-// These used to be set by the web UI's own handler, which meant they covered
-// the routes mounted under "/" and nothing registered ahead of it — so the chat
-// routes, including the HTML page the OAuth callback renders, carried none of
-// them. Setting them for the whole listener is what makes the comment on them
-// true, and stops the next route added inheriting nothing.
+// It wraps the whole listener rather than any one handler: the chat routes and
+// the HTML page the OAuth callback renders are registered ahead of the web UI,
+// so a guard inside that handler would not reach them.
 func withCommonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()

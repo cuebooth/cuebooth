@@ -36,23 +36,17 @@ const chatCallbackPath = config.ChatCallbackPath
 // deadline, so a rotation is still read back after this gives up.
 const chatMintDeadline = 40 * time.Second
 
-// chatCompleteDeadline bounds one callback the same way. Without it the handler
-// waits on the exchange mutex for however long the queue ahead of it takes, and
-// then on a POST that deliberately ignores client cancellation.
+// chatCompleteDeadline bounds one callback. Without it the handler waits on the
+// exchange mutex for however long the queue ahead of it takes, and then on a
+// POST that ignores client cancellation.
 const chatCompleteDeadline = 40 * time.Second
 
-// chatCallbackSlots bounds callbacks completing at once. Each holds a goroutine,
-// its inbound connection, and an authorization_code POST carrying the operator's
-// client credentials — so an unbounded queue is an unauthenticated amplifier
-// onto the operator's own Restream application.
+// chatCallbackSlots bounds callbacks completing at once. Restream redirects one
+// browser here; a queue is something else.
 const chatCallbackSlots = 4
 
-// Starting an authorization allocates a pending state in a bounded map, and the
-// map evicts to stay bounded. Without a rate the eviction is the weapon: enough
-// starts inside the seconds an operator spends at the consent screen and their
-// own state is gone by the time they come back, leaving them with a failure
-// page that tells them to try again, forever. A person starts one authorization
-// and occasionally retries it.
+// Sized for a person: one authorization, occasionally retried. The routes are
+// unauthenticated by design, so nothing else bounds them (protocol.md §11).
 const (
 	chatStartBurst = 5
 	chatStartEvery = 12 * time.Second
@@ -61,13 +55,10 @@ const (
 // chatHostAllowed reports whether a request arrived on one of the addresses
 // public_url names.
 //
-// Nothing else in this server inspects Host, and the WebSocket's same-origin
-// policy cannot stand in for it: that compares Origin against Host, both of
-// which the requesting page supplies, so a page that has made this server's
-// address into its own name satisfies it and is same-origin by the browser's
-// own rules. Against an API that presses buttons in a room, the network is a
-// fair boundary. Against a route that hands out a credential which keeps
-// working after the attacker has gone home, it is not.
+// The WebSocket's same-origin policy cannot stand in for this: it compares
+// Origin against Host, both supplied by the requesting page, so a page that has
+// made this server's address its own name satisfies it. protocol.md §11 has the
+// rest.
 func (s *Server) chatHostAllowed(r *http.Request) bool {
 	hosts := s.cfg.Chat.PublicURL.Hosts()
 	if len(hosts) == 0 {
@@ -82,8 +73,8 @@ func (s *Server) chatHostAllowed(r *http.Request) bool {
 }
 
 // chatSiteAllowed rejects a request a browser has told us came from another
-// site. An absent header is allowed: a native client, curl, or an older browser
-// sends none, and chatHostAllowed is what covers those.
+// site. An absent header is allowed — a native client sends none — and
+// chatHostAllowed is what covers those.
 func chatSiteAllowed(r *http.Request) bool {
 	return r.Header.Get("Sec-Fetch-Site") != "cross-site"
 }
@@ -158,10 +149,8 @@ func (s *Server) serveChatAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The callback lands on the configured public URL, so a start that arrived
-	// anywhere else is sent there first rather than refused: it keeps the whole
-	// handshake on one address, and surfaces a public_url the operator's browser
-	// cannot reach at the point they are standing in front of it. After the
+	// Redirected rather than refused, so a public_url the operator's browser
+	// cannot reach surfaces while they are standing in front of it. After the
 	// redirect the Host matches, so this cannot loop.
 	if target, ok := s.chatAuthPublicRedirect(r); ok {
 		http.Redirect(w, r, target, http.StatusFound)

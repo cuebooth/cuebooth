@@ -88,6 +88,9 @@ void main() {
         '/chat/embed',
         'javascript:alert(1)',
         'ftp://example.test/chat',
+        // Absolute, and the scheme is right, so only a host check rejects it.
+        'https://',
+        'https:///embed',
       ]) {
         final service = serviceReturning(
           (_) => http.Response(jsonEncode({'url': url}), 200),
