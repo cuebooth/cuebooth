@@ -112,6 +112,41 @@ void main() {
       expect(parsed.secure, isTrue);
     });
 
+    // Without this the Port field decides, and the documented native-behind-TLS
+    // address dials 7878 against a deployment that only listens on 443.
+    test('a scheme with no port means that scheme\'s default', () {
+      expect(parseServerField('wss://pc.tailnet.ts.net').port, 443);
+      expect(parseServerField('https://pc.tailnet.ts.net').port, 443);
+      expect(parseServerField('ws://192.168.1.50').port, 80);
+      expect(parseServerField('http://192.168.1.50').port, 80);
+    });
+
+    // A bare address says nothing about the port either, so the Port field
+    // still governs it.
+    test('a bare address leaves the port unstated', () {
+      expect(parseServerField('production-pc').port, isNull);
+    });
+
+    // Uri range-checks nothing, so an unusable port would otherwise reach the
+    // Port field's validator and report the error against a field that is fine.
+    test('an out-of-range port makes the whole address malformed', () {
+      for (final text in [
+        'https://name.ts.net:99999',
+        'https://name.ts.net:0',
+      ]) {
+        final parsed = parseServerField(text);
+
+        expect(parsed.host, text, reason: 'should fall through whole');
+        expect(parsed.port, isNull);
+        expect(parsed.secure, isNull);
+      }
+    });
+
+    test('the port bounds themselves are accepted', () {
+      expect(parseServerField('wss://name.ts.net:1').port, 1);
+      expect(parseServerField('wss://name.ts.net:65535').port, 65535);
+    });
+
     // Pasting a URL out of an address bar brings a trailing slash with it.
     test('a trailing slash or path is discarded', () {
       final parsed = parseServerField('https://pc.tailnet.ts.net/');
@@ -281,6 +316,24 @@ void main() {
 
       expect(s.dialled.single.scheme, 'ws');
       expect(s.dialled.single.host, 'production-pc');
+    });
+
+    // The address from development.md §3.1, typed on a fresh client whose Port
+    // field still reads 7878. Before the port defaulted with the scheme this
+    // dialled wss://pc.tailnet.ts.net:7878/ws, where nothing is listening.
+    testWidgets('a typed wss:// address with no port reaches 443', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final s = screen();
+      await tester.pumpWidget(s.widget);
+      await tester.pump();
+
+      await connectWith(tester, 'wss://pc.tailnet.ts.net');
+
+      expect(s.dialled.single.toString(), 'wss://pc.tailnet.ts.net/ws');
+      // ...and the field says so, rather than still reading 7878.
+      expect(find.widgetWithText(TextField, '443'), findsOneWidget);
     });
 
     testWidgets('a port in the address overrides the Port field', (

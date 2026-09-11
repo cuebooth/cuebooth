@@ -28,12 +28,11 @@ typedef ChannelFactory = WebSocketChannel Function(Uri uri);
 
 /// The port to write into the socket URI, or null to leave it implicit.
 ///
-/// A page served from `https://name` is the origin `https://name`, and the
-/// socket that matches it is `wss://name/ws` — not `wss://name:443/ws`. Both
-/// reach the same place, but `/ws` admits a socket by comparing the page's
-/// `Origin` against `Host`, and only the first spells that origin the way the
-/// page does. Dart's [Uri] cannot do this itself: it knows the default port of
-/// `http` and `https` but not of `ws` and `wss`, so it writes 443 out verbatim.
+/// Dart's [Uri] knows the default port of `http` and `https` but not of `ws`
+/// and `wss`, so it writes 443 into a `wss` URI where a page would have left it
+/// out. Both reach the same server — a `Host` header omits a port that is the
+/// scheme's default either way — so this only keeps the URI identical to the
+/// origin the page was served from.
 int? _explicitPort(int port, bool secure) =>
     port == (secure ? 443 : 80) ? null : port;
 

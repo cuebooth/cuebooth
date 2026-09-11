@@ -24,14 +24,21 @@ import 'home_screen.dart';
 /// Splits what the operator typed into a bare host, an optional port, and the
 /// scheme if one was given.
 ///
-/// A bare address is the ordinary case and leaves `secure` null — *not stated*,
-/// rather than "insecure" — so [useSecureScheme] can fall back to the page.
-/// Typing a scheme is how a native client, which has no page to infer from,
-/// reaches a server behind a TLS front.
+/// A bare address is the ordinary case and leaves `secure` and `port` null —
+/// *not stated*, rather than "insecure" and "no port" — so [useSecureScheme]
+/// can fall back to the page and the caller to its own Port field. Typing a
+/// scheme is how a native client, which has no page to infer from, reaches a
+/// server behind a TLS front.
+///
+/// An address that names a scheme also settles the port: the one it carries,
+/// or that scheme's default. `https://name.ts.net` means 443, the way it does
+/// everywhere else — taking the Port field instead would dial 7878 against a
+/// deployment that is not there.
 ///
 /// Anything that is not one of the four recognized schemes is returned as a
-/// bare host, unparsed. `ServerConnection.connect` then rejects it the way it
-/// always has, which keeps one error path for malformed input instead of two.
+/// bare host, unparsed, as is an address whose port is not a usable one.
+/// `ServerConnection.connect` then rejects it the way it always has, which
+/// keeps one error path for malformed input instead of two.
 ({String host, int? port, bool? secure}) parseServerField(String text) {
   final trimmed = text.trim();
   final uri = Uri.tryParse(trimmed);
@@ -44,11 +51,11 @@ import 'home_screen.dart';
       _ => null,
     };
     if (secure != null) {
-      return (
-        host: uri.host,
-        port: uri.hasPort ? uri.port : null,
-        secure: secure,
-      );
+      // Uri does not range-check a port, so this is where "host:99999" stops.
+      final port = uri.hasPort ? uri.port : (secure ? 443 : 80);
+      if (port >= 1 && port <= 65535) {
+        return (host: uri.host, port: port, secure: secure);
+      }
     }
   }
   return (host: trimmed, port: null, secure: null);
@@ -153,9 +160,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
     if (_connecting) return;
 
     final typed = parseServerField(_hostCtrl.text);
-    // A port in the address wins over the Port field: it is the more specific
-    // thing the operator said, and pasting "wss://name:8443" while the field
-    // still reads 7878 is the obvious way to arrive here.
+    // An address that names a scheme carries its own port, explicit or default,
+    // and that wins: it is the more specific thing the operator said, and
+    // pasting "https://name.ts.net" while the field still reads 7878 is the
+    // obvious way to arrive here. The Port field is for a bare address.
     final port = typed.port ?? int.tryParse(_portCtrl.text.trim());
     if (port == null || port < 1 || port > 65535) {
       setState(() => _portError = 'Enter a port between 1 and 65535.');

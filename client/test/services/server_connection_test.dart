@@ -147,9 +147,8 @@ void main() {
       expect(h.conn.httpBase?.path, '');
     });
 
-    // The tailnet case: `tailscale serve` puts the page on 443, and the socket
-    // has to spell that origin the way the page does, since /ws admits it by
-    // comparing Origin against Host.
+    // The tailnet case: `tailscale serve` puts the page on 443, and the URI is
+    // then the page's own origin rather than a 443 Dart would have written out.
     test('a default port is left implicit, matching the page origin', () async {
       final h = harness();
       addTearDown(h.conn.dispose);
