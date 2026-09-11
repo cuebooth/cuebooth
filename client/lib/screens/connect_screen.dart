@@ -21,6 +21,60 @@ import 'home_screen.dart';
   return (host: '127.0.0.1', port: 7878);
 }
 
+/// Splits what the operator typed into a bare host, an optional port, and the
+/// scheme if one was given.
+///
+/// A bare address is the ordinary case and leaves `secure` null — *not stated*,
+/// rather than "insecure" — so [useSecureScheme] can fall back to the page.
+/// Typing a scheme is how a native client, which has no page to infer from,
+/// reaches a server behind a TLS front.
+///
+/// Anything that is not one of the four recognized schemes is returned as a
+/// bare host, unparsed. `ServerConnection.connect` then rejects it the way it
+/// always has, which keeps one error path for malformed input instead of two.
+({String host, int? port, bool? secure}) parseServerField(String text) {
+  final trimmed = text.trim();
+  final uri = Uri.tryParse(trimmed);
+  if (uri != null && uri.hasScheme && uri.host.isNotEmpty) {
+    // http/https are accepted because the address an operator has is usually
+    // the one in their browser's address bar, which carries those.
+    final secure = switch (uri.scheme) {
+      'wss' || 'https' => true,
+      'ws' || 'http' => false,
+      _ => null,
+    };
+    if (secure != null) {
+      return (
+        host: uri.host,
+        port: uri.hasPort ? uri.port : null,
+        secure: secure,
+      );
+    }
+  }
+  return (host: trimmed, port: null, secure: null);
+}
+
+/// Whether the page this client was served from arrived over TLS.
+///
+/// Native builds have no page, so this is false there and the address decides.
+bool pageIsSecure({bool? isWeb, Uri? base}) {
+  final onWeb = isWeb ?? kIsWeb;
+  final from = base ?? Uri.base;
+  return onWeb && from.isScheme('https');
+}
+
+/// Whether to open the socket as `wss://`, given any scheme the operator typed.
+///
+/// A page served over HTTPS settles it on its own: a browser refuses a `ws://`
+/// socket from such a page as mixed content, so `wss://` is not the preference
+/// there but the only thing that can connect — hence it overrides a typed
+/// `ws://` rather than honouring it and failing in the console. An HTTP page
+/// imposes nothing, so a typed `wss://` still stands.
+bool useSecureScheme({bool? typed, bool? isWeb, Uri? base}) {
+  if (pageIsSecure(isWeb: isWeb, base: base)) return true;
+  return typed ?? false;
+}
+
 /// First-launch screen for entering the server host:port and connecting.
 ///
 /// Validates the port, then waits for the transport to actually reach
@@ -76,6 +130,11 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   // Persist the address only after a connection actually succeeds, so a bad
   // entry isn't remembered as the new default.
+  //
+  // What is stored is what the operator typed, scheme prefix and all. Storing
+  // the bare host instead would drop a typed `wss://` on the next launch and
+  // reconnect a native client over `ws://`, which is the failure this screen
+  // just helped them avoid.
   Future<void> _saveLastGood(String host, int port) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_hostPrefKey, host);
@@ -93,8 +152,11 @@ class _ConnectScreenState extends State<ConnectScreen> {
   Future<void> _connect() async {
     if (_connecting) return;
 
-    final host = _hostCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim());
+    final typed = parseServerField(_hostCtrl.text);
+    // A port in the address wins over the Port field: it is the more specific
+    // thing the operator said, and pasting "wss://name:8443" while the field
+    // still reads 7878 is the obvious way to arrive here.
+    final port = typed.port ?? int.tryParse(_portCtrl.text.trim());
     if (port == null || port < 1 || port > 65535) {
       setState(() => _portError = 'Enter a port between 1 and 65535.');
       return;
@@ -103,11 +165,17 @@ class _ConnectScreenState extends State<ConnectScreen> {
     setState(() {
       _portError = null;
       _connecting = true;
+      // Don't leave the field showing a port that is not the one being dialled.
+      if (typed.port != null) _portCtrl.text = '$port';
     });
-    _pendingHost = host;
+    _pendingHost = _hostCtrl.text.trim();
     _pendingPort = port;
     widget.connection.addListener(_onConnectionChanged);
-    await widget.connection.connect(host, port);
+    await widget.connection.connect(
+      typed.host,
+      port,
+      secure: useSecureScheme(typed: typed.secure),
+    );
     // Outcome (connected / error) is handled by _onConnectionChanged.
   }
 

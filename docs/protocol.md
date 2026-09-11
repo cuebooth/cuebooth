@@ -16,7 +16,7 @@ The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*
 
 ## 1. Connection lifecycle
 
-1. Client opens a WebSocket to `ws://<host>:<port>/ws`.
+1. Client opens a WebSocket to `ws://<host>:<port>/ws`, or to `wss://` where the server sits behind a TLS front. The server itself terminates no TLS; `wss://` means a reverse proxy in front of it does (`tailscale serve`, for example). A client served as a web page MUST follow the scheme the page arrived over — a browser refuses a `ws://` socket from an `https://` page as mixed content — and a client given a bare address MAY default to `ws://`.
 2. Server immediately sends a `hello` frame. Clients MUST NOT send any frame on `/ws` (`cmd`, `subscribe`/`unsubscribe`, `get_state`, or `ping`) until they have received `hello`; servers MUST send it within 500 ms of accepting the socket.
 3. Server then sends an initial `state` snapshot for the client's default subscription (all non-meter topics) — see [§4](#4-server--client-messages). No `subscribe` or `get_state` is required to receive it.
 4. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
@@ -25,6 +25,8 @@ The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*
 ### Authentication
 
 v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + Tailscale per [design.md](design.md) §3.7 *Remote Access*). A future revision will add a token handshake; that's out of scope for v1.
+
+**Behind a TLS front.** `/ws` admits a browser page whose `Origin` host equals the request's `Host`, and that comparison is the cross-site-WebSocket-hijacking defence standing in for the auth v1 does not have. A reverse proxy terminating TLS MUST therefore pass the original `Host` through unmodified: one that rewrites it to the backend address turns every browser client away. Only the host is compared, not the scheme, so an `Origin` of `https://name` is admitted against a `Host` of `name` — TLS termination needs no exception, only an intact `Host`.
 
 ### Versioning
 

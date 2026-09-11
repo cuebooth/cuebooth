@@ -96,6 +96,71 @@ void main() {
     });
   });
 
+  group('ServerConnection scheme (CB-097)', () {
+    // Captures the URI the transport actually dials, which is the whole
+    // question here — the fake channel itself does not matter.
+    ({ServerConnection conn, List<Uri> dialled}) harness() {
+      final dialled = <Uri>[];
+      final conn = ServerConnection(
+        connectChannel: (uri) {
+          dialled.add(uri);
+          return FakeWebSocketChannel();
+        },
+      );
+      return (conn: conn, dialled: dialled);
+    }
+
+    test('defaults to ws:// — a native client at a bare address', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('production-pc', 7878);
+
+      expect(h.dialled.single.scheme, 'ws');
+      expect(h.dialled.single.host, 'production-pc');
+      expect(h.dialled.single.port, 7878);
+      expect(h.dialled.single.path, '/ws');
+      expect(h.conn.httpBase?.scheme, 'http');
+    });
+
+    test('secure: true dials wss://', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.dialled.single.scheme, 'wss');
+      expect(h.dialled.single.host, 'pc.tailnet.ts.net');
+      expect(h.dialled.single.path, '/ws');
+    });
+
+    // The chat routes (#84) derive their base from this, so a TLS-fronted
+    // socket has to carry them to https or they dial back out in cleartext.
+    test('httpBase follows the socket scheme to https', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.conn.httpBase?.scheme, 'https');
+      expect(h.conn.httpBase?.host, 'pc.tailnet.ts.net');
+      expect(h.conn.httpBase?.path, '');
+    });
+
+    // Backoff reconnects reuse the stored URI; the scheme must not silently
+    // revert to ws:// on the second attempt.
+    test('a reconnect keeps wss://', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.dialled, hasLength(2));
+      expect(h.dialled.every((u) => u.scheme == 'wss'), isTrue);
+    });
+  });
+
   group('ServerConnection transport (fake channel)', () {
     test('connected only after ready; frames reach messages', () async {
       final fake = FakeWebSocketChannel();

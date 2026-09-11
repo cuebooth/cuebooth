@@ -24,7 +24,7 @@ The only wiring constraints:
 |---|---|---|
 | server → Companion Satellite API | TCP `16622` | server dials Companion |
 | server → Companion HTTP API | `http://localhost:8000` | server calls Companion |
-| client → server WebSocket | `ws://<server>:7878/ws` | client dials the server |
+| client → server WebSocket | `ws://<server>:7878/ws` (`wss://` behind a TLS front) | client dials the server |
 | sidecar → server | `\\.\pipe\cuebooth-sidecar` | sidecar writes to the server |
 
 The processes can all run on one machine or be split across the network however you like (e.g. Companion + server on the production PC, client on an iPad over Tailscale). Point a native client at the server's reachable address; a browser client is served by the server itself, so it is already pointed at it ([§3.1](#31-bundling-the-web-client-into-the-server)).
@@ -101,7 +101,17 @@ Be clear about what that check is, though: it compares two headers the requestin
 
 `make web` passes `--no-web-resources-cdn`, which is what makes the loader read CanvasKit from here rather than `gstatic.com`; without the flag the whole 37 MB is embedded and never requested.
 
-**Plain HTTP only.** The client builds a `ws://` URL unconditionally, so a page served over HTTPS loads and then cannot connect — the browser blocks the socket as mixed content, and the connect screen's origin prefill will have filled in port 443. Serve this over plain HTTP and reach it by LAN IP or tailnet address. [CB-097](https://github.com/cuebooth/cuebooth/issues/90) tracks choosing the scheme from the page.
+**HTTPS works, and the server does not do it.** The server terminates no TLS; a reverse proxy in front of it does. The client follows the page: served over `https://` it opens the socket as `wss://`, served over `http://` it uses `ws://`. There is nothing to configure on either side.
+
+The proxy must pass the original `Host` through unmodified. `/ws` admits a page whose `Origin` host equals the request's `Host`, so a proxy that rewrites `Host` to the backend address turns every browser client away ([protocol.md](protocol.md) §1). `tailscale serve` preserves it, and issues a real certificate for the tailnet name without exposing anything publicly:
+
+```sh
+cd server && make web && make build
+./bin/cuebooth-server -config <your config>   # still plain HTTP, on 7878
+tailscale serve --bg 7878                     # https://<name>.ts.net → 127.0.0.1:7878
+```
+
+Open `https://<name>.ts.net` and the client loads and connects; DevTools → Network → WS shows `wss://<name>.ts.net/ws`. A native client has no page to infer from, so reach the same deployment by typing the scheme into the Host field — see [Connecting to the server](#connecting-to-the-server).
 
 ---
 
@@ -181,7 +191,9 @@ On the **Connect** screen, enter the server's `host:port`:
 - everything on one machine → `127.0.0.1` / `7878`
 - client on a separate device → the server's LAN or Tailscale IP / `7878`
 
-The last successful address is remembered and prefilled on the next launch. The transport is cleartext `ws://` for v1 (reach the server by LAN IP or over Tailscale, which provides the encrypted link).
+The last successful address is remembered and prefilled on the next launch — including a scheme, if you typed one.
+
+The transport is `ws://` unless something says otherwise, which is the usual case: reach the server by LAN IP or over Tailscale, which provides the encrypted link. Two things select `wss://`. A page served over `https://` always uses it, because a browser refuses a cleartext socket from such a page. And on any build, typing a scheme into the Host field — `wss://production-pc.tailnet.ts.net`, or the `https://` URL from your browser's address bar — selects it explicitly, which is how a *native* client reaches a server behind a TLS front. A bare address stays `ws://`. If the address carries a port, it wins over the Port field.
 
 **In a browser, only one address works**: the one the page was served from, which is already prefilled. `/ws` compares the request's `Origin` against its `Host`, so a page served from `192.168.1.50:7878` gets a 403 if you point it at the same server's tailnet address instead. The fields are editable because the same screen runs on native builds, where any reachable address is fine.
 
