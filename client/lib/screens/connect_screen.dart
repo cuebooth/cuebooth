@@ -122,7 +122,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
 
   void _onHostChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      // An address that brings its own port retires any complaint about the
+      // Port field, which is no longer read — and whose errorText would
+      // otherwise hide the helper saying so.
+      if (parseServerField(_hostCtrl.text).port != null) _portError = null;
+    });
   }
 
   // Prefill the last server we successfully connected to, so reconnecting
@@ -178,7 +184,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
       _connecting = true;
     });
     _pendingHost = _hostCtrl.text.trim();
-    _pendingPort = port;
+    // Remember the Port field's own value rather than one an address implied.
+    // The address implies it again next launch, whereas a bare address typed
+    // then wants the port the operator last chose, not that of a TLS front.
+    final fieldPort = int.tryParse(_portCtrl.text.trim());
+    _pendingPort = (fieldPort != null && fieldPort >= 1 && fieldPort <= 65535)
+        ? fieldPort
+        : port;
     widget.connection.addListener(_onConnectionChanged);
     await widget.connection.connect(
       typed.host,

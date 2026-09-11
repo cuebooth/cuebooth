@@ -339,7 +339,14 @@ void main() {
         'wss://pc.tailnet.ts.net',
         reason: 'the scheme must survive to the next launch',
       );
-      expect(prefs.getInt('server_port'), 443);
+      // 7878 is what the Port field holds; 443 is what this address implied and
+      // will imply again. Storing 443 would prefill it against a bare address
+      // typed next launch, which is the trap the in-session rule avoids.
+      expect(
+        prefs.getInt('server_port'),
+        7878,
+        reason: 'an implied port must not become the remembered one',
+      );
     });
 
     // And what comes back out selects TLS again, rather than being a prefix the
@@ -480,6 +487,30 @@ void main() {
       await tester.enterText(find.byType(TextField).first, 'production-pc');
       await tester.pump();
       expect(tester.widget<TextField>(portField()).enabled, isTrue);
+    });
+
+    // A port complaint outlives the field it was about: errorText also
+    // suppresses the helper text, so the screen would show a red error against
+    // a disabled field instead of saying where the port now comes from.
+    testWidgets('a port error clears once the address supplies one', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final s = screen();
+      await tester.pumpWidget(s.widget);
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField).last, '');
+      await tester.tap(find.text('Connect'));
+      await tester.pump();
+      expect(find.text('Enter a port between 1 and 65535.'), findsOneWidget);
+      expect(s.dialled, isEmpty, reason: 'nothing should have been dialled');
+
+      await tester.enterText(find.byType(TextField).first, 'wss://name.ts.net');
+      await tester.pump();
+
+      expect(find.text('Enter a port between 1 and 65535.'), findsNothing);
+      expect(find.text('From the address above'), findsOneWidget);
     });
 
     testWidgets('a port in the address overrides the Port field', (
