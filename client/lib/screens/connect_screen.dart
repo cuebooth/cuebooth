@@ -30,8 +30,9 @@ import 'home_screen.dart';
 ///
 /// A `wss`/`https` address settles the port too: the one it carries, or 443,
 /// which is where a TLS front answers and the whole reason to type a scheme.
-/// `ws`/`http` names only the scheme and leaves the port to the Port field —
-/// this server's port is a deployment choice, 7878 by convention and never 80.
+/// `ws`/`http` implies no port of its own: one it spells out is still used, but
+/// otherwise the Port field keeps it, this server's port being a deployment
+/// choice, 7878 by convention and never 80.
 ///
 /// An address carrying a port outside 1..65535 comes back as a bare host,
 /// unparsed, as does one not using the four recognized schemes. ([Uri] has no

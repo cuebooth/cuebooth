@@ -203,7 +203,7 @@ The transport is `ws://` unless something says otherwise, which is the usual cas
 
 A `wss://` or `https://` address settles the port too — the one it carries, or 443, which is where a TLS front answers. So `wss://production-pc.tailnet.ts.net` reaches a `tailscale serve` deployment without touching the Port field, and `wss://production-pc.tailnet.ts.net:8443` reaches one on 8443. While an address supplies the port, the Port field is greyed out and says which port is being used instead.
 
-`ws://` and `http://` name only the scheme; the port stays whatever the Port field holds, since this server's port is a deployment choice and never 80. The Port field is otherwise left exactly as you typed it, and what is remembered for next launch is that value — never a port an address implied.
+`ws://` and `http://` imply no port of their own: unless the address spells one out, as `ws://192.168.1.50:8080` does, the port stays whatever the Port field holds — this server's port is a deployment choice and never 80. The Port field is otherwise left exactly as you typed it, and what is remembered for next launch is that value — never a port an address implied.
 
 **In a browser, only one address works**: the one the page was served from, which is already prefilled. `/ws` compares the request's `Origin` against its `Host`, so a page served from `192.168.1.50:7878` gets a 403 if you point it at the same server's tailnet address instead. The fields are editable because the same screen runs on native builds, where any reachable address is fine.
 
