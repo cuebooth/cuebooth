@@ -161,13 +161,23 @@ void main() {
       expect(parsed.secure, isTrue);
     });
 
-    // The address §3.1 gives a native operator carries no port, and the
-    // deployment it names listens on 443, not on whatever the Port field holds.
-    test('a scheme with no port means that scheme\'s default', () {
+    // The address §3.1 gives a native operator carries no port, and the TLS
+    // front it names answers on 443, not on whatever the Port field holds.
+    test('a secure scheme with no port means 443', () {
       expect(parseServerField('wss://pc.tailnet.ts.net').port, 443);
       expect(parseServerField('https://pc.tailnet.ts.net').port, 443);
-      expect(parseServerField('ws://192.168.1.50').port, 80);
-      expect(parseServerField('http://192.168.1.50').port, 80);
+    });
+
+    // Nothing here listens on 80, so an insecure scheme states the scheme only
+    // and the Port field keeps the deployment's actual port.
+    test('an insecure scheme with no port leaves the port to the field', () {
+      expect(parseServerField('ws://192.168.1.50').port, isNull);
+      expect(parseServerField('http://192.168.1.50').port, isNull);
+      expect(parseServerField('ws://192.168.1.50').secure, isFalse);
+    });
+
+    test('an insecure scheme still honours a port it carries', () {
+      expect(parseServerField('ws://192.168.1.50:7878').port, 7878);
     });
 
     // A bare address says nothing about the port either, so the Port field
@@ -194,10 +204,10 @@ void main() {
 
     // Uri has no default port for ws/wss, so it treats their ":0" as the
     // default and erases it — there is no explicit zero left to reject, and the
-    // address means what "wss://name.ts.net" means.
+    // address means what it would without the ":0".
     test('a ws/wss ":0" is erased by Uri rather than rejected', () {
       expect(parseServerField('wss://name.ts.net:0').port, 443);
-      expect(parseServerField('ws://name.ts.net:0').port, 80);
+      expect(parseServerField('ws://name.ts.net:0').port, isNull);
     });
 
     test('the port bounds themselves are accepted', () {
@@ -457,10 +467,12 @@ void main() {
       await tester.pumpWidget(s.widget);
       await tester.pump();
 
-      await connectWith(tester, 'ws://production-pc');
+      // The first address implies 443; the second must not inherit it.
+      await connectWith(tester, 'wss://production-pc');
       await connectWith(tester, 'production-pc');
 
       expect(s.dialled, hasLength(2));
+      expect(s.dialled.first.toString(), 'wss://production-pc/ws');
       expect(s.dialled.last.port, 7878, reason: 'the field still says 7878');
       expect(s.dialled.last.toString(), 'ws://production-pc:7878/ws');
     });
@@ -481,7 +493,7 @@ void main() {
       await tester.enterText(find.byType(TextField).first, 'wss://name.ts.net');
       await tester.pump();
       expect(tester.widget<TextField>(portField()).enabled, isFalse);
-      expect(find.text('From the address above'), findsOneWidget);
+      expect(find.text('Using 443, from the address above'), findsOneWidget);
 
       // ...and it comes back when the address stops carrying one.
       await tester.enterText(find.byType(TextField).first, 'production-pc');
@@ -510,7 +522,7 @@ void main() {
       await tester.pump();
 
       expect(find.text('Enter a port between 1 and 65535.'), findsNothing);
-      expect(find.text('From the address above'), findsOneWidget);
+      expect(find.text('Using 443, from the address above'), findsOneWidget);
     });
 
     testWidgets('a port in the address overrides the Port field', (
