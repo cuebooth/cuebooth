@@ -111,7 +111,7 @@ cd server && make web && make build
 tailscale serve --bg 7878                                      # https://<name>.ts.net → 127.0.0.1:7878
 ```
 
-`configs/cuebooth.tls-test.toml` is a fixture for exactly this check: no Companion, no presets, no chat, so nothing that could fail for its own reasons is in the picture. The button grid therefore comes up empty — the client leaving the connect screen at all is what proves the socket opened, since it waits for the server's `hello` first.
+`configs/cuebooth.tls-test.toml` is a fixture for exactly this check: no Companion, no presets, no chat, so nothing that could fail for its own reasons is in the picture. The client settles at "Waiting for the Companion surface…", and that is the pass: with no satellite there is no surface layout to draw, and the screen it appears on is one the client only opens after the socket is up and `hello` has arrived.
 
 Open `https://<name>.ts.net` and the client loads and connects; DevTools → Network → WS shows `wss://<name>.ts.net/ws`. A native client has no page to infer from, so reach the same deployment by typing the scheme into the Host field — see [Connecting to the server](#connecting-to-the-server).
 

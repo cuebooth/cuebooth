@@ -27,8 +27,9 @@ base_url = "http://127.0.0.1:8099"
 
 [companion.satellite]
 # Off, so the server starts with nothing else installed and the check needs only
-# a browser. The client's button grid then comes up empty: that is this fixture
-# working, not the connection failing. What proves the connection is the client
-# leaving the connect screen at all — it does that only after the socket opens
-# and the server's `hello` arrives (protocol.md §1).
+# a browser. The client then sits at "Waiting for the Companion surface…", which
+# is this fixture working rather than the connection failing: no satellite means
+# no surface layout to draw. Reaching that screen at all is the result being
+# checked — it is on the home screen, which the client opens only once the
+# socket is up and the server's `hello` has arrived (protocol.md §1).
 addr = "off"
