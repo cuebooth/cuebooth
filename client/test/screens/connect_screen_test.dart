@@ -1,9 +1,58 @@
+import 'dart:async';
+
 import 'package:cuebooth_client/screens/connect_screen.dart';
 import 'package:cuebooth_client/services/server_connection.dart';
 import 'package:cuebooth_client/services/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:stream_channel/stream_channel.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+/// A channel that can be brought up, which is all the connect screen needs to
+/// reach `connected` and persist the address.
+class _ReadyChannel extends StreamChannelMixin<dynamic>
+    implements WebSocketChannel {
+  final _incoming = StreamController<dynamic>();
+  final _ready = Completer<void>();
+
+  @override
+  Stream<dynamic> get stream => _incoming.stream;
+
+  @override
+  WebSocketSink get sink => _NullSink();
+
+  @override
+  Future<void> get ready => _ready.future;
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+
+  @override
+  String? get protocol => null;
+
+  void completeReady() => _ready.complete();
+}
+
+class _NullSink implements WebSocketSink {
+  @override
+  void add(dynamic data) {}
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future<void> addStream(Stream<dynamic> stream) async {}
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async {}
+
+  @override
+  Future<void> get done => Future<void>.value();
+}
 
 void main() {
   group('defaultServerAddress', () {
@@ -240,6 +289,52 @@ void main() {
   // prefill round-trips a scheme instead of quietly dropping to ws:// on the
   // next launch.
   group('last-good address round-trip', () {
+    // Drives a connection all the way up, because only a connection that
+    // succeeded is persisted. Storing the bare host instead would pass every
+    // other test in this file.
+    testWidgets('a successful connect persists the address as typed', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final channels = <_ReadyChannel>[];
+      final conn = ServerConnection(
+        connectChannel: (_) {
+          final c = _ReadyChannel();
+          channels.add(c);
+          return c;
+        },
+      );
+      addTearDown(conn.dispose);
+      final session = Session(inbound: conn.messages, outbound: conn.send);
+      addTearDown(session.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ConnectScreen(connection: conn, session: session),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(
+        find.byType(TextField).first,
+        'wss://pc.tailnet.ts.net',
+      );
+      await tester.tap(find.text('Connect'));
+      await tester.pump();
+      channels.single.completeReady();
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(
+        prefs.getString('server_host'),
+        'wss://pc.tailnet.ts.net',
+        reason: 'the scheme must survive to the next launch',
+      );
+      expect(prefs.getInt('server_port'), 443);
+    });
+
+    // And what comes back out selects TLS again, rather than being a prefix the
+    // prefill shows and the transport ignores.
     test('a stored wss:// prefix still selects TLS when re-parsed', () {
       const stored = 'wss://pc.tailnet.ts.net';
 
@@ -332,8 +427,28 @@ void main() {
       await connectWith(tester, 'wss://pc.tailnet.ts.net');
 
       expect(s.dialled.single.toString(), 'wss://pc.tailnet.ts.net/ws');
-      // ...and the field says so, rather than still reading 7878.
-      expect(find.widgetWithText(TextField, '443'), findsOneWidget);
+      // The Port field is not rewritten to 443 on the way: this attempt failed,
+      // and the next one, at a bare address, must still get 7878.
+      expect(find.widgetWithText(TextField, '7878'), findsOneWidget);
+    });
+
+    // A failed attempt at an address whose scheme implies a port used to leave
+    // that port in the field, so correcting the address by deleting the scheme
+    // dialled the implied port instead of the one on screen.
+    testWidgets('a failed attempt does not repoint the Port field', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final s = screen();
+      await tester.pumpWidget(s.widget);
+      await tester.pump();
+
+      await connectWith(tester, 'ws://production-pc');
+      await connectWith(tester, 'production-pc');
+
+      expect(s.dialled, hasLength(2));
+      expect(s.dialled.last.port, 7878, reason: 'the field still says 7878');
+      expect(s.dialled.last.toString(), 'ws://production-pc:7878/ws');
     });
 
     testWidgets('a port in the address overrides the Port field', (
@@ -347,8 +462,7 @@ void main() {
       await connectWith(tester, 'wss://pc.tailnet.ts.net:8443');
 
       expect(s.dialled.single.port, 8443);
-      // ...and the field is corrected, rather than showing a port nothing used.
-      expect(find.widgetWithText(TextField, '8443'), findsOneWidget);
+      expect(s.dialled.single.toString(), 'wss://pc.tailnet.ts.net:8443/ws');
     });
   });
 }

@@ -188,17 +188,34 @@ void main() {
       expect(h.dialled.single.toString(), 'wss://pc.tailnet.ts.net:8443/ws');
     });
 
-    // Backoff reconnects reuse the stored URI; the scheme must not silently
-    // revert to ws:// on the second attempt.
-    test('a reconnect keeps wss://', () async {
-      final h = harness();
-      addTearDown(h.conn.dispose);
+    // A backoff reconnect does not go back through connect(): it reopens the
+    // stored URI. Drive a real drop so that path runs.
+    test('a backoff reconnect still dials wss://', () async {
+      final dialled = <Uri>[];
+      final channels = <FakeWebSocketChannel>[];
+      final conn = ServerConnection(
+        connectChannel: (uri) {
+          dialled.add(uri);
+          final c = FakeWebSocketChannel();
+          channels.add(c);
+          return c;
+        },
+      );
+      addTearDown(conn.dispose);
 
-      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
-      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+      await conn.connect('pc.tailnet.ts.net', 443, secure: true);
+      channels[0].completeReady();
+      await pump();
+      expect(conn.state, ServerConnectionState.connected);
 
-      expect(h.dialled, hasLength(2));
-      expect(h.dialled.every((u) => u.scheme == 'wss'), isTrue);
+      // The server goes away.
+      await channels[0].endStream();
+      await pump();
+      expect(conn.state, ServerConnectionState.reconnecting);
+
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      expect(dialled, hasLength(2), reason: 'the retry must dial again');
+      expect(dialled.last.toString(), 'wss://pc.tailnet.ts.net/ws');
     });
   });
 

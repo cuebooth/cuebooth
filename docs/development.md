@@ -105,7 +105,7 @@ Be clear about what that check is, though: it compares two headers the requestin
 
 The *address* does, if chat is enabled. `/chat/*` answers only on the addresses `chat.public_url` names, and the OAuth redirect is built from the first of them — so reaching the server at a new `https://` name without adding it there leaves the button grid working and Chat answering 403, and re-authorizing sends Restream a redirect back to the old `http://` address. Add the new name to `public_url` (it takes a list) before putting TLS in front of a deployment that uses chat. See [protocol.md](protocol.md) §11.
 
-The proxy must pass the original `Host` through unmodified. `/ws` admits a page whose `Origin` host equals the request's `Host`, so a proxy that rewrites `Host` to the backend address turns every browser client away ([protocol.md](protocol.md) §1). `tailscale serve` preserves it, and issues a real certificate for the tailnet name without exposing anything publicly:
+The proxy must pass the original `Host` through unmodified — including not adding a port the browser left out, since `/ws` compares the `Origin`'s host *and port* against `Host` ([protocol.md](protocol.md) §1). A proxy that rewrites `Host` to the backend address, or appends `:443` to it, turns every browser client away while native clients keep working. `tailscale serve` passes it through, and issues a real certificate for the tailnet name without exposing anything publicly:
 
 ```sh
 cd server && make web && make build
@@ -201,7 +201,7 @@ The last successful address is remembered and prefilled on the next launch — i
 
 The transport is `ws://` unless something says otherwise, which is the usual case: reach the server by LAN IP or over Tailscale, which provides the encrypted link. Two things select `wss://`. A page served over `https://` always uses it, because a browser refuses a cleartext socket from such a page. And on any build, typing a scheme into the Host field — `wss://production-pc.tailnet.ts.net`, or the `https://` URL from your browser's address bar — selects it explicitly, which is how a *native* client reaches a server behind a TLS front. A bare address stays `ws://`.
 
-An address that names a scheme settles the port too — the one it carries, or that scheme's default (443 for `wss://` and `https://`, 80 for `ws://` and `http://`) — and the Port field follows along to show it. So `wss://production-pc.tailnet.ts.net` reaches a `tailscale serve` deployment on 443 without touching the Port field, and `wss://production-pc.tailnet.ts.net:8443` reaches one on 8443. The Port field is what a bare address uses.
+An address that names a scheme settles the port too — the one it carries, or that scheme's default (443 for `wss://` and `https://`, 80 for `ws://` and `http://`). So `wss://production-pc.tailnet.ts.net` reaches a `tailscale serve` deployment on 443 without touching the Port field, and `wss://production-pc.tailnet.ts.net:8443` reaches one on 8443. The Port field is what a bare address uses, and it is left as you typed it either way.
 
 **In a browser, only one address works**: the one the page was served from, which is already prefilled. `/ws` compares the request's `Origin` against its `Host`, so a page served from `192.168.1.50:7878` gets a 403 if you point it at the same server's tailnet address instead. The fields are editable because the same screen runs on native builds, where any reachable address is fine.
 

@@ -170,11 +170,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
       return;
     }
 
+    // The Port field is left as the operator typed it. Writing the address's
+    // port into it here would survive a failed attempt, so stripping the scheme
+    // back off and retrying would dial the port the address implied rather than
+    // the one still wanted. What worked is remembered by _saveLastGood instead.
     setState(() {
       _portError = null;
       _connecting = true;
-      // Don't leave the field showing a port that is not the one being dialled.
-      if (typed.port != null) _portCtrl.text = '$port';
     });
     _pendingHost = _hostCtrl.text.trim();
     _pendingPort = port;
