@@ -338,16 +338,101 @@ check "an Origin header cannot claim the surface registered" "$(say surface_regi
 log "$START" "$REG" "$FORGED_END"
 check "an Origin header cannot claim the surface dropped" "$(say surface_registered)" yes
 
-# surface_registered matches the server's own log messages. The tests above
-# write those lines themselves, so they pin the parser without pinning the
-# contract: a rename in server/ would leave every assertion here passing while
-# `up` and `status` stopped seeing a registered surface.
-echo "# surface_registered matches what the server actually logs"
+# --- web_client_bundled -------------------------------------------------------
+#
+# Which client to reach the server with depends on whether the binary carries a
+# web one, and only the running server knows: build_server runs a plain
+# `go build`, so nothing in the working tree says what was embedded.
+#
+# The message reporting no client contains the text of the one reporting a
+# client, so a parser not anchored on the msg= field reads "no web client
+# bundled" as a client and sends the operator to a page that is not there.
+
+echo "# web_client_bundled"
+
+BUNDLED='time=2026-09-03T00:00:00.500Z level=INFO msg="web client bundled; browse to the listen address to use it"'
+# The backticks are the server's, around `make web` — literal here, not a
+# substitution the linter can be talked out of seeing.
+# shellcheck disable=SC2016
+UNBUNDLED='time=2026-09-03T00:00:00.500Z level=WARN msg="no web client bundled; run `make web` before `make build` to include one"'
+
+log "$START"
+check "a server that has not said is not assumed to have one" "$(say web_client_bundled)" no
+
+log "$START" "$BUNDLED"
+check "a bundled client is bundled" "$(say web_client_bundled)" yes
+
+log "$START" "$UNBUNDLED"
+check "an unbundled one is not" "$(say web_client_bundled)" no
+
+# `make web-clean` then `restart` — the answer is the newest run's, not the log's.
+log "$START" "$BUNDLED" "$START" "$UNBUNDLED"
+check "a client before the newest start does not count" "$(say web_client_bundled)" no
+
+log "$START" "$UNBUNDLED" "$START" "$BUNDLED"
+check "and one after it does" "$(say web_client_bundled)" yes
+
+# Planted in an Origin header and captured from a real server, as the surface's
+# forgeries above were. slog escapes the quotes inside a value, so an unescaped
+# msg="..." is the server's own and a planted one is not.
+FORGED_BUNDLED='time=2026-09-11T18:47:46.265Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"web client bundled; browse to the listen address to use it\\\"\" is not a valid URL with a host"'
+FORGED_UNBUNDLED='time=2026-09-11T18:48:01.007Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"no web client bundled; run x\\\"\" is not a valid URL with a host"'
+
+log "$START" "$UNBUNDLED" "$FORGED_BUNDLED"
+check "an Origin header cannot claim a client is bundled" "$(say web_client_bundled)" no
+
+log "$START" "$BUNDLED" "$FORGED_UNBUNDLED"
+check "nor that one is missing" "$(say web_client_bundled)" yes
+
+# --- connect_instructions -----------------------------------------------------
+#
+# Where `up` tells an operator which client to use. Naming the browser on a
+# build with no web client is the confusion this is here to prevent.
+
+echo "# connect_instructions"
+
+log "$START" "$BUNDLED"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+check "a bundled client is offered the browser" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c "open  http://dev.example.ts.net:${SERVER_PORT}")" 1
+check "and is not told to build one" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make web')" 0
+
+log "$START" "$UNBUNDLED"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+check "an unbundled one names the command that fixes it" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make web && scripts/devstack.sh restart')" 1
+check "and is not sent to a browser that would find nothing" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'open  http://')" 0
+
+# status reports it too, since `up` prints the instructions once and `restart`
+# does not print them at all.
+status_line() {
+  (
+    companion_running() { return 1; }
+    server_running() { return 0; }
+    cmd_status 2>/dev/null | grep -c "$1"
+  )
+}
+
+log "$START" "$BUNDLED"
+check "status says a build carries a client" "$(status_line 'client      bundled')" 1
+
+log "$START" "$UNBUNDLED"
+check "status says when one does not" "$(status_line 'client      none')" 1
+
+# The parsers above match the server's own log messages. The tests write those
+# lines themselves, so they pin the parser without pinning the contract: a
+# rename in server/ would leave every assertion here passing while `up` and
+# `status` stopped seeing a registered surface, or a bundled client.
+echo "# the log parsers match what the server actually logs"
 
 SERVER_SRC="$SCRIPT_DIR/../server"
 for msg in "cuebooth-server starting" \
            "companion satellite registered" \
-           "companion satellite session ended"; do
+           "companion satellite session ended" \
+           "web client bundled; browse to the listen address to use it" \
+           "no web client bundled; run \`make web\` before \`make build\` to include one"; do
   check "the server still logs \"$msg\"" \
     "$(grep -rlF "\"$msg\"" "$SERVER_SRC" --include='*.go' 2>/dev/null | grep -cv '_test\.go' | tr -d ' ')" 1
 done

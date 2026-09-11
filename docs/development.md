@@ -303,7 +303,23 @@ cd client && flutter run -d macos      # or windows, or a device
 
 …and connect to the `host:7878` that `status` prints.
 
-Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type.
+Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type. The server's own port is the exception — the page and the socket share it, which is what makes a browser a client at all ([§3.1](#31-bundling-the-web-client-into-the-server)).
+
+**Whether that browser has anything to open is a property of the build, and `status` says which.** `build_server` runs a plain `go build`, which embeds whatever `make web` last staged in `server/internal/webui/dist` — and nothing here stages it, so by default `http://<host>:7878` answers with the page saying no client is bundled. To serve the client from there too:
+
+```sh
+cd server && make web
+scripts/devstack.sh restart      # go build, embedding what make web staged
+```
+
+That persists until `make web-clean`. `up` and `status` report which of the two this build is, so it is not something to keep track of:
+
+```
+client      bundled — open http://<host>:7878 in a browser
+client      none — this build has no web client; use a native client
+```
+
+Staging is deliberately not automatic. It would put the Flutter SDK on the dependency list of a fixture that otherwise needs only Go, podman and python3, and add about a minute to every `restart` — for a step most runs of this stack do not want.
 
 ### What it binds, and what it doesn't
 
