@@ -5,7 +5,8 @@
 # PC.
 #
 #   scripts/devstack.sh up        # start both, print where to point a client
-#   scripts/devstack.sh status    # what is running, and whether the surface registered
+#   scripts/devstack.sh status    # what is running, whether it carries a web client,
+#                                 # and whether the surface registered
 #   scripts/devstack.sh logs [companion|server]
 #   scripts/devstack.sh restart   # rebuild and restart the server only
 #   scripts/devstack.sh down      # stop both; Companion's config survives
@@ -630,7 +631,7 @@ EOF
   ...and connect to  ${host}:${SERVER_PORT}
 
 Nothing in $SERVER_LOG says whether this build carries a web client; a restart
-makes the server say again — back on this host, from the repo root:
+makes the server say so again — back on this host, from the repo root:
   scripts/devstack.sh restart
 EOF
       ;;

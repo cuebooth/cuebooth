@@ -270,7 +270,7 @@ The buttons that appear are whatever page Companion has assigned to the surface 
 
 ```sh
 scripts/devstack.sh up        # start both; prints where to point a client
-scripts/devstack.sh status    # what is up, and whether the surface registered
+scripts/devstack.sh status    # what is up, whether it carries a web client, and whether the surface registered
 scripts/devstack.sh logs server        # or: logs companion
 scripts/devstack.sh restart   # rebuild and restart the server only
 scripts/devstack.sh down      # stop both; Companion's config is kept
