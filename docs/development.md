@@ -107,11 +107,15 @@ The proxy must pass the original `Host` through unmodified. `/ws` admits a page 
 
 ```sh
 cd server && make web && make build
-./bin/cuebooth-server -config <your config>   # still plain HTTP, on 7878
-tailscale serve --bg 7878                     # https://<name>.ts.net → 127.0.0.1:7878
+./bin/cuebooth-server -config configs/cuebooth.tls-test.toml   # plain HTTP, on 7878
+tailscale serve --bg 7878                                      # https://<name>.ts.net → 127.0.0.1:7878
 ```
 
+`configs/cuebooth.tls-test.toml` is a fixture for exactly this check: no Companion, no presets, no chat, so nothing that could fail for its own reasons is in the picture. The button grid therefore comes up empty — the client leaving the connect screen at all is what proves the socket opened, since it waits for the server's `hello` first.
+
 Open `https://<name>.ts.net` and the client loads and connects; DevTools → Network → WS shows `wss://<name>.ts.net/ws`. A native client has no page to infer from, so reach the same deployment by typing the scheme into the Host field — see [Connecting to the server](#connecting-to-the-server).
+
+Undo it with `tailscale serve reset` when you are done, or the tailnet name keeps answering after the server is gone.
 
 ---
 
