@@ -338,7 +338,7 @@ check "an Origin header cannot claim the surface registered" "$(say surface_regi
 log "$START" "$REG" "$FORGED_END"
 check "an Origin header cannot claim the surface dropped" "$(say surface_registered)" yes
 
-# --- web_client_bundled -------------------------------------------------------
+# --- web_client_state ---------------------------------------------------------
 #
 # Which client to reach the server with depends on whether the binary carries a
 # web one, and only the running server knows: build_server runs a plain
@@ -347,8 +347,11 @@ check "an Origin header cannot claim the surface dropped" "$(say surface_registe
 # The message reporting no client contains the text of the one reporting a
 # client, so a parser not anchored on the msg= field reads "no web client
 # bundled" as a client and sends the operator to a page that is not there.
+#
+# A log that says neither is its own answer: reporting silence as "no client"
+# asserts something false about a binary that may well be serving one.
 
-echo "# web_client_bundled"
+echo "# web_client_state"
 
 BUNDLED='time=2026-09-03T00:00:00.500Z level=INFO msg="web client bundled; browse to the listen address to use it"'
 # The backticks are the server's, around `make web` — literal here, not a
@@ -357,20 +360,29 @@ BUNDLED='time=2026-09-03T00:00:00.500Z level=INFO msg="web client bundled; brows
 UNBUNDLED='time=2026-09-03T00:00:00.500Z level=WARN msg="no web client bundled; run `make web` before `make build` to include one"'
 
 log "$START"
-check "a server that has not said is not assumed to have one" "$(say web_client_bundled)" no
+check "a server that has not said is not guessed at" "$(web_client_state)" unknown
 
 log "$START" "$BUNDLED"
-check "a bundled client is bundled" "$(say web_client_bundled)" yes
+check "a bundled client is bundled" "$(web_client_state)" yes
 
 log "$START" "$UNBUNDLED"
-check "an unbundled one is not" "$(say web_client_bundled)" no
+check "an unbundled one is not" "$(web_client_state)" no
 
 # `make web-clean` then `restart` — the answer is the newest run's, not the log's.
 log "$START" "$BUNDLED" "$START" "$UNBUNDLED"
-check "a client before the newest start does not count" "$(say web_client_bundled)" no
+check "a client before the newest start does not count" "$(web_client_state)" no
 
 log "$START" "$UNBUNDLED" "$START" "$BUNDLED"
-check "and one after it does" "$(say web_client_bundled)" yes
+check "and one after it does" "$(web_client_state)" yes
+
+# A log truncated to reproduce something, or removed, describes no binary. Saying
+# "none" there costs a Flutter build and a restart to fix nothing, and tells an
+# operator to stop using a browser client that works.
+: > "$SERVER_LOG"
+check "a truncated log is not a missing client" "$(web_client_state)" unknown
+
+rm -f "$SERVER_LOG"
+check "nor is no log at all" "$(web_client_state)" unknown
 
 # Planted in an Origin header and captured from a real server, as the surface's
 # forgeries above were. slog escapes the quotes inside a value, so an unescaped
@@ -379,10 +391,10 @@ FORGED_BUNDLED='time=2026-09-11T18:47:46.265Z level=WARN msg="websocket accept f
 FORGED_UNBUNDLED='time=2026-09-11T18:48:01.007Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"no web client bundled; run x\\\"\" is not a valid URL with a host"'
 
 log "$START" "$UNBUNDLED" "$FORGED_BUNDLED"
-check "an Origin header cannot claim a client is bundled" "$(say web_client_bundled)" no
+check "an Origin header cannot claim a client is bundled" "$(web_client_state)" no
 
 log "$START" "$BUNDLED" "$FORGED_UNBUNDLED"
-check "nor that one is missing" "$(say web_client_bundled)" yes
+check "nor that one is missing" "$(web_client_state)" yes
 
 # --- connect_instructions -----------------------------------------------------
 #
@@ -401,9 +413,23 @@ check "and is not told to build one" \
 log "$START" "$UNBUNDLED"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
 check "an unbundled one names the command that fixes it" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make web && scripts/devstack.sh restart')" 1
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
 check "and is not sent to a browser that would find nothing" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'open  http://')" 0
+
+# The remedy is pasted whole, so every command in it runs from where `up` was
+# run. `cd server` first would leave the restart resolving to
+# server/scripts/devstack.sh, which does not exist — after a minute of Flutter.
+check "and the remedy does not leave the repo root" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'cd server')" 0
+
+# Silence is not a missing client, so it does not get the sentence asserting one.
+: > "$SERVER_LOG"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+check "an undetermined build does not claim to have no client" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'carries no web client')" 0
+check "but still says how to build one" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
 
 # status reports it too, since `up` prints the instructions once and `restart`
 # does not print them at all.
@@ -420,6 +446,10 @@ check "status says a build carries a client" "$(status_line 'client      bundled
 
 log "$START" "$UNBUNDLED"
 check "status says when one does not" "$(status_line 'client      none')" 1
+
+: > "$SERVER_LOG"
+check "and does not assert either way when the log is silent" \
+  "$(status_line 'client      unknown')" 1
 
 # The parsers above match the server's own log messages. The tests write those
 # lines themselves, so they pin the parser without pinning the contract: a

@@ -533,23 +533,30 @@ surface_registered() {
   [[ "$last" == "up" ]]
 }
 
-# web_client_bundled reports whether the server now running has a web client
-# built into it. build_server runs a plain `go build`, which embeds whatever
-# `make web` last staged, so this is settled when the binary is built and cannot
-# be read off this script or the working tree. The server says which at startup.
+# web_client_state reports whether the server now running has a web client built
+# into it — yes, no, or unknown. build_server runs a plain `go build`, which
+# embeds whatever `make web` last staged, so this is settled when the binary is
+# built and cannot be read off this script or the working tree. The server says
+# which at startup.
+#
+# Unknown is an answer, not a no. A log that has been truncated or removed says
+# nothing about the binary, and reporting that as "no client" sends an operator
+# to rebuild one the server is already serving.
 #
 # Matched on the whole msg= field, for the reason surface_registered gives. The
 # opening quote also separates the two messages, since the one reporting no
 # client contains the text of the one reporting a client.
-web_client_bundled() {
+web_client_state() {
   local last
+  # awk does not reach END when the log is missing, so the default is the
+  # shell's rather than the script's.
   last="$(awk '
     /msg="cuebooth-server starting"/  { latest = "" }
     /msg="web client bundled/         { latest = "yes" }
     /msg="no web client bundled/      { latest = "no" }
     END                               { print latest }
   ' "$SERVER_LOG" 2>/dev/null)"
-  [[ "$last" == "yes" ]]
+  echo "${last:-unknown}"
 }
 
 # wait_for_surface gives the first connection a moment to land, so `up` reports
@@ -594,22 +601,35 @@ Next, once only:
 
 Then, from your laptop:
 EOF
-  if web_client_bundled; then
-    cat <<EOF
+  case "$(web_client_state)" in
+    yes)
+      cat <<EOF
   open  http://${host}:${SERVER_PORT}   — this build carries the web client
   or:   cd client && flutter run -d macos      # or windows, or a device
         ...and connect to  ${host}:${SERVER_PORT}
 EOF
-  else
-    cat <<EOF
+      ;;
+    no)
+      cat <<EOF
   cd client && flutter run -d macos      # or windows, or a device
   ...and connect to  ${host}:${SERVER_PORT}
 
 This build carries no web client, so http://${host}:${SERVER_PORT} answers with
 a page saying so. To serve the client from there too, once:
-  cd server && make web && scripts/devstack.sh restart
+  make -C server web && scripts/devstack.sh restart
 EOF
-  fi
+      ;;
+    *)
+      cat <<EOF
+  cd client && flutter run -d macos      # or windows, or a device
+  ...and connect to  ${host}:${SERVER_PORT}
+
+Nothing in $SERVER_LOG says whether this build carries a web client; status
+says once the server has logged its startup line. To build one:
+  make -C server web && scripts/devstack.sh restart
+EOF
+      ;;
+  esac
   cat <<EOF
 
 Not -d chrome: a Flutter dev server serves the page from its own port, and
@@ -670,11 +690,11 @@ cmd_status() {
     echo "server      down"
   fi
   if server_running; then
-    if web_client_bundled; then
-      echo "client      bundled — open http://${host}:${SERVER_PORT} in a browser"
-    else
-      echo "client      none — this build has no web client; use a native client"
-    fi
+    case "$(web_client_state)" in
+      yes) echo "client      bundled — open http://${host}:${SERVER_PORT} in a browser" ;;
+      no)  echo "client      none — this build has no web client; use a native client" ;;
+      *)   echo "client      unknown — nothing in $SERVER_LOG says" ;;
+    esac
   fi
   if companion_running && server_running; then
     if surface_registered; then

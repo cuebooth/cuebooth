@@ -308,11 +308,11 @@ Not `-d chrome`: a Flutter dev server serves the page from its own port, and the
 **Whether that browser has anything to open is a property of the build, and `status` says which.** `build_server` runs a plain `go build`, which embeds whatever `make web` last staged in `server/internal/webui/dist` — and nothing here stages it, so by default `http://<host>:7878` answers with the page saying no client is bundled. To serve the client from there too:
 
 ```sh
-cd server && make web
+make -C server web
 scripts/devstack.sh restart      # go build, embedding what make web staged
 ```
 
-That persists until `make web-clean`. `up` and `status` report which of the two this build is, so it is not something to keep track of:
+The staged build persists until `make web-clean`, so later `restart`s keep embedding it. `up` and `status` report which of the two this build is, so it is not something to keep track of:
 
 ```
 client      bundled — open http://<host>:7878 in a browser
