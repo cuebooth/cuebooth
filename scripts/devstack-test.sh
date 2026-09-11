@@ -409,6 +409,13 @@ check "an Origin header cannot claim a client is bundled" "$(web_client_state)" 
 log "$START" "$BUNDLED" "$FORGED_UNBUNDLED"
 check "nor that one is missing" "$(web_client_state)" yes
 
+# The reset carries the same anchor as the two message rules, and the same
+# reason: an Origin naming a new run would otherwise discard what this one said.
+FORGED_START='time=2026-09-11T21:49:39.553Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"cuebooth-server starting\\\"\" is not a valid URL with a host"'
+
+log "$START" "$BUNDLED" "$FORGED_START"
+check "nor that the server restarted" "$(web_client_state)" yes
+
 # --- connect_instructions -----------------------------------------------------
 #
 # Where `up` tells an operator which client to use. Naming the browser on a
@@ -418,8 +425,10 @@ echo "# connect_instructions"
 
 log "$START" "$BUNDLED"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+# The advice, not the address: both branches name the address, the unbundled one
+# to say what answers there.
 check "a bundled client is offered the browser" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c "http://dev.example.ts.net:${SERVER_PORT}")" 1
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c "^  open a browser at  http://dev.example.ts.net:${SERVER_PORT}")" 1
 check "and is not told to build one" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web')" 0
 
@@ -453,8 +462,8 @@ check "an undetermined build does not claim to have no client" \
 # to log again is advice that never comes true; a restart is what does.
 check "and names the restart that resolves it, not a wait" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c '^  scripts/devstack.sh restart$')" 1
-check "and does not promise status will answer on its own" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'logged its startup line')" 0
+check "and says which host and directory that runs on too" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host')" 1
 
 # Gating that restart behind `make web` would make the one command offered need
 # Flutter, which this fixture does not: the build fails, && short-circuits, the
@@ -980,6 +989,13 @@ up_without_starting() {
 }
 check "and up is what says it" \
   "$(DEVSTACK_BIND=0.0.0.0 up_without_starting 2>&1 >/dev/null | grep -c 'every interface')" 1
+
+# cmd_up is the only caller of connect_instructions, and the checks above drive
+# it with cmd_status stubbed out — so without this, dropping the call leaves up
+# printing nothing about which client to reach the server with.
+log "$START" "$BUNDLED"
+check "up prints the connect instructions" \
+  "$(DEVSTACK_BIND=127.0.0.1 up_without_starting 2>/dev/null | grep -c 'Then, from your laptop:')" 1
 
 # up creates the state directory; the credentials an imported production export
 # carries are only protected by the mode it gets. Loosened first, or an earlier
