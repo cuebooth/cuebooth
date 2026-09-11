@@ -24,21 +24,18 @@ import 'home_screen.dart';
 /// Splits what the operator typed into a bare host, an optional port, and the
 /// scheme if one was given.
 ///
-/// A bare address is the ordinary case and leaves `secure` and `port` null —
-/// *not stated*, rather than "insecure" and "no port" — so [useSecureScheme]
-/// can fall back to the page and the caller to its own Port field. Typing a
-/// scheme is how a native client, which has no page to infer from, reaches a
-/// server behind a TLS front.
+/// A bare address leaves `secure` and `port` null — *not stated*, rather than
+/// "insecure" and "no port" — so [useSecureScheme] falls back to the page and
+/// the caller to its Port field.
 ///
-/// An address that names a scheme also settles the port: the one it carries,
-/// or that scheme's default. `https://name.ts.net` means 443, the way it does
-/// everywhere else — taking the Port field instead would dial 7878 against a
-/// deployment that is not there.
+/// An address naming a scheme settles the port too: the one it carries, or that
+/// scheme's default, as `https://name.ts.net` means 443 everywhere else.
 ///
-/// Anything that is not one of the four recognized schemes is returned as a
-/// bare host, unparsed, as is an address whose port is not a usable one.
-/// `ServerConnection.connect` then rejects it the way it always has, which
-/// keeps one error path for malformed input instead of two.
+/// Anything not using one of the four recognized schemes comes back as a bare
+/// host, unparsed, as does an `http`/`https` address carrying an unusable port.
+/// (`ws`/`wss` cannot: [Uri] has no default port for them, so it erases a `:0`
+/// rather than keeping it.) `ServerConnection.connect` rejects those the way it
+/// always has, which keeps one error path for malformed input instead of two.
 ({String host, int? port, bool? secure}) parseServerField(String text) {
   final trimmed = text.trim();
   final uri = Uri.tryParse(trimmed);
@@ -119,7 +116,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   void initState() {
     super.initState();
+    // The Port field's enabled state follows what the Host field parses as.
+    _hostCtrl.addListener(_onHostChanged);
     _loadLastGood();
+  }
+
+  void _onHostChanged() {
+    if (mounted) setState(() {});
   }
 
   // Prefill the last server we successfully connected to, so reconnecting
@@ -136,12 +139,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
 
   // Persist the address only after a connection actually succeeds, so a bad
-  // entry isn't remembered as the new default.
-  //
-  // What is stored is what the operator typed, scheme prefix and all. Storing
-  // the bare host instead would drop a typed `wss://` on the next launch and
-  // reconnect a native client over `ws://`, which is the failure this screen
-  // just helped them avoid.
+  // entry isn't remembered as the new default. What is stored is the text as
+  // typed, scheme and all: storing the bare host would drop a `wss://` prefix
+  // and reconnect over `ws://` on the next launch.
   Future<void> _saveLastGood(String host, int port) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_hostPrefKey, host);
@@ -151,6 +151,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   void dispose() {
     widget.connection.removeListener(_onConnectionChanged);
+    _hostCtrl.removeListener(_onHostChanged);
     _hostCtrl.dispose();
     _portCtrl.dispose();
     super.dispose();
@@ -160,20 +161,18 @@ class _ConnectScreenState extends State<ConnectScreen> {
     if (_connecting) return;
 
     final typed = parseServerField(_hostCtrl.text);
-    // An address that names a scheme carries its own port, explicit or default,
-    // and that wins: it is the more specific thing the operator said, and
-    // pasting "https://name.ts.net" while the field still reads 7878 is the
-    // obvious way to arrive here. The Port field is for a bare address.
+    // An address naming a scheme carries its own port; the Port field is what a
+    // bare address uses. The field is disabled while the address supplies one,
+    // so nothing on screen claims otherwise.
     final port = typed.port ?? int.tryParse(_portCtrl.text.trim());
     if (port == null || port < 1 || port > 65535) {
       setState(() => _portError = 'Enter a port between 1 and 65535.');
       return;
     }
 
-    // The Port field is left as the operator typed it. Writing the address's
-    // port into it here would survive a failed attempt, so stripping the scheme
-    // back off and retrying would dial the port the address implied rather than
-    // the one still wanted. What worked is remembered by _saveLastGood instead.
+    // The Port field keeps what the operator typed: an address's port written
+    // into it here would outlive a failed attempt and be dialled by the next
+    // one. Only a connection that succeeds is remembered, by _saveLastGood.
     setState(() {
       _portError = null;
       _connecting = true;
@@ -227,6 +226,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // An address carrying its own port is what _connect will dial, so the Port
+    // field is inert rather than showing a number nothing reads.
+    final addressCarriesPort = parseServerField(_hostCtrl.text).port != null;
     return Scaffold(
       appBar: AppBar(title: const Text('Connect to CueBooth')),
       body: Center(
@@ -251,10 +253,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 TextField(
                   controller: _portCtrl,
                   keyboardType: TextInputType.number,
-                  enabled: !_connecting,
+                  enabled: !_connecting && !addressCarriesPort,
                   decoration: InputDecoration(
                     labelText: 'Port',
                     errorText: _portError,
+                    helperText: addressCarriesPort
+                        ? 'From the address above'
+                        : null,
                   ),
                   onSubmitted: (_) => _connect(),
                 ),

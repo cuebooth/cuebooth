@@ -161,8 +161,8 @@ void main() {
       expect(parsed.secure, isTrue);
     });
 
-    // Without this the Port field decides, and the documented native-behind-TLS
-    // address dials 7878 against a deployment that only listens on 443.
+    // The address §3.1 gives a native operator carries no port, and the
+    // deployment it names listens on 443, not on whatever the Port field holds.
     test('a scheme with no port means that scheme\'s default', () {
       expect(parseServerField('wss://pc.tailnet.ts.net').port, 443);
       expect(parseServerField('https://pc.tailnet.ts.net').port, 443);
@@ -181,6 +181,7 @@ void main() {
     test('an out-of-range port makes the whole address malformed', () {
       for (final text in [
         'https://name.ts.net:99999',
+        'wss://name.ts.net:99999',
         'https://name.ts.net:0',
       ]) {
         final parsed = parseServerField(text);
@@ -189,6 +190,14 @@ void main() {
         expect(parsed.port, isNull);
         expect(parsed.secure, isNull);
       }
+    });
+
+    // Uri has no default port for ws/wss, so it treats their ":0" as the
+    // default and erases it — there is no explicit zero left to reject, and the
+    // address means what "wss://name.ts.net" means.
+    test('a ws/wss ":0" is erased by Uri rather than rejected', () {
+      expect(parseServerField('wss://name.ts.net:0').port, 443);
+      expect(parseServerField('ws://name.ts.net:0').port, 80);
     });
 
     test('the port bounds themselves are accepted', () {
@@ -414,8 +423,7 @@ void main() {
     });
 
     // The address from development.md §3.1, typed on a fresh client whose Port
-    // field still reads 7878. Before the port defaulted with the scheme this
-    // dialled wss://pc.tailnet.ts.net:7878/ws, where nothing is listening.
+    // field still reads 7878 — which is not where a TLS front is listening.
     testWidgets('a typed wss:// address with no port reaches 443', (
       tester,
     ) async {
@@ -432,9 +440,8 @@ void main() {
       expect(find.widgetWithText(TextField, '7878'), findsOneWidget);
     });
 
-    // A failed attempt at an address whose scheme implies a port used to leave
-    // that port in the field, so correcting the address by deleting the scheme
-    // dialled the implied port instead of the one on screen.
+    // Correcting a failed address by deleting its scheme must dial the port on
+    // screen, not the one the deleted scheme implied.
     testWidgets('a failed attempt does not repoint the Port field', (
       tester,
     ) async {
@@ -449,6 +456,30 @@ void main() {
       expect(s.dialled, hasLength(2));
       expect(s.dialled.last.port, 7878, reason: 'the field still says 7878');
       expect(s.dialled.last.toString(), 'ws://production-pc:7878/ws');
+    });
+
+    // The Port field is not read when the address carries its own, so it says
+    // so rather than displaying a number that will be ignored.
+    testWidgets('the Port field goes inert while the address supplies one', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final s = screen();
+      await tester.pumpWidget(s.widget);
+      await tester.pump();
+
+      Finder portField() => find.byType(TextField).last;
+      expect(tester.widget<TextField>(portField()).enabled, isTrue);
+
+      await tester.enterText(find.byType(TextField).first, 'wss://name.ts.net');
+      await tester.pump();
+      expect(tester.widget<TextField>(portField()).enabled, isFalse);
+      expect(find.text('From the address above'), findsOneWidget);
+
+      // ...and it comes back when the address stops carrying one.
+      await tester.enterText(find.byType(TextField).first, 'production-pc');
+      await tester.pump();
+      expect(tester.widget<TextField>(portField()).enabled, isTrue);
     });
 
     testWidgets('a port in the address overrides the Port field', (
