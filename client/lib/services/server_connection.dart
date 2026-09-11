@@ -26,6 +26,17 @@ enum ServerConnectionState {
 /// connect/reconnect logic deterministically without a real socket.
 typedef ChannelFactory = WebSocketChannel Function(Uri uri);
 
+/// The port to write into the socket URI, or null to leave it implicit.
+///
+/// A page served from `https://name` is the origin `https://name`, and the
+/// socket that matches it is `wss://name/ws` — not `wss://name:443/ws`. Both
+/// reach the same place, but `/ws` admits a socket by comparing the page's
+/// `Origin` against `Host`, and only the first spells that origin the way the
+/// page does. Dart's [Uri] cannot do this itself: it knows the default port of
+/// `http` and `https` but not of `ws` and `wss`, so it writes 443 out verbatim.
+int? _explicitPort(int port, bool secure) =>
+    port == (secure ? 443 : 80) ? null : port;
+
 /// Manages the WebSocket connection to the CueBooth server.
 ///
 /// Authority lies with the server: clients send commands and receive state
@@ -104,7 +115,7 @@ class ServerConnection extends ChangeNotifier {
       uri = Uri(
         scheme: secure ? 'wss' : 'ws',
         host: host,
-        port: port,
+        port: _explicitPort(port, secure),
         path: '/ws',
       );
     } on FormatException catch (e) {

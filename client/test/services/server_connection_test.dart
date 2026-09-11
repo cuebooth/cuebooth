@@ -147,6 +147,48 @@ void main() {
       expect(h.conn.httpBase?.path, '');
     });
 
+    // The tailnet case: `tailscale serve` puts the page on 443, and the socket
+    // has to spell that origin the way the page does, since /ws admits it by
+    // comparing Origin against Host.
+    test('a default port is left implicit, matching the page origin', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.dialled.single.toString(), 'wss://pc.tailnet.ts.net/ws');
+      expect(h.conn.httpBase.toString(), 'https://pc.tailnet.ts.net');
+    });
+
+    test('port 80 is left implicit on ws:// too', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('cuebooth.example', 80);
+
+      expect(h.dialled.single.toString(), 'ws://cuebooth.example/ws');
+    });
+
+    // 443 is only the default for TLS; on ws:// it is an ordinary port and has
+    // to survive into the URI.
+    test('443 on ws:// stays explicit', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('production-pc', 443);
+
+      expect(h.dialled.single.toString(), 'ws://production-pc:443/ws');
+    });
+
+    test('a non-default port is written out', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 8443, secure: true);
+
+      expect(h.dialled.single.toString(), 'wss://pc.tailnet.ts.net:8443/ws');
+    });
+
     // Backoff reconnects reuse the stored URI; the scheme must not silently
     // revert to ws:// on the second attempt.
     test('a reconnect keeps wss://', () async {
