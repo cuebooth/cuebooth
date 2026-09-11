@@ -312,12 +312,15 @@ make -C server web
 scripts/devstack.sh restart      # go build, embedding what make web staged
 ```
 
-The staged build persists until `make web-clean`, so later `restart`s keep embedding it. `up` and `status` report which of the two this build is, so it is not something to keep track of:
+The staged build persists until `make web-clean`, so later `restart`s keep embedding it. `up` and `status` report which this build is, so it is not something to keep track of:
 
 ```
 client      bundled — open http://<host>:7878 in a browser
 client      none — this build has no web client; use a native client
+client      unknown — nothing in <log> says
 ```
+
+The third is a property of the log, not of the build: `.devstack/server.log` spans every run and is never rotated, so an operator who truncates it to read it leaves nothing that says what the running binary carries. A `restart` makes the server report itself again.
 
 Staging is deliberately not automatic. It would put the Flutter SDK on the dependency list of a fixture that otherwise needs only Go, podman and python3, and add about a minute to every `restart` — for a step most runs of this stack do not want.
 

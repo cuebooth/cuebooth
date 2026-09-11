@@ -615,7 +615,8 @@ EOF
   ...and connect to  ${host}:${SERVER_PORT}
 
 This build carries no web client, so http://${host}:${SERVER_PORT} answers with
-a page saying so. To serve the client from there too, once:
+a page saying so. To serve one from there too — back on this host, from the
+repo root, once:
   make -C server web && scripts/devstack.sh restart
 EOF
       ;;
@@ -624,8 +625,8 @@ EOF
   cd client && flutter run -d macos      # or windows, or a device
   ...and connect to  ${host}:${SERVER_PORT}
 
-Nothing in $SERVER_LOG says whether this build carries a web client; status
-says once the server has logged its startup line. To build one:
+Nothing in $SERVER_LOG says whether this build carries a web client; a restart
+makes the server say again — back on this host, from the repo root:
   make -C server web && scripts/devstack.sh restart
 EOF
       ;;

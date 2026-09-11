@@ -423,6 +423,12 @@ check "and is not sent to a browser that would find nothing" \
 check "and the remedy does not leave the repo root" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'cd server')" 0
 
+# It is printed under "from your laptop", four lines below a `cd client`, and
+# belongs to neither: devstack.sh refuses to run anywhere but the host holding
+# the stack, and resolves nothing relative to client/.
+check "and says which host and directory it belongs to" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host, from the$')" 1
+
 # Silence is not a missing client, so it does not get the sentence asserting one.
 : > "$SERVER_LOG"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
@@ -430,6 +436,14 @@ check "an undetermined build does not claim to have no client" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'carries no web client')" 0
 check "but still says how to build one" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
+
+# The only way to reach `unknown` with a server up is a log that was truncated
+# or removed, and that server logged its startup line long ago. Waiting for it
+# to log again is advice that never comes true; a restart is what does.
+check "and names the restart that resolves it, not a wait" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'a restart')" 1
+check "and does not promise status will answer on its own" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'logged its startup line')" 0
 
 # status reports it too, since `up` prints the instructions once and `restart`
 # does not print them at all.
@@ -450,6 +464,14 @@ check "status says when one does not" "$(status_line 'client      none')" 1
 : > "$SERVER_LOG"
 check "and does not assert either way when the log is silent" \
   "$(status_line 'client      unknown')" 1
+
+# §8 prints the lines status can emit. A state the code gains and the doc does
+# not leaves a reader holding a line the documentation says cannot occur.
+DEV_DOC="$SCRIPT_DIR/../docs/development.md"
+for state in bundled none unknown; do
+  check "development.md shows the \"client      $state\" line" \
+    "$(grep -cF "client      $state" "$DEV_DOC")" 1
+done
 
 # The parsers above match the server's own log messages. The tests write those
 # lines themselves, so they pin the parser without pinning the contract: a
