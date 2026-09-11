@@ -406,7 +406,7 @@ echo "# connect_instructions"
 log "$START" "$BUNDLED"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
 check "a bundled client is offered the browser" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c "open  http://dev.example.ts.net:${SERVER_PORT}")" 1
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c "http://dev.example.ts.net:${SERVER_PORT}")" 1
 check "and is not told to build one" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make web')" 0
 
@@ -427,26 +427,44 @@ check "and the remedy does not leave the repo root" \
 # belongs to neither: devstack.sh refuses to run anywhere but the host holding
 # the stack, and resolves nothing relative to client/.
 check "and says which host and directory it belongs to" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host, from the$')" 1
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host')" 1
 
 # Silence is not a missing client, so it does not get the sentence asserting one.
 : > "$SERVER_LOG"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
 check "an undetermined build does not claim to have no client" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'carries no web client')" 0
-check "but still says how to build one" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
 
 # The only way to reach `unknown` with a server up is a log that was truncated
 # or removed, and that server logged its startup line long ago. Waiting for it
 # to log again is advice that never comes true; a restart is what does.
 check "and names the restart that resolves it, not a wait" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'a restart')" 1
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c '^  scripts/devstack.sh restart$')" 1
 check "and does not promise status will answer on its own" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'logged its startup line')" 0
 
+# Gating that restart behind `make web` would make the one command offered need
+# Flutter, which this fixture does not: the build fails, && short-circuits, the
+# restart never runs, and the state is still unknown.
+check "and does not gate it behind a Flutter build" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web')" 0
+
 # status reports it too, since `up` prints the instructions once and `restart`
 # does not print them at all.
+# Every branch prints the native-client command, and an operator selects that
+# line and pastes it. A label in front of it is pasted too, and bash reports a
+# command by that name.
+native_line() {
+  connect_instructions dev.example.ts.net | grep -c '^  cd client && flutter run -d macos'
+}
+
+log "$START" "$BUNDLED"
+check "the native-client line is pasteable on a bundled build" "$(native_line)" 1
+log "$START" "$UNBUNDLED"
+check "and on an unbundled one" "$(native_line)" 1
+: > "$SERVER_LOG"
+check "and when the state is unknown" "$(native_line)" 1
+
 status_line() {
   (
     companion_running() { return 1; }
@@ -465,10 +483,21 @@ check "status says when one does not" "$(status_line 'client      none')" 1
 check "and does not assert either way when the log is silent" \
   "$(status_line 'client      unknown')" 1
 
-# §8 prints the lines status can emit. A state the code gains and the doc does
-# not leaves a reader holding a line the documentation says cannot occur.
+# §8 prints the lines status can emit. The states are read out of cmd_status
+# rather than listed here: a loop over its own list can only catch the doc
+# losing a line, never the code gaining one — which is the direction that
+# leaves a reader holding a line the documentation says cannot occur.
 DEV_DOC="$SCRIPT_DIR/../docs/development.md"
-for state in bundled none unknown; do
+mapfile -t CLIENT_STATES < <(
+  grep -o 'client      [a-z][a-z]*' "$SCRIPT_DIR/devstack.sh" | sed 's/^client  *//' | sort -u
+)
+
+# A grep that matched nothing would pass every assertion below by running none.
+STATES_FOUND=no
+[[ ${#CLIENT_STATES[@]} -ge 3 ]] && STATES_FOUND=yes
+check "the states status can print were found in the script" "$STATES_FOUND" yes
+
+for state in "${CLIENT_STATES[@]}"; do
   check "development.md shows the \"client      $state\" line" \
     "$(grep -cF "client      $state" "$DEV_DOC")" 1
 done

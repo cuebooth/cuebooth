@@ -543,9 +543,11 @@ surface_registered() {
 # nothing about the binary, and reporting that as "no client" sends an operator
 # to rebuild one the server is already serving.
 #
-# Matched on the whole msg= field, for the reason surface_registered gives. The
-# opening quote also separates the two messages, since the one reporting no
-# client contains the text of the one reporting a client.
+# Anchored on the opening msg=" — a whole-field match like surface_registered's
+# is not available, since both messages continue past what is matched — so a
+# value cannot pose as the field, for the reason that one gives. The same quote
+# separates the two messages, since the one reporting no client contains the
+# text of the one reporting a client.
 web_client_state() {
   local last
   # awk does not reach END when the log is missing, so the default is the
@@ -604,9 +606,11 @@ EOF
   case "$(web_client_state)" in
     yes)
       cat <<EOF
-  open  http://${host}:${SERVER_PORT}   — this build carries the web client
-  or:   cd client && flutter run -d macos      # or windows, or a device
-        ...and connect to  ${host}:${SERVER_PORT}
+  open a browser at  http://${host}:${SERVER_PORT}   — this build carries the web client
+
+  or, for a native client:
+  cd client && flutter run -d macos      # or windows, or a device
+  ...and connect to  ${host}:${SERVER_PORT}
 EOF
       ;;
     no)
@@ -627,7 +631,7 @@ EOF
 
 Nothing in $SERVER_LOG says whether this build carries a web client; a restart
 makes the server say again — back on this host, from the repo root:
-  make -C server web && scripts/devstack.sh restart
+  scripts/devstack.sh restart
 EOF
       ;;
   esac
