@@ -345,11 +345,15 @@ check "an Origin header cannot claim the surface dropped" "$(say surface_registe
 # `go build`, so nothing in the working tree says what was embedded.
 #
 # The message reporting no client contains the text of the one reporting a
-# client, so a parser not anchored on the msg= field reads "no web client
-# bundled" as a client and sends the operator to a page that is not there.
+# client, so the rules have to tell the two apart; the opening msg=" quote is
+# what does it, and what keeps a planted Origin header out of the answer.
 #
 # A log that says neither is its own answer: reporting silence as "no client"
 # asserts something false about a binary that may well be serving one.
+#
+# The newest "starting" line resets that answer. The log spans every run under
+# this DEVSTACK_DIR and is never rotated, so without the reset an earlier run's
+# client describes the binary running now.
 
 echo "# web_client_state"
 
@@ -374,6 +378,15 @@ check "a client before the newest start does not count" "$(web_client_state)" no
 
 log "$START" "$UNBUNDLED" "$START" "$BUNDLED"
 check "and one after it does" "$(web_client_state)" yes
+
+# Both fixtures above put a client line after the newest start, so last-rule-wins
+# answers them correctly with or without the reset. These are what pin it: a
+# previous run's answer, and a newest run that has not spoken yet.
+log "$BUNDLED" "$START"
+check "a client from a previous run does not answer for this one" "$(web_client_state)" unknown
+
+log "$UNBUNDLED" "$START"
+check "nor does a previous run's lack of one" "$(web_client_state)" unknown
 
 # A log truncated to reproduce something, or removed, describes no binary. Saying
 # "none" there costs a Flutter build and a restart to fix nothing, and tells an
