@@ -421,14 +421,14 @@ INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
 check "a bundled client is offered the browser" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c "http://dev.example.ts.net:${SERVER_PORT}")" 1
 check "and is not told to build one" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make web')" 0
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web')" 0
 
 log "$START" "$UNBUNDLED"
 INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
 check "an unbundled one names the command that fixes it" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
 check "and is not sent to a browser that would find nothing" \
-  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'open  http://')" 0
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'open a browser')" 0
 
 # The remedy is pasted whole, so every command in it runs from where `up` was
 # run. `cd server` first would leave the restart resolving to
@@ -436,9 +436,9 @@ check "and is not sent to a browser that would find nothing" \
 check "and the remedy does not leave the repo root" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'cd server')" 0
 
-# It is printed under "from your laptop", four lines below a `cd client`, and
-# belongs to neither: devstack.sh refuses to run anywhere but the host holding
-# the stack, and resolves nothing relative to client/.
+# It is printed under "from your laptop", below a `cd client`, and belongs to
+# neither: devstack.sh refuses to run anywhere but the host holding the stack,
+# and resolves nothing relative to client/.
 check "and says which host and directory it belongs to" \
   "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host')" 1
 
