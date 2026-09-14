@@ -1,0 +1,35 @@
+# CueBooth server — TLS verification fixture
+#
+# For checking that a client served over HTTPS connects back over wss://
+# (CB-097). See docs/development.md §3.1.
+#
+#   cd server && make web && make build
+#   ./bin/cuebooth-server -config configs/cuebooth.tls-test.toml
+#   tailscale serve --bg 7878
+#   ...then open https://<name>.ts.net in a browser.
+#
+# This is not a deployment: no Companion, no presets, no chat. Everything that
+# could fail for its own reasons is left out, so a client that loads but does
+# not connect indicts the transport and nothing else. For a real configuration
+# start from cuebooth.example.toml.
+
+[server]
+# `tailscale serve 7878` proxies to 127.0.0.1, so binding there is enough — and
+# it keeps the cleartext listener off the LAN while the tailnet name, which is
+# the thing under test, remains the way in.
+listen = "127.0.0.1:7878"
+
+[companion]
+# Required, and deliberately nothing: with the satellite off below, no request
+# is ever made to it. An address that refuses beats one that might reach a real
+# Companion by accident and make this fixture depend on it.
+base_url = "http://127.0.0.1:8099"
+
+[companion.satellite]
+# Off, so the server starts with nothing else installed and the check needs only
+# a browser. The client then sits at "Waiting for the Companion surface…", which
+# is this fixture working rather than the connection failing: no satellite means
+# no surface layout to draw. Reaching that screen at all is the result being
+# checked — it is on the home screen, which the client opens only once the
+# socket is up and the server's `hello` has arrived (protocol.md §1).
+addr = "off"

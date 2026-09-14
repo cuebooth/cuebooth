@@ -26,6 +26,16 @@ enum ServerConnectionState {
 /// connect/reconnect logic deterministically without a real socket.
 typedef ChannelFactory = WebSocketChannel Function(Uri uri);
 
+/// The port to write into the socket URI, or null to leave it implicit.
+///
+/// Dart's [Uri] knows the default port of `http` and `https` but not of `ws`
+/// and `wss`, so it writes 443 into a `wss` URI where a page would have left it
+/// out. Both reach the same server — a `Host` header omits a port that is the
+/// scheme's default either way — so this only keeps the URI identical to the
+/// origin the page was served from.
+int? _explicitPort(int port, bool secure) =>
+    port == (secure ? 443 : 80) ? null : port;
+
 /// Manages the WebSocket connection to the CueBooth server.
 ///
 /// Authority lies with the server: clients send commands and receive state
@@ -77,7 +87,12 @@ class ServerConnection extends ChangeNotifier {
 
   /// Open a connection to the given host and port. Calling [connect] while a
   /// connection is open closes the previous one first.
-  Future<void> connect(String host, int port) async {
+  ///
+  /// [secure] selects `wss://` over `ws://`. [host] must be a bare host: the
+  /// caller decides the scheme, since what settles it — the origin the page was
+  /// served from, or a scheme the operator typed — is not visible from here.
+  /// See `screens/connect_screen.dart`.
+  Future<void> connect(String host, int port, {bool secure = false}) async {
     await disconnect();
     _stopRequested = false;
     // Reject obviously-invalid input up front with an error state (no auto-
@@ -89,14 +104,19 @@ class ServerConnection extends ChangeNotifier {
       _setState(ServerConnectionState.error);
       return;
     }
-    // ws:// (cleartext) is the v1 scheme: the server is reached by LAN IP or
-    // Tailscale address with no public TLS cert, and Tailscale already encrypts
-    // in transit. wss:// — the TLS equivalent, needed for HTTPS-hosted web
-    // (mixed content) or TLS-fronted deployments — is future work. See
-    // docs/protocol.md §1 and design.md §3.5.
+    // Either scheme is valid (protocol.md §1). ws:// remains the common case —
+    // a LAN IP or Tailscale address with no public certificate, where Tailscale
+    // already encrypts in transit — and wss:// reaches a server behind a TLS
+    // front, which a page served over HTTPS has no alternative to: a browser
+    // refuses a ws:// socket from such a page as mixed content.
     final Uri uri;
     try {
-      uri = Uri(scheme: 'ws', host: host, port: port, path: '/ws');
+      uri = Uri(
+        scheme: secure ? 'wss' : 'ws',
+        host: host,
+        port: _explicitPort(port, secure),
+        path: '/ws',
+      );
     } on FormatException catch (e) {
       // Bad user input (a pasted "ws://host", a host with a slash, etc.) makes
       // the Uri constructor throw. Surface it as an error state instead of

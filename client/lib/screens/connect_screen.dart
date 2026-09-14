@@ -21,6 +21,68 @@ import 'home_screen.dart';
   return (host: '127.0.0.1', port: 7878);
 }
 
+/// Splits what the operator typed into a bare host, an optional port, and the
+/// scheme if one was given.
+///
+/// A bare address leaves `secure` and `port` null — *not stated*, rather than
+/// "insecure" and "no port" — so [useSecureScheme] falls back to the page and
+/// the caller to its Port field.
+///
+/// A `wss`/`https` address settles the port too: the one it carries, or 443,
+/// which is where a TLS front answers and the whole reason to type a scheme.
+/// `ws`/`http` implies no port of its own: one it spells out is still used, but
+/// otherwise the Port field keeps it, this server's port being a deployment
+/// choice, 7878 by convention and never 80.
+///
+/// An address carrying a port outside 1..65535 comes back as a bare host,
+/// unparsed, as does one not using the four recognized schemes. ([Uri] has no
+/// default port for `ws`/`wss`, so it erases a `:0` on those rather than
+/// keeping it, and that spelling arrives here as no port at all.)
+/// `ServerConnection.connect` rejects those the way it always has, which keeps
+/// one error path for malformed input instead of two.
+({String host, int? port, bool? secure}) parseServerField(String text) {
+  final trimmed = text.trim();
+  final uri = Uri.tryParse(trimmed);
+  if (uri != null && uri.hasScheme && uri.host.isNotEmpty) {
+    // http/https are accepted because the address an operator has is usually
+    // the one in their browser's address bar, which carries those.
+    final secure = switch (uri.scheme) {
+      'wss' || 'https' => true,
+      'ws' || 'http' => false,
+      _ => null,
+    };
+    if (secure != null) {
+      // Uri does not range-check a port, so this is where "host:99999" stops.
+      final port = uri.hasPort ? uri.port : (secure ? 443 : null);
+      if (port == null || (port >= 1 && port <= 65535)) {
+        return (host: uri.host, port: port, secure: secure);
+      }
+    }
+  }
+  return (host: trimmed, port: null, secure: null);
+}
+
+/// Whether the page this client was served from arrived over TLS.
+///
+/// Native builds have no page, so this is false there and the address decides.
+bool pageIsSecure({bool? isWeb, Uri? base}) {
+  final onWeb = isWeb ?? kIsWeb;
+  final from = base ?? Uri.base;
+  return onWeb && from.isScheme('https');
+}
+
+/// Whether to open the socket as `wss://`, given any scheme the operator typed.
+///
+/// A page served over HTTPS settles it on its own: a browser refuses a `ws://`
+/// socket from such a page as mixed content, so `wss://` is not the preference
+/// there but the only thing that can connect — hence it overrides a typed
+/// `ws://` rather than honouring it and failing in the console. An HTTP page
+/// imposes nothing, so a typed `wss://` still stands.
+bool useSecureScheme({bool? typed, bool? isWeb, Uri? base}) {
+  if (pageIsSecure(isWeb: isWeb, base: base)) return true;
+  return typed ?? false;
+}
+
 /// First-launch screen for entering the server host:port and connecting.
 ///
 /// Validates the port, then waits for the transport to actually reach
@@ -58,7 +120,19 @@ class _ConnectScreenState extends State<ConnectScreen> {
   @override
   void initState() {
     super.initState();
+    // The Port field's enabled state follows what the Host field parses as.
+    _hostCtrl.addListener(_onHostChanged);
     _loadLastGood();
+  }
+
+  void _onHostChanged() {
+    if (!mounted) return;
+    setState(() {
+      // An address that brings its own port retires any complaint about the
+      // Port field, which is no longer read — and whose errorText would
+      // otherwise hide the helper saying so.
+      if (parseServerField(_hostCtrl.text).port != null) _portError = null;
+    });
   }
 
   // Prefill the last server we successfully connected to, so reconnecting
@@ -75,16 +149,19 @@ class _ConnectScreenState extends State<ConnectScreen> {
   }
 
   // Persist the address only after a connection actually succeeds, so a bad
-  // entry isn't remembered as the new default.
-  Future<void> _saveLastGood(String host, int port) async {
+  // entry isn't remembered as the new default. What is stored is the text as
+  // typed, scheme and all: storing the bare host would drop a `wss://` prefix
+  // and reconnect over `ws://` on the next launch.
+  Future<void> _saveLastGood(String host, int? port) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_hostPrefKey, host);
-    await prefs.setInt(_portPrefKey, port);
+    if (port != null) await prefs.setInt(_portPrefKey, port);
   }
 
   @override
   void dispose() {
     widget.connection.removeListener(_onConnectionChanged);
+    _hostCtrl.removeListener(_onHostChanged);
     _hostCtrl.dispose();
     _portCtrl.dispose();
     super.dispose();
@@ -93,21 +170,39 @@ class _ConnectScreenState extends State<ConnectScreen> {
   Future<void> _connect() async {
     if (_connecting) return;
 
-    final host = _hostCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim());
+    final typed = parseServerField(_hostCtrl.text);
+    // An address naming a scheme carries its own port; the Port field is what a
+    // bare address uses. The field is disabled while the address supplies one,
+    // so nothing on screen claims otherwise.
+    final port = typed.port ?? int.tryParse(_portCtrl.text.trim());
     if (port == null || port < 1 || port > 65535) {
       setState(() => _portError = 'Enter a port between 1 and 65535.');
       return;
     }
 
+    // The Port field keeps what the operator typed: an address's port written
+    // into it here would outlive a failed attempt and be dialled by the next
+    // one. Only a connection that succeeds is remembered, by _saveLastGood.
     setState(() {
       _portError = null;
       _connecting = true;
     });
-    _pendingHost = host;
-    _pendingPort = port;
+    _pendingHost = _hostCtrl.text.trim();
+    // Remember the Port field's own value rather than one an address implied.
+    // The address implies it again next launch, whereas a bare address typed
+    // then wants the port the operator last chose, not that of a TLS front. An
+    // unusable field leaves the remembered port alone rather than taking the
+    // implied one, which is the same rule.
+    final fieldPort = int.tryParse(_portCtrl.text.trim());
+    _pendingPort = (fieldPort != null && fieldPort >= 1 && fieldPort <= 65535)
+        ? fieldPort
+        : null;
     widget.connection.addListener(_onConnectionChanged);
-    await widget.connection.connect(host, port);
+    await widget.connection.connect(
+      typed.host,
+      port,
+      secure: useSecureScheme(typed: typed.secure),
+    );
     // Outcome (connected / error) is handled by _onConnectionChanged.
   }
 
@@ -115,8 +210,8 @@ class _ConnectScreenState extends State<ConnectScreen> {
     switch (widget.connection.state) {
       case ServerConnectionState.connected:
         widget.connection.removeListener(_onConnectionChanged);
-        if (_pendingHost != null && _pendingPort != null) {
-          _saveLastGood(_pendingHost!, _pendingPort!); // fire-and-forget
+        if (_pendingHost != null) {
+          _saveLastGood(_pendingHost!, _pendingPort); // fire-and-forget
         }
         if (!mounted) return;
         setState(() => _connecting = false);
@@ -149,6 +244,10 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // An address carrying its own port is what _connect will dial, so the Port
+    // field goes inert and names that port: the number left in the field is not
+    // it, and a 443 the address only implied appears nowhere else on screen.
+    final addressPort = parseServerField(_hostCtrl.text).port;
     return Scaffold(
       appBar: AppBar(title: const Text('Connect to CueBooth')),
       body: Center(
@@ -173,10 +272,13 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 TextField(
                   controller: _portCtrl,
                   keyboardType: TextInputType.number,
-                  enabled: !_connecting,
+                  enabled: !_connecting && addressPort == null,
                   decoration: InputDecoration(
                     labelText: 'Port',
                     errorText: _portError,
+                    helperText: addressPort == null
+                        ? null
+                        : 'Using $addressPort, from the address above',
                   ),
                   onSubmitted: (_) => _connect(),
                 ),

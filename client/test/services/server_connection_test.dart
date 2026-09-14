@@ -96,6 +96,129 @@ void main() {
     });
   });
 
+  group('ServerConnection scheme (CB-097)', () {
+    // Captures the URI the transport actually dials, which is the whole
+    // question here — the fake channel itself does not matter.
+    ({ServerConnection conn, List<Uri> dialled}) harness() {
+      final dialled = <Uri>[];
+      final conn = ServerConnection(
+        connectChannel: (uri) {
+          dialled.add(uri);
+          return FakeWebSocketChannel();
+        },
+      );
+      return (conn: conn, dialled: dialled);
+    }
+
+    test('defaults to ws:// — a native client at a bare address', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('production-pc', 7878);
+
+      expect(h.dialled.single.scheme, 'ws');
+      expect(h.dialled.single.host, 'production-pc');
+      expect(h.dialled.single.port, 7878);
+      expect(h.dialled.single.path, '/ws');
+      expect(h.conn.httpBase?.scheme, 'http');
+    });
+
+    test('secure: true dials wss://', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.dialled.single.scheme, 'wss');
+      expect(h.dialled.single.host, 'pc.tailnet.ts.net');
+      expect(h.dialled.single.path, '/ws');
+    });
+
+    // The chat routes (#84) derive their base from this, so a TLS-fronted
+    // socket has to carry them to https or they dial back out in cleartext.
+    test('httpBase follows the socket scheme to https', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.conn.httpBase?.scheme, 'https');
+      expect(h.conn.httpBase?.host, 'pc.tailnet.ts.net');
+      expect(h.conn.httpBase?.path, '');
+    });
+
+    // The tailnet case: `tailscale serve` puts the page on 443, and the URI is
+    // then the page's own origin rather than a 443 Dart would have written out.
+    test('a default port is left implicit, matching the page origin', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 443, secure: true);
+
+      expect(h.dialled.single.toString(), 'wss://pc.tailnet.ts.net/ws');
+      expect(h.conn.httpBase.toString(), 'https://pc.tailnet.ts.net');
+    });
+
+    test('port 80 is left implicit on ws:// too', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('cuebooth.example', 80);
+
+      expect(h.dialled.single.toString(), 'ws://cuebooth.example/ws');
+    });
+
+    // 443 is only the default for TLS; on ws:// it is an ordinary port and has
+    // to survive into the URI.
+    test('443 on ws:// stays explicit', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('production-pc', 443);
+
+      expect(h.dialled.single.toString(), 'ws://production-pc:443/ws');
+    });
+
+    test('a non-default port is written out', () async {
+      final h = harness();
+      addTearDown(h.conn.dispose);
+
+      await h.conn.connect('pc.tailnet.ts.net', 8443, secure: true);
+
+      expect(h.dialled.single.toString(), 'wss://pc.tailnet.ts.net:8443/ws');
+    });
+
+    // A backoff reconnect does not go back through connect(): it reopens the
+    // stored URI. Drive a real drop so that path runs.
+    test('a backoff reconnect still dials wss://', () async {
+      final dialled = <Uri>[];
+      final channels = <FakeWebSocketChannel>[];
+      final conn = ServerConnection(
+        connectChannel: (uri) {
+          dialled.add(uri);
+          final c = FakeWebSocketChannel();
+          channels.add(c);
+          return c;
+        },
+      );
+      addTearDown(conn.dispose);
+
+      await conn.connect('pc.tailnet.ts.net', 443, secure: true);
+      channels[0].completeReady();
+      await pump();
+      expect(conn.state, ServerConnectionState.connected);
+
+      // The server goes away.
+      await channels[0].endStream();
+      await pump();
+      expect(conn.state, ServerConnectionState.reconnecting);
+
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      expect(dialled, hasLength(2), reason: 'the retry must dial again');
+      expect(dialled.last.toString(), 'wss://pc.tailnet.ts.net/ws');
+    });
+  });
+
   group('ServerConnection transport (fake channel)', () {
     test('connected only after ready; frames reach messages', () async {
       final fake = FakeWebSocketChannel();

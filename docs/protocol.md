@@ -16,7 +16,7 @@ The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*
 
 ## 1. Connection lifecycle
 
-1. Client opens a WebSocket to `ws://<host>:<port>/ws`.
+1. Client opens a WebSocket to `ws://<host>:<port>/ws`, or to `wss://` where the server sits behind a TLS front. The server itself terminates no TLS; `wss://` means a reverse proxy in front of it does (`tailscale serve`, for example). A client served as a web page over `https://` MUST use `wss://`, since a browser refuses a cleartext socket from such a page as mixed content. Nothing constrains the other direction: a page served over `http://` MAY still open `wss://`, and a client given a bare address with nothing to infer from MAY default to `ws://`.
 2. Server immediately sends a `hello` frame. Clients MUST NOT send any frame on `/ws` (`cmd`, `subscribe`/`unsubscribe`, `get_state`, or `ping`) until they have received `hello`; servers MUST send it within 500 ms of accepting the socket.
 3. Server then sends an initial `state` snapshot for the client's default subscription (all non-meter topics) — see [§4](#4-server--client-messages). No `subscribe` or `get_state` is required to receive it.
 4. Client opens a *second* WebSocket to `/ws/meters` if it wants high-rate meter data. This is independent of `/ws` — it has its own lifecycle, no `hello`, and only carries meter frames.
@@ -25,6 +25,10 @@ The design rationale is in [design.md](design.md) §3.6 *Communication Protocol*
 ### Authentication
 
 v1 has no in-protocol auth. Deployments rely on network-level isolation (LAN + Tailscale per [design.md](design.md) §3.7 *Remote Access*). A future revision will add a token handshake; that's out of scope for v1.
+
+**Behind a TLS front.** `/ws` admits a browser page whose `Origin` authority — host **and port** — equals the request's `Host`, and that comparison is the cross-site-WebSocket-hijacking defence standing in for the auth v1 does not have. The scheme is not compared, so an `Origin` of `https://name` is admitted against a `Host` of `name`: TLS termination needs no exception.
+
+What it does need is an untouched `Host`. A reverse proxy terminating TLS MUST pass the original through byte for byte, **including not adding a port the browser left out**. A browser omits a port that is its scheme's default, so a page on `https://name` sends `Origin: https://name`; a proxy configured with nginx's widely-copied `proxy_set_header Host $host:$server_port;` presents `Host: name:443`, the two no longer match, and every browser client is refused while native clients — which send no `Origin` — keep working, so the fault reads as a client bug.
 
 ### Versioning
 
