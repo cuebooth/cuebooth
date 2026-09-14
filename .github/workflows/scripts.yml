@@ -9,11 +9,15 @@ on:
       # devstack.sh reads the server's log messages, and devstack-test.sh
       # asserts they still exist. A rename in server/ has to run this job.
       - 'server/**'
+      # devstack-test.sh also asserts §8 shows every client state status can
+      # print, so an edit to the doc alone has to run it.
+      - 'docs/development.md'
   pull_request:
     paths:
       - 'scripts/**'
       - '.github/workflows/scripts.yml'
       - 'server/**'
+      - 'docs/development.md'
 
 # Least privilege: lint and a self-contained test.
 permissions:

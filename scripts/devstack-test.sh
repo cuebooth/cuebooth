@@ -338,16 +338,204 @@ check "an Origin header cannot claim the surface registered" "$(say surface_regi
 log "$START" "$REG" "$FORGED_END"
 check "an Origin header cannot claim the surface dropped" "$(say surface_registered)" yes
 
-# surface_registered matches the server's own log messages. The tests above
-# write those lines themselves, so they pin the parser without pinning the
-# contract: a rename in server/ would leave every assertion here passing while
-# `up` and `status` stopped seeing a registered surface.
-echo "# surface_registered matches what the server actually logs"
+# --- web_client_state ---------------------------------------------------------
+#
+# Which client to reach the server with depends on whether the binary carries a
+# web one, and only the running server knows: build_server runs a plain
+# `go build`, so nothing in the working tree says what was embedded.
+#
+# The message reporting no client contains the text of the one reporting a
+# client, so the rules have to tell the two apart; the opening msg=" quote is
+# what does it, and what keeps a planted Origin header out of the answer.
+#
+# A log that says neither is its own answer: reporting silence as "no client"
+# asserts something false about a binary that may well be serving one.
+#
+# The newest "starting" line resets that answer. The log spans every run under
+# this DEVSTACK_DIR and is never rotated, so without the reset an earlier run's
+# client describes the binary running now.
+
+echo "# web_client_state"
+
+BUNDLED='time=2026-09-03T00:00:00.500Z level=INFO msg="web client bundled; browse to the listen address to use it"'
+# The backticks are the server's, around `make web` — literal here, not a
+# substitution the linter can be talked out of seeing.
+# shellcheck disable=SC2016
+UNBUNDLED='time=2026-09-03T00:00:00.500Z level=WARN msg="no web client bundled; run `make web` before `make build` to include one"'
+
+log "$START"
+check "a server that has not said is not guessed at" "$(web_client_state)" unknown
+
+log "$START" "$BUNDLED"
+check "a bundled client is bundled" "$(web_client_state)" yes
+
+log "$START" "$UNBUNDLED"
+check "an unbundled one is not" "$(web_client_state)" no
+
+# `make web-clean` then `restart` — the answer is the newest run's, not the log's.
+log "$START" "$BUNDLED" "$START" "$UNBUNDLED"
+check "a client before the newest start does not count" "$(web_client_state)" no
+
+log "$START" "$UNBUNDLED" "$START" "$BUNDLED"
+check "and one after it does" "$(web_client_state)" yes
+
+# Both fixtures above put a client line after the newest start, so last-rule-wins
+# answers them correctly with or without the reset. These are what pin it: a
+# previous run's answer, and a newest run that has not spoken yet.
+log "$BUNDLED" "$START"
+check "a client from a previous run does not answer for this one" "$(web_client_state)" unknown
+
+log "$UNBUNDLED" "$START"
+check "nor does a previous run's lack of one" "$(web_client_state)" unknown
+
+# A log truncated to reproduce something, or removed, describes no binary. Saying
+# "none" there costs a Flutter build and a restart to fix nothing, and tells an
+# operator to stop using a browser client that works.
+: > "$SERVER_LOG"
+check "a truncated log is not a missing client" "$(web_client_state)" unknown
+
+rm -f "$SERVER_LOG"
+check "nor is no log at all" "$(web_client_state)" unknown
+
+# Planted in an Origin header and captured from a real server, as the surface's
+# forgeries above were. slog escapes the quotes inside a value, so an unescaped
+# msg="..." is the server's own and a planted one is not.
+FORGED_BUNDLED='time=2026-09-11T18:47:46.265Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"web client bundled; browse to the listen address to use it\\\"\" is not a valid URL with a host"'
+FORGED_UNBUNDLED='time=2026-09-11T18:48:01.007Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"no web client bundled; run x\\\"\" is not a valid URL with a host"'
+
+log "$START" "$UNBUNDLED" "$FORGED_BUNDLED"
+check "an Origin header cannot claim a client is bundled" "$(web_client_state)" no
+
+log "$START" "$BUNDLED" "$FORGED_UNBUNDLED"
+check "nor that one is missing" "$(web_client_state)" yes
+
+# The reset carries the same anchor as the two message rules, and the same
+# reason: an Origin naming a new run would otherwise discard what this one said.
+FORGED_START='time=2026-09-11T21:49:39.553Z level=WARN msg="websocket accept failed" err="failed to accept WebSocket connection: request Origin \"msg=\\\"cuebooth-server starting\\\"\" is not a valid URL with a host"'
+
+log "$START" "$BUNDLED" "$FORGED_START"
+check "nor that the server restarted" "$(web_client_state)" yes
+
+# --- connect_instructions -----------------------------------------------------
+#
+# Where `up` tells an operator which client to use. Naming the browser on a
+# build with no web client is the confusion this is here to prevent.
+
+echo "# connect_instructions"
+
+log "$START" "$BUNDLED"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+# The advice, not the address: both branches name the address, the unbundled one
+# to say what answers there.
+check "a bundled client is offered the browser" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c "^  open a browser at  http://dev.example.ts.net:${SERVER_PORT}")" 1
+check "and is not told to build one" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web')" 0
+
+log "$START" "$UNBUNDLED"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+check "an unbundled one names the command that fixes it" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web && scripts/devstack.sh restart')" 1
+check "and is not sent to a browser that would find nothing" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'open a browser')" 0
+
+# The remedy is pasted whole, so every command in it runs from where `up` was
+# run. `cd server` first would leave the restart resolving to
+# server/scripts/devstack.sh, which does not exist — after a minute of Flutter.
+check "and the remedy does not leave the repo root" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'cd server')" 0
+
+# It is printed under "from your laptop", below a `cd client`, and belongs to
+# neither: devstack.sh refuses to run anywhere but the host holding the stack,
+# and resolves nothing relative to client/.
+check "and says which host and directory it belongs to" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host')" 1
+
+# Silence is not a missing client, so it does not get the sentence asserting one.
+: > "$SERVER_LOG"
+INSTRUCTIONS="$(connect_instructions dev.example.ts.net)"
+check "an undetermined build does not claim to have no client" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'carries no web client')" 0
+
+# The only way to reach `unknown` with a server up is a log that was truncated
+# or removed, and that server logged its startup line long ago. Waiting for it
+# to log again is advice that never comes true; a restart is what does.
+check "and names the restart that resolves it, not a wait" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c '^  scripts/devstack.sh restart$')" 1
+check "and says which host and directory that runs on too" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'back on this host')" 1
+
+# Gating that restart behind `make web` would make the one command offered need
+# Flutter, which this fixture does not: the build fails, && short-circuits, the
+# restart never runs, and the state is still unknown.
+check "and does not gate it behind a Flutter build" \
+  "$(printf '%s' "$INSTRUCTIONS" | grep -c 'make -C server web')" 0
+
+# status reports it too, since `up` prints the instructions once and `restart`
+# does not print them at all.
+# Every branch prints the native-client command, and an operator selects that
+# line and pastes it. A label in front of it is pasted too, and bash reports a
+# command by that name.
+native_line() {
+  connect_instructions dev.example.ts.net | grep -c '^  cd client && flutter run -d macos'
+}
+
+log "$START" "$BUNDLED"
+check "the native-client line is pasteable on a bundled build" "$(native_line)" 1
+log "$START" "$UNBUNDLED"
+check "and on an unbundled one" "$(native_line)" 1
+: > "$SERVER_LOG"
+check "and when the state is unknown" "$(native_line)" 1
+
+status_line() {
+  (
+    companion_running() { return 1; }
+    server_running() { return 0; }
+    cmd_status 2>/dev/null | grep -c "$1"
+  )
+}
+
+log "$START" "$BUNDLED"
+check "status says a build carries a client" "$(status_line 'client      bundled')" 1
+
+log "$START" "$UNBUNDLED"
+check "status says when one does not" "$(status_line 'client      none')" 1
+
+: > "$SERVER_LOG"
+check "and does not assert either way when the log is silent" \
+  "$(status_line 'client      unknown')" 1
+
+# §8 prints the lines status can emit. The states are read out of cmd_status
+# rather than listed here: a loop over its own list can only catch the doc
+# losing a line, never the code gaining one — which is the direction that
+# leaves a reader holding a line the documentation says cannot occur.
+DEV_DOC="$SCRIPT_DIR/../docs/development.md"
+mapfile -t CLIENT_STATES < <(
+  grep -o 'client      [a-z][a-z]*' "$SCRIPT_DIR/devstack.sh" | sed 's/^client  *//' | sort -u
+)
+
+# A grep that matched nothing would pass every assertion below by running none.
+STATES_FOUND=no
+[[ ${#CLIENT_STATES[@]} -ge 3 ]] && STATES_FOUND=yes
+check "the states status can print were found in the script" "$STATES_FOUND" yes
+
+for state in "${CLIENT_STATES[@]}"; do
+  check "development.md shows the \"client      $state\" line" \
+    "$(grep -cF "client      $state" "$DEV_DOC")" 1
+done
+
+# The parsers above match the server's own log messages. The tests write those
+# lines themselves, so they pin the parser without pinning the contract: a
+# rename in server/ would leave every assertion here passing while `up` and
+# `status` stopped seeing a registered surface, or a bundled client.
+echo "# the log parsers match what the server actually logs"
 
 SERVER_SRC="$SCRIPT_DIR/../server"
 for msg in "cuebooth-server starting" \
            "companion satellite registered" \
-           "companion satellite session ended"; do
+           "companion satellite session ended" \
+           "web client bundled; browse to the listen address to use it" \
+           "no web client bundled; run \`make web\` before \`make build\` to include one"; do
   check "the server still logs \"$msg\"" \
     "$(grep -rlF "\"$msg\"" "$SERVER_SRC" --include='*.go' 2>/dev/null | grep -cv '_test\.go' | tr -d ' ')" 1
 done
@@ -801,6 +989,13 @@ up_without_starting() {
 }
 check "and up is what says it" \
   "$(DEVSTACK_BIND=0.0.0.0 up_without_starting 2>&1 >/dev/null | grep -c 'every interface')" 1
+
+# cmd_up is the only caller of connect_instructions, and the checks above drive
+# it with cmd_status stubbed out — so without this, dropping the call leaves up
+# printing nothing about which client to reach the server with.
+log "$START" "$BUNDLED"
+check "up prints the connect instructions" \
+  "$(DEVSTACK_BIND=127.0.0.1 up_without_starting 2>/dev/null | grep -c 'Then, from your laptop:')" 1
 
 # up creates the state directory; the credentials an imported production export
 # carries are only protected by the mode it gets. Loosened first, or an earlier

@@ -270,7 +270,7 @@ The buttons that appear are whatever page Companion has assigned to the surface 
 
 ```sh
 scripts/devstack.sh up        # start both; prints where to point a client
-scripts/devstack.sh status    # what is up, and whether the surface registered
+scripts/devstack.sh status    # what is up, whether it carries a web client, and whether the surface registered
 scripts/devstack.sh logs server        # or: logs companion
 scripts/devstack.sh restart   # rebuild and restart the server only
 scripts/devstack.sh down      # stop both; Companion's config is kept
@@ -303,7 +303,26 @@ cd client && flutter run -d macos      # or windows, or a device
 
 …and connect to the `host:7878` that `status` prints.
 
-Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type.
+Not `-d chrome`: a Flutter dev server serves the page from its own port, and the server's WebSocket refuses a page whose origin is not its own, so the connect attempt gets a 403 whatever address you type. The server's own port is the exception — the page and the socket share it, which is what makes a browser a client at all ([§3.1](#31-bundling-the-web-client-into-the-server)).
+
+**Whether that browser has anything to open is a property of the build, and `status` says which.** `build_server` runs a plain `go build`, which embeds whatever `make web` last staged in `server/internal/webui/dist` — and nothing here stages it, so by default `http://<host>:7878` answers with the page saying no client is bundled. To serve the client from there too:
+
+```sh
+make -C server web
+scripts/devstack.sh restart      # go build, embedding what make web staged
+```
+
+The staged build persists until `make web-clean`, so later `restart`s keep embedding it. `up` and `status` report which this build is, so it is not something to keep track of:
+
+```
+client      bundled — open http://<host>:7878 in a browser
+client      none — this build has no web client; use a native client
+client      unknown — nothing in <log> says
+```
+
+The third is a property of the log, not of the build: `.devstack/server.log` spans every run and is never rotated, so an operator who truncates it to read it leaves nothing that says what the running binary carries. A `restart` makes the server report itself again.
+
+Staging is deliberately not automatic. It would put the Flutter SDK on the dependency list of a fixture that otherwise needs only Go, podman and python3, and add about a minute to every `restart` — for a step most runs of this stack do not want.
 
 ### What it binds, and what it doesn't
 

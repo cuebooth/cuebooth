@@ -5,7 +5,8 @@
 # PC.
 #
 #   scripts/devstack.sh up        # start both, print where to point a client
-#   scripts/devstack.sh status    # what is running, and whether the surface registered
+#   scripts/devstack.sh status    # what is running, whether it carries a web client,
+#                                 # and whether the surface registered
 #   scripts/devstack.sh logs [companion|server]
 #   scripts/devstack.sh restart   # rebuild and restart the server only
 #   scripts/devstack.sh down      # stop both; Companion's config survives
@@ -533,6 +534,34 @@ surface_registered() {
   [[ "$last" == "up" ]]
 }
 
+# web_client_state reports whether the server now running has a web client built
+# into it — yes, no, or unknown. build_server runs a plain `go build`, which
+# embeds whatever `make web` last staged, so this is settled when the binary is
+# built and cannot be read off this script or the working tree. The server says
+# which at startup.
+#
+# Unknown is an answer, not a no. A log that has been truncated or removed says
+# nothing about the binary, and reporting that as "no client" sends an operator
+# to rebuild one the server is already serving.
+#
+# Anchored on the opening msg=" — a whole-field match like surface_registered's
+# is not available, since both messages continue past what is matched — so a
+# value cannot pose as the field, for the reason that one gives. The same quote
+# separates the two messages, since the one reporting no client contains the
+# text of the one reporting a client.
+web_client_state() {
+  local last
+  # awk does not reach END when the log is missing, so the default is the
+  # shell's rather than the script's.
+  last="$(awk '
+    /msg="cuebooth-server starting"/  { latest = "" }
+    /msg="web client bundled/         { latest = "yes" }
+    /msg="no web client bundled/      { latest = "no" }
+    END                               { print latest }
+  ' "$SERVER_LOG" 2>/dev/null)"
+  echo "${last:-unknown}"
+}
+
 # wait_for_surface gives the first connection a moment to land, so `up` reports
 # what will be true a second later rather than what is true immediately.
 wait_for_surface() {
@@ -557,6 +586,14 @@ cmd_up() {
   wait_for_surface || true
   echo
   cmd_status
+  connect_instructions "$host"
+}
+
+# connect_instructions closes `up`. Which client to reach the server with
+# depends on whether this build carries a web one, which is otherwise found out
+# by opening the address and getting the page saying it does not.
+connect_instructions() {
+  local host="$1"
   cat <<EOF
 
 Next, once only:
@@ -566,11 +603,45 @@ Next, once only:
   3. Surfaces tab: assign a page to the "cuebooth" surface.
 
 Then, from your laptop:
+EOF
+  case "$(web_client_state)" in
+    yes)
+      cat <<EOF
+  open a browser at  http://${host}:${SERVER_PORT}   — this build carries the web client
+
+  or, for a native client:
+  cd client && flutter run -d macos      # or windows, or a device
+  ...and connect to  ${host}:${SERVER_PORT}
+EOF
+      ;;
+    no)
+      cat <<EOF
   cd client && flutter run -d macos      # or windows, or a device
   ...and connect to  ${host}:${SERVER_PORT}
 
+This build carries no web client, so http://${host}:${SERVER_PORT} answers with
+a page saying so. To serve one from there too — back on this host, from the
+repo root, once:
+  make -C server web && scripts/devstack.sh restart
+EOF
+      ;;
+    *)
+      cat <<EOF
+  cd client && flutter run -d macos      # or windows, or a device
+  ...and connect to  ${host}:${SERVER_PORT}
+
+Nothing in $SERVER_LOG says whether this build carries a web client; a restart
+makes the server say so again — back on this host, from the repo root:
+  scripts/devstack.sh restart
+EOF
+      ;;
+  esac
+  cat <<EOF
+
 Not -d chrome: a Flutter dev server serves the page from its own port, and
-/ws refuses a page whose origin is not the server's.
+/ws refuses a page whose origin is not the server's. The server's own port is
+the exception — the page and the socket share it, which is what lets a browser
+be a client at all.
 EOF
 }
 
@@ -623,6 +694,13 @@ cmd_status() {
     echo "server      down   (but pid ${foreign_pid} in $SERVER_PID is alive and is not $SERVER_BIN)"
   else
     echo "server      down"
+  fi
+  if server_running; then
+    case "$(web_client_state)" in
+      yes) echo "client      bundled — open http://${host}:${SERVER_PORT} in a browser" ;;
+      no)  echo "client      none — this build has no web client; use a native client" ;;
+      *)   echo "client      unknown — nothing in $SERVER_LOG says" ;;
+    esac
   fi
   if companion_running && server_running; then
     if surface_registered; then
