@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -87,11 +86,12 @@ const (
 	// change that answer, so retrying only spends another rotation.
 	refusalCooldown = 5 * time.Minute
 
-	// webchatScope is the permission the webchat endpoint requires. Restream
-	// selects scopes per application rather than per authorization request, so an
-	// application registered without it yields a credential that can never mint a
-	// chat URL.
-	webchatScope = "chat.read"
+	// chatScopeResource and chatScopeAction bracket the permission the webchat
+	// endpoint requires. Restream selects scopes per application rather than per
+	// authorization request, so an application registered without it yields a
+	// credential that can never mint a chat URL.
+	chatScopeResource = "chat"
+	chatScopeAction   = "read"
 
 	// insufficientScopeName is what Restream reports when a token is valid but
 	// the application lacks the permission. Anything else answering 403 is
@@ -263,8 +263,8 @@ func (r *Restream) Authorized() bool {
 
 // LoginURL builds Restream's authorize dialog URL and records the state
 // parameter Complete will require back. Restream takes no scope parameter —
-// scopes are selected per application in their dashboard, and chat.read is the
-// one the webchat endpoint needs.
+// scopes are selected per application in their dashboard, and chat read access
+// is the one the webchat endpoint needs.
 func (r *Restream) LoginURL() (string, error) {
 	state, err := randomState()
 	if err != nil {
@@ -330,11 +330,12 @@ func (r *Restream) Complete(ctx context.Context, code, state string) error {
 		return err
 	}
 	// Restream names the granted scopes in the exchange response. Without
-	// chat.read the credential authorizes nothing this feature can use, and
-	// every later attempt would 401 — a loop that only re-registering the
-	// application escapes, which the operator has to be told.
-	if tok.Scope != "" && !slices.Contains(scopeList(tok.Scope), webchatScope) {
-		return fmt.Errorf("%w: granted %q, needs %s", ErrMissingScope, tok.Scope, webchatScope)
+	// permission to read chat the credential authorizes nothing this feature can
+	// use, and every later attempt would 401 — a loop that only re-registering
+	// the application escapes, which the operator has to be told.
+	if tok.Scope != "" && !grantsChatRead(tok.Scope) {
+		return fmt.Errorf("%w: granted %q, needs %s.*.%s", ErrMissingScope, tok.Scope,
+			chatScopeResource, chatScopeAction)
 	}
 	r.adopt(tok, true)
 	return nil
@@ -361,7 +362,7 @@ func (r *Restream) URL(ctx context.Context) (string, error) {
 		// improves unattended, so it is held off — a panel left open would otherwise
 		// rotate the credential once per attempt — and reported as needing
 		// authorization, which is the operator's route back.
-		r.logger.Error("restream will not serve chat with this credential; check the application's chat.read scope", "err", err)
+		r.logger.Error("restream will not serve chat with this credential; check the application's chat read permission", "err", err)
 		r.holdOff(gen)
 		return "", ErrNeedsAuth
 	}
@@ -739,6 +740,29 @@ func restreamError(body []byte) (name, message string) {
 // scopeList splits a granted-scope string. Restream's token response separates
 // them with spaces, and their capture-the-code documentation describes the same
 // value as comma-separated, so both are accepted.
+// grantsChatRead reports whether a granted scope list carries permission to read
+// chat.
+//
+// Restream names a scope "<resource>.<tier>.<action>" and grants chat read as
+// "chat.default.read", while its dashboard labels the same permission
+// "chat.read" — so an exact match on either string rejects the other. Matching
+// the resource and action and ignoring what lies between accepts both, and a
+// tier this code has never seen. It still rejects a credential carrying only
+// profile or stream permissions, which is what the check is for.
+//
+// Erring towards accepting matters more than precision here: a false negative
+// discards a working credential and leaves the operator no way forward, while a
+// false positive costs one 403 from the webchat endpoint, which is handled.
+func grantsChatRead(scope string) bool {
+	for _, granted := range scopeList(scope) {
+		parts := strings.Split(granted, ".")
+		if len(parts) >= 2 && parts[0] == chatScopeResource && parts[len(parts)-1] == chatScopeAction {
+			return true
+		}
+	}
+	return false
+}
+
 func scopeList(scope string) []string {
 	return strings.FieldsFunc(scope, func(r rune) bool {
 		return r == ' ' || r == ',' || r == '\t' || r == '\n'

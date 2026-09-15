@@ -102,7 +102,7 @@ func TestRefreshSurvivesCallerCancellation(t *testing.T) {
 }
 
 // A token minted moments ago being refused means no unattended retry will help
-// — most likely the application lacks the chat.read scope. Reporting it as a
+// — most likely the application lacks chat read access. Reporting it as a
 // platform outage would leave the operator on a Try again that cannot work, and
 // would rotate the credential on every attempt.
 func TestPersistentlyRefusedTokenReportsNeedsAuth(t *testing.T) {

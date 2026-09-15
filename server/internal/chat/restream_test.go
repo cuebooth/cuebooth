@@ -62,14 +62,14 @@ type fakeRestream struct {
 	// block without stalling the whole fake.
 	beforeToken   func()
 	beforeWebchat func()
-	// scope is what the token response reports granting. Defaults to a set
-	// including chat.read; empty omits the field entirely.
+	// scope is what the token response reports granting. Defaults to the set a
+	// live grant reports; empty omits the field entirely.
 	scope string
 }
 
 func newFakeRestream() *fakeRestream {
 	return &fakeRestream{refreshExpiresIn: 31536000, accessExpiresIn: 3600,
-		scope: "profile.read channels.read chat.read stream.read"}
+		scope: "profile.default.read chat.default.read stream.default.read"}
 }
 
 func (f *fakeRestream) server(t *testing.T) string {
