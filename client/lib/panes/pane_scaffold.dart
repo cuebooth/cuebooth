@@ -219,6 +219,10 @@ class _PaneScaffoldState extends State<PaneScaffold> {
 
         final column = <Widget>[];
         for (var i = 0; i < top.length; i++) {
+          // An axis with no room gives every pane a zero extent; its divider
+          // has no pane to move and nothing to divide, and laying one out is
+          // what pushes the row past the axis it is already too big for.
+          if (heights[i] == 0) continue;
           column.add(
             SizedBox(
               height: heights[i],
@@ -238,6 +242,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         }
         column.add(Expanded(child: middle));
         for (var i = 0; i < bottom.length; i++) {
+          if (heights[top.length + i] == 0) continue;
           column.add(
             _divider(
               context,
@@ -269,6 +274,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
 
         final row = <Widget>[];
         for (var i = 0; i < left.length; i++) {
+          if (widths[i] == 0) continue;
           row.add(
             SizedBox(
               width: widths[i],
@@ -288,6 +294,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         }
         row.add(Expanded(child: middle));
         for (var i = 0; i < right.length; i++) {
+          if (widths[left.length + i] == 0) continue;
           row.add(
             _divider(
               context,

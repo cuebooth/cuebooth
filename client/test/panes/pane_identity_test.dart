@@ -157,6 +157,26 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  // An axis with no room gives every pane a zero extent, but each still had a
+  // divider laid out beside it — so the row overflowed by the dividers' own
+  // width, on an axis already too small for anything.
+  testWidgets('an axis narrower than its dividers does not overflow', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(40, 400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final layout = await layoutOf([
+      pane('centre', edge: PaneEdge.top, fillsCentre: true),
+      pane('a', edge: PaneEdge.left),
+      pane('b', edge: PaneEdge.right),
+    ]);
+    await pump(tester, layout);
+
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('a dock too short for a header does not overflow', (
     tester,
   ) async {

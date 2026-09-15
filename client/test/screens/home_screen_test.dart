@@ -11,30 +11,61 @@ AppState _stateFrom(Map<String, dynamic>? chat) {
 }
 
 void main() {
-  group('chatPaneOffered', () {
+  group('ChatPaneAvailability', () {
     test('a server that offers chat gets the pane', () {
-      expect(chatPaneOffered(_stateFrom({'status': 'ready'})), isTrue);
+      final availability = ChatPaneAvailability();
+      expect(availability.offered(_stateFrom({'status': 'ready'})), isTrue);
     });
 
     test('a server that has answered without chat gets no pane', () {
-      expect(chatPaneOffered(_stateFrom(null)), isFalse);
+      final availability = ChatPaneAvailability();
+      expect(availability.offered(_stateFrom(null)), isFalse);
+    });
+
+    test('the pane is assumed until a server has said otherwise', () {
+      expect(ChatPaneAvailability().offered(AppState()), isTrue);
     });
 
     // State is cleared on disconnect, so this looks exactly like "no chat
     // provider" from the topic alone. Reading it as one takes the pane — and
     // the webview in it — out of the dock on every blip.
-    test('a dropped connection is not an answer', () {
+    test('a drop does not withdraw a pane the server offered', () {
+      final availability = ChatPaneAvailability();
       final state = _stateFrom({'status': 'ready'});
-      expect(chatPaneOffered(state), isTrue);
+      expect(availability.offered(state), isTrue);
 
       state.reset();
 
       expect(state.hasBaseline, isFalse, reason: 'the mirror was cleared');
-      expect(chatPaneOffered(state), isTrue);
+      expect(availability.offered(state), isTrue);
     });
 
-    test('nothing heard yet is not an answer either', () {
-      expect(chatPaneOffered(AppState()), isTrue);
+    // And the other direction: a server with no chat must not sprout a chat
+    // pane every time the socket drops, offering to reconnect to something that
+    // was never there.
+    test('a drop does not restore a pane the server declined', () {
+      final availability = ChatPaneAvailability();
+      final state = _stateFrom(null);
+      expect(availability.offered(state), isFalse);
+
+      state.reset();
+
+      expect(availability.offered(state), isFalse);
+    });
+
+    test('a later snapshot is what changes the answer', () {
+      final availability = ChatPaneAvailability();
+      final state = _stateFrom(null);
+      expect(availability.offered(state), isFalse);
+
+      state.applySnapshot(2, {
+        'stream': {
+          'platform': 'restream',
+          'chat': {'status': 'ready'},
+        },
+      });
+
+      expect(availability.offered(state), isTrue);
     });
   });
 }

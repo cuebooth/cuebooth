@@ -65,7 +65,10 @@ bool chatNavigationStaysInPanel({
 /// `Uri.tryParse` returns null in the same cases. A link the panel cannot open
 /// is dropped rather than allowed to break navigation handling for the rest of
 /// the session.
-void openExternally(String url, {Future<bool> Function(Uri, {LaunchMode mode})? launch}) {
+void openExternally(
+  String url, {
+  Future<bool> Function(Uri, {LaunchMode mode})? launch,
+}) {
   final target = Uri.tryParse(url);
   if (target == null) return;
   final open = launch ?? launchUrl;
@@ -185,9 +188,9 @@ class _ChatScreenState extends State<ChatScreen> {
       ok = false;
     }
     if (!ok && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not open a browser.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open a browser.')),
+      );
     }
   }
 
@@ -231,7 +234,8 @@ class _ChatScreenState extends State<ChatScreen> {
       return const _ChatMessage(
         icon: Icons.cloud_sync_outlined,
         title: 'Reconnecting',
-        detail: 'Waiting for the server. Chat returns when the connection does.',
+        detail:
+            'Waiting for the server. Chat returns when the connection does.',
       );
     }
     if (!state.chatConfigured) {
@@ -304,7 +308,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return _ChatMessage(
           icon: Icons.link_off,
           title: 'Chat needs reconnecting',
-          detail: 'CueBooth\'s access to chat has ended. Reconnect once in your browser.',
+          detail:
+              'CueBooth\'s access to chat has ended. Reconnect once in your browser.',
           // Try again sits beside Reconnect so an operator who authorized in
           // another window is not stranded here waiting for a state change.
           action: Wrap(
@@ -329,7 +334,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return _ChatMessage(
           icon: Icons.cloud_off,
           title: 'Chat platform is not responding',
-          detail: 'The server reached out but got no answer. Streaming is unaffected.',
+          detail:
+              'The server reached out but got no answer. Streaming is unaffected.',
           action: _retryAndReconnect(),
         );
       // Retrying cannot help: the address is the problem, and the operator
@@ -338,7 +344,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return const _ChatMessage(
           icon: Icons.alt_route,
           title: 'Chat is on another address',
-          detail: 'The chat panel answers only on the address set as '
+          detail:
+              'The chat panel answers only on the address set as '
               'chat.public_url on the server. Open CueBooth at that address, '
               'or change the setting to the one you use. Everything else works '
               'here as normal.',

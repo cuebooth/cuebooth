@@ -298,6 +298,25 @@ void main() {
       expect(prefs.getString('pane_layout_v1'), contains('0.55'));
     });
 
+    // Nothing pinned the clamp applied to a stored value: removing it left the
+    // whole suite green while a hand-edited or older file could hand the dock a
+    // fraction it has no bounds for.
+    test('a stored fraction outside the bounds is clamped', () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1': '{"pinned":{},"fractions":{"a":5.0,"b":-9.0}}',
+      });
+      final layout = PaneLayout(
+        panes: [_pane('a'), _pane('b')],
+        prefs: await SharedPreferences.getInstance(),
+      );
+      addTearDown(layout.dispose);
+
+      await layout.load();
+
+      expect(layout.fractionOf('a'), maxPaneFraction);
+      expect(layout.fractionOf('b'), minPaneFraction);
+    });
+
     test('a fraction for something that is not a pane is not stored', () async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();

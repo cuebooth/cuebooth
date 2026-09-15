@@ -17,17 +17,27 @@ import 'chat_screen.dart';
 const String surfacePaneId = 'surface';
 const String chatPaneId = 'chat';
 
-/// Whether this deployment offers chat at all.
+/// Whether this deployment offers chat, remembering the last answer a server
+/// actually gave.
 ///
 /// A server with no chat provider should get no chat pane and no tab for one,
 /// rather than a pane that can only explain its own absence. But mirrored state
 /// is cleared on disconnect, so an absent chat topic means either that or that
-/// nothing has been heard yet — and only a server that has spoken and did not
-/// mention chat has answered the question. Reading a dropped connection as an
-/// answer would take the pane out of the dock on every blip, and the webview
-/// inside it with it.
-bool chatPaneOffered(AppState state) =>
-    !state.hasBaseline || state.chatConfigured;
+/// nothing has been heard yet, and the two need telling apart in both
+/// directions: reading a drop as "no chat" takes the pane and its webview out
+/// of the dock on every blip, while reading it as "chat" puts a pane back on a
+/// server that has none — offering to reconnect to something that was never
+/// there. Only a snapshot answers the question, so only a snapshot changes it.
+class ChatPaneAvailability {
+  bool? _answered;
+
+  bool offered(AppState state) {
+    if (state.hasBaseline) _answered = state.chatConfigured;
+    // Until a server has said, assume the pane belongs: a deployment with chat
+    // is the case where guessing wrong costs a webview.
+    return _answered ?? true;
+  }
+}
 
 /// The operator's main control surface.
 ///
@@ -36,7 +46,11 @@ bool chatPaneOffered(AppState state) =>
 /// with the stream/recording status bar (CB-016, [StreamControlBar]), and
 /// stream chat (CB-017), arranged by the operator (CB-103).
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.connection, required this.session});
+  const HomeScreen({
+    super.key,
+    required this.connection,
+    required this.session,
+  });
 
   final ServerConnection connection;
   final Session session;
@@ -49,6 +63,12 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<SessionNotice>? _noticeSub;
   ChatService? _chat;
   late final PaneLayout _layout;
+  final ChatPaneAvailability _chatAvailability = ChatPaneAvailability();
+
+  /// The stored arrangement is a platform round trip away, and the defaults are
+  /// not it. Building panes before it lands means building ones that are about
+  /// to be replaced.
+  bool _layoutLoaded = false;
 
   @override
   void initState() {
@@ -96,7 +116,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ],
     );
-    unawaited(_layout.load());
+    _layout.load().then((_) {
+      if (mounted) setState(() => _layoutLoaded = true);
+    });
     widget.session.state.addListener(_syncPaneAvailability);
     _syncPaneAvailability();
   }
@@ -111,7 +133,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _syncPaneAvailability() {
-    _layout.setEnabled(chatPaneId, chatPaneOffered(widget.session.state));
+    _layout.setEnabled(
+      chatPaneId,
+      _chatAvailability.offered(widget.session.state),
+    );
   }
 
   /// The chat client, built from the same server this session is connected to.
@@ -172,14 +197,12 @@ class _HomeScreenState extends State<HomeScreen> {
           if (session.protocolIncompatible) {
             return _centered('Incompatible server protocol.');
           }
+          if (!_layoutLoaded) return const _EmptyDock();
           // The dock survives a dropped connection. Tearing it down would take
           // the chat webview with it, so a reconnect would re-mint a URL and
           // reload the page; each pane says for itself what it cannot show
           // while the session is away.
-          return PaneScaffold(
-            layout: _layout,
-            emptyCentre: const _EmptyDock(),
-          );
+          return PaneScaffold(layout: _layout, emptyCentre: const _EmptyDock());
         },
       ),
     );
