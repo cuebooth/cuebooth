@@ -65,7 +65,10 @@ bool chatNavigationStaysInPanel({
 /// `Uri.tryParse` returns null in the same cases. A link the panel cannot open
 /// is dropped rather than allowed to break navigation handling for the rest of
 /// the session.
-void openExternally(String url, {Future<bool> Function(Uri, {LaunchMode mode})? launch}) {
+void openExternally(
+  String url, {
+  Future<bool> Function(Uri, {LaunchMode mode})? launch,
+}) {
   final target = Uri.tryParse(url);
   if (target == null) return;
   final open = launch ?? launchUrl;
@@ -185,9 +188,9 @@ class _ChatScreenState extends State<ChatScreen> {
       ok = false;
     }
     if (!ok && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Could not open a browser.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open a browser.')),
+      );
     }
   }
 
@@ -196,19 +199,28 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Chat'),
-        actions: [
-          if (_result?.isReady ?? false)
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Reload chat',
-              onPressed: _loading ? null : _load,
+    // The pane frame around this supplies the title and the pin, so only the
+    // reload control is this widget's to place.
+    return LayoutBuilder(
+      builder: (context, constraints) => Column(
+        children: [
+          // The control keeps its theme tap target whatever its icon size, so
+          // in a short pane it is the difference between fitting and overflowing
+          // — and chat itself is what the operator opened the pane for.
+          if ((_result?.isReady ?? false) && constraints.maxHeight >= 96)
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                iconSize: 16,
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Reload chat',
+                onPressed: _loading ? null : _load,
+              ),
             ),
+          Expanded(child: _body(context)),
         ],
       ),
-      body: _body(context),
     );
   }
 
@@ -222,7 +234,8 @@ class _ChatScreenState extends State<ChatScreen> {
       return const _ChatMessage(
         icon: Icons.cloud_sync_outlined,
         title: 'Reconnecting',
-        detail: 'Waiting for the server. Chat returns when the connection does.',
+        detail:
+            'Waiting for the server. Chat returns when the connection does.',
       );
     }
     if (!state.chatConfigured) {
@@ -295,7 +308,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return _ChatMessage(
           icon: Icons.link_off,
           title: 'Chat needs reconnecting',
-          detail: 'CueBooth\'s access to chat has ended. Reconnect once in your browser.',
+          detail:
+              'CueBooth\'s access to chat has ended. Reconnect once in your browser.',
           // Try again sits beside Reconnect so an operator who authorized in
           // another window is not stranded here waiting for a state change.
           action: Wrap(
@@ -320,7 +334,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return _ChatMessage(
           icon: Icons.cloud_off,
           title: 'Chat platform is not responding',
-          detail: 'The server reached out but got no answer. Streaming is unaffected.',
+          detail:
+              'The server reached out but got no answer. Streaming is unaffected.',
           action: _retryAndReconnect(),
         );
       // Retrying cannot help: the address is the problem, and the operator
@@ -329,7 +344,8 @@ class _ChatScreenState extends State<ChatScreen> {
         return const _ChatMessage(
           icon: Icons.alt_route,
           title: 'Chat is on another address',
-          detail: 'The chat panel answers only on the address set as '
+          detail:
+              'The chat panel answers only on the address set as '
               'chat.public_url on the server. Open CueBooth at that address, '
               'or change the setting to the one you use. Everything else works '
               'here as normal.',
@@ -438,34 +454,54 @@ class _ChatMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 44, color: theme.colorScheme.outline),
-              const SizedBox(height: 16),
-              Text(
-                title,
-                style: theme.textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                detail,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+    // This renders inside a pane the operator can shrink, not a full screen.
+    // A Column that does not fit clips, and the clipped part is outside the hit
+    // test — which would take the action with it, and the action is the only
+    // way out of the state being explained.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tight = constraints.maxWidth < 260 || constraints.maxHeight < 260;
+        final gap = tight ? 8.0 : 16.0;
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.all(tight ? 12 : 32),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!tight) ...[
+                        Icon(icon, size: 44, color: theme.colorScheme.outline),
+                        SizedBox(height: gap),
+                      ],
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      SizedBox(height: gap / 2),
+                      Text(
+                        detail,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (action != null) ...[
+                        SizedBox(height: tight ? 12 : 24),
+                        action!,
+                      ],
+                    ],
+                  ),
                 ),
-                textAlign: TextAlign.center,
               ),
-              if (action != null) ...[const SizedBox(height: 24), action!],
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
