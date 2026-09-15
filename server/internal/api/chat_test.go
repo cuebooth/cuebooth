@@ -414,10 +414,13 @@ func TestChatCallbackNamesAMissingScope(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
 	}
-	// Without naming the scope the operator re-authorizes forever against an
+	// Without somewhere to act the operator re-authorizes forever against an
 	// application that can never work.
-	if !strings.Contains(body, "chat.read") {
-		t.Errorf("page did not name the missing scope: %q", body)
+	if !strings.Contains(body, "developers.restream.io") {
+		t.Errorf("page did not say where to grant the permission: %q", body)
+	}
+	if !strings.Contains(body, "chat") {
+		t.Errorf("page did not name the missing permission: %q", body)
 	}
 }
 

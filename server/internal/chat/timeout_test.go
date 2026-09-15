@@ -62,7 +62,7 @@ func TestSlowTokenResponseIsStillReadBack(t *testing.T) {
 	}
 }
 
-// A panel left open on an application missing chat.read must not rotate the
+// A panel left open on an application missing chat read access must not rotate the
 // credential once per attempt: each rotation is another chance to lose it.
 func TestRefusedTokenIsNotRetriedUntilTheCooldownPasses(t *testing.T) {
 	fake := newFakeRestream()

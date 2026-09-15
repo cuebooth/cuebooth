@@ -211,7 +211,8 @@ func (s *Server) serveChatAuthCallback(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, chat.ErrMissingScope):
 			s.renderChatCallback(w, http.StatusBadRequest, "Missing permission",
 				"The account signed in, but the application was not granted permission to read chat. "+
-					"Add the chat.read scope to it at developers.restream.io, then try again.")
+					"Grant it chat read access at developers.restream.io, then try again. "+
+					"The server log names the scopes the account actually granted.")
 		default:
 			s.renderChatCallback(w, http.StatusBadRequest, "Authorization failed",
 				"CueBooth could not complete the sign-in. Close this tab and start again from the client.")

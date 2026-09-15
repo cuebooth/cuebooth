@@ -8,32 +8,61 @@ import (
 )
 
 // Restream selects scopes per application, so an application registered without
-// chat.read yields a credential that authorizes nothing chat can use. Accepting
-// it produces a loop: authorize, 401, "needs reconnecting", authorize again.
+// chat read access yields a credential that authorizes nothing chat can use.
+// Accepting it produces a loop: authorize, 401, "needs reconnecting", authorize
+// again.
 func TestExchangeWithoutTheChatScopeIsRejected(t *testing.T) {
-	fake := newFakeRestream()
-	fake.scope = "profile.read channels.read stream.read"
-	r, _, _ := newTestProvider(t, fake)
-
-	err := authorize(t, r, "good-code")
-	if !errors.Is(err, ErrMissingScope) {
-		t.Fatalf("Complete error = %v, want ErrMissingScope", err)
+	cases := []struct {
+		name  string
+		scope string
+	}{
+		{"no chat permission", "profile.default.read channels.default.read stream.default.read"},
+		{"chat but not readable", "profile.default.read chat.default.write"},
+		{"another resource entirely", "profile.default.read"},
 	}
-	if r.Authorized() {
-		t.Error("provider adopted a credential that cannot mint a chat URL")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeRestream()
+			fake.scope = tc.scope
+			r, _, _ := newTestProvider(t, fake)
+
+			err := authorize(t, r, "good-code")
+			if !errors.Is(err, ErrMissingScope) {
+				t.Fatalf("Complete error = %v, want ErrMissingScope", err)
+			}
+			if r.Authorized() {
+				t.Error("provider adopted a credential that cannot mint a chat URL")
+			}
+		})
 	}
 }
 
+// Restream grants chat read as "chat.default.read" while its dashboard labels
+// the same permission "chat.read". Matching either string exactly rejects the
+// other, which throws away a credential that works.
 func TestExchangeWithTheChatScopeIsAccepted(t *testing.T) {
-	fake := newFakeRestream()
-	fake.scope = "profile.read channels.read chat.read stream.read"
-	r, _, _ := newTestProvider(t, fake)
-
-	if err := authorize(t, r, "good-code"); err != nil {
-		t.Fatalf("Complete: %v", err)
+	cases := []struct {
+		name  string
+		scope string
+	}{
+		{"as a live grant reports it", "profile.default.read chat.default.read stream.default.read"},
+		{"as the dashboard labels it", "profile.read channels.read chat.read stream.read"},
+		{"chat permission alone", "chat.default.read"},
+		{"a tier this code has not seen", "chat.premium.read"},
 	}
-	if !r.Authorized() {
-		t.Error("provider rejected a credential carrying chat.read")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeRestream()
+			fake.scope = tc.scope
+			r, _, _ := newTestProvider(t, fake)
+
+			if err := authorize(t, r, "good-code"); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if !r.Authorized() {
+				t.Errorf("provider rejected a credential carrying chat read (%q)", tc.scope)
+			}
+		})
 	}
 }
 

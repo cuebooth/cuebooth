@@ -41,7 +41,7 @@ func TestDrainWaitsForTheRotationToReachDisk(t *testing.T) {
 			"access_token":  "access-after-rotation",
 			"refresh_token": "refresh-after-rotation",
 			"expires_in":    3600,
-			"scope":         webchatScope,
+			"scope":         "chat.default.read",
 		})
 	}))
 	t.Cleanup(platform.Close)

@@ -15,7 +15,7 @@ import (
 //
 // It is skipped unless credentials are present, so `go test ./...` stays
 // hermetic. To run it, register an application at developers.restream.io/apps
-// with the chat.read scope, authorize a server once, and point these at the
+// with chat read access, authorize a server once, and point these at the
 // resulting client credentials and token file:
 //
 //	RESTREAM_CLIENT_ID=... RESTREAM_CLIENT_SECRET=... \
@@ -51,7 +51,7 @@ func liveProvider(t *testing.T) *Restream {
 }
 
 // The webchat URL is the whole feature: if Restream stops returning an
-// embeddable chat.restream.io URL, or the application loses the chat.read
+// embeddable chat.restream.io URL, or the application loses its chat read
 // scope, the client has nothing to render.
 func TestOnlineWebchatURLIsEmbeddable(t *testing.T) {
 	r := liveProvider(t)

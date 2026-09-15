@@ -187,16 +187,16 @@ func TestConcurrentRetriesShareOneRefresh(t *testing.T) {
 
 // Restream's token response separates scopes with spaces; their capture-the-code
 // documentation describes the same value as comma-separated. Rejecting a
-// credential that carries chat.read would tell the operator to add a scope the
-// application already has.
+// credential that carries chat read access would tell the operator to add a
+// permission the application already has.
 func TestScopeListAcceptsBothSeparators(t *testing.T) {
 	cases := []struct {
 		name  string
 		scope string
 	}{
-		{"spaces", "profile.read channels.read chat.read stream.read"},
-		{"commas", "profile.read,channels.read,chat.read,stream.read"},
-		{"commas and spaces", "profile.read, channels.read, chat.read"},
+		{"spaces", "profile.default.read channels.default.read chat.default.read"},
+		{"commas", "profile.default.read,channels.default.read,chat.default.read"},
+		{"commas and spaces", "profile.default.read, channels.default.read, chat.default.read"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestScopeListAcceptsBothSeparators(t *testing.T) {
 				t.Fatalf("Complete: %v", err)
 			}
 			if !r.Authorized() {
-				t.Error("a credential carrying chat.read was rejected")
+				t.Error("a credential carrying chat read access was rejected")
 			}
 		})
 	}

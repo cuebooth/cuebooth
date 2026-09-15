@@ -33,8 +33,10 @@ bitmap_size = 72         # button bitmap edge length in pixels (square; 5–256,
 # its token exchange needs a client secret, which a distributed app can't keep.
 # Omit the section (or set provider = "off") to disable the panel.
 #
-# Register an application at https://developers.restream.io/apps/ with the
-# chat.read scope, and add "<public_url>/chat/auth/callback" as a redirect URI.
+# Register an application at https://developers.restream.io/apps/ with chat read
+# access (the dashboard labels it "chat.read"; a granted token reports it as
+# "chat.default.read"), and add "<public_url>/chat/auth/callback" as a redirect
+# URI.
 # Then browse to <public_url>/chat/auth/start once to authorize; the credential
 # is stored in token_file and refreshed automatically from then on.
 #
