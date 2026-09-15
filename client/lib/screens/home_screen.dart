@@ -61,6 +61,13 @@ class _HomeScreenState extends State<HomeScreen> {
           title: 'Chat',
           icon: Icons.chat_bubble_outline,
           edge: PaneEdge.right,
+          // Unpinned, the pane renders nothing, so the prompt to authorize would
+          // reach the operator only when they next summoned it — mid-service,
+          // when they wanted to read chat rather than fix it.
+          attention: PaneAttention(
+            source: widget.session.state,
+            wanted: () => widget.session.state.chatNeedsAuth,
+          ),
           builder: (_) {
             final chat = _chatService();
             if (chat == null) {
@@ -112,8 +119,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showNotice(SessionNotice notice) {
     if (!mounted) return;
+    final scheme = Theme.of(context).colorScheme;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(notice.message)),
+      SnackBar(
+        content: Text(notice.message),
+        backgroundColor: notice.severity == NoticeSeverity.error
+            ? scheme.errorContainer
+            : null,
+      ),
     );
   }
 

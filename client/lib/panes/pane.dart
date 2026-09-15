@@ -4,6 +4,21 @@ import 'package:flutter/widgets.dart';
 /// unpinned, and the direction it travels when summoned.
 enum PaneEdge { top, bottom, left, right }
 
+/// Something a pane needs the operator to see while the pane is not on screen.
+///
+/// An unpinned pane renders nothing, so a state its own body would have shown —
+/// chat waiting to be authorized, say — reaches the operator only through its
+/// tab.
+@immutable
+class PaneAttention {
+  const PaneAttention({required this.source, required this.wanted});
+
+  /// Notifies when [wanted] may have changed.
+  final Listenable source;
+
+  final bool Function() wanted;
+}
+
 /// One contributor to the layout.
 ///
 /// Features register a pane rather than pushing a route, which is what lets the
@@ -18,6 +33,7 @@ class PaneSpec {
     this.edge = PaneEdge.right,
     this.fillsCentre = false,
     this.startsPinned = true,
+    this.attention,
   });
 
   /// Stable across releases — it keys the persisted layout, so changing it
@@ -40,6 +56,9 @@ class PaneSpec {
   /// Whether the pane is pinned the first time an operator ever sees it, before
   /// any saved layout exists.
   final bool startsPinned;
+
+  /// Marks the pane's tab when it has something the operator should see.
+  final PaneAttention? attention;
 }
 
 /// Which way a pane travels when it is summoned from [edge].

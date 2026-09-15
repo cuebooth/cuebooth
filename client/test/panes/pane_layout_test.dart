@@ -201,23 +201,48 @@ void main() {
       expect(layout.spec('ghost'), isNull);
     });
 
-    test('a stored layout pinning two panes to the centre keeps one', () async {
+    test('a layout resolving after disposal does not notify', () async {
       SharedPreferences.setMockInitialValues({
-        'pane_layout_v1': '{"pinned":{"a":true,"b":true},"fractions":{}}',
+        'pane_layout_v1': '{"pinned":{"chat":false},"fractions":{}}',
       });
       final layout = PaneLayout(
-        panes: [_pane('a', fillsCentre: true), _pane('b', fillsCentre: true)],
+        panes: [_pane('chat')],
         prefs: await SharedPreferences.getInstance(),
       );
 
+      final pending = layout.load();
+      layout.dispose();
+
+      // The screen that built it can be popped before prefs resolve; notifying
+      // a disposed notifier throws.
+      await expectLater(pending, completes);
+    });
+
+    test('a layout loaded after the operator moved something keeps the gesture',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1': '{"pinned":{"chat":true},"fractions":{"chat":0.5}}',
+      });
+      final layout = PaneLayout(
+        panes: [_pane('chat')],
+        prefs: await SharedPreferences.getInstance(),
+      );
+
+      layout.togglePin('chat'); // the operator unpins before prefs resolve
       await layout.load();
 
-      // Whichever it keeps, exactly one occupies the centre — the other has
-      // nowhere to render and is released to its tab.
-      expect(layout.centrePane, isNotNull);
+      expect(layout.isPinned('chat'), isFalse);
+    });
+  });
+
+  group('registration', () {
+    test('two panes claiming the centre is rejected at registration', () {
+      // The second would render nowhere and offer no tab to recover it.
       expect(
-        [layout.isPinned('a'), layout.isPinned('b')].where((p) => p).length,
-        1,
+        () => PaneLayout(
+          panes: [_pane('a', fillsCentre: true), _pane('b', fillsCentre: true)],
+        ),
+        throwsA(isA<AssertionError>()),
       );
     });
   });

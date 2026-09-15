@@ -21,7 +21,12 @@ const double defaultPaneFraction = 0.3;
 /// arrangement and the server neither stores nor knows it (design.md §3.5).
 class PaneLayout extends ChangeNotifier {
   PaneLayout({required List<PaneSpec> panes, SharedPreferences? prefs})
-    : _panes = {for (final p in panes) p.id: p},
+    : assert(
+        panes.where((p) => p.fillsCentre).length <= 1,
+        'the centre is what the edges leave over, so a second pane claiming it '
+        'would render nowhere and offer no tab to recover it',
+      ),
+      _panes = {for (final p in panes) p.id: p},
       _prefs = prefs {
     for (final pane in panes) {
       _pinned[pane.id] = pane.startsPinned;
@@ -47,6 +52,25 @@ class PaneLayout extends ChangeNotifier {
 
   SharedPreferences? _prefs;
 
+  /// Set once the operator has moved something. A [load] that resolves after
+  /// that must not overwrite the gesture with what was on disk before it.
+  bool _rearranged = false;
+
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// [load] and [save] await a platform channel, so the layout can outlive the
+  /// screen that built it.
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
+
   Iterable<PaneSpec> get panes => _panes.values;
 
   PaneSpec? spec(String id) => _panes[id];
@@ -66,7 +90,7 @@ class PaneLayout extends ChangeNotifier {
     final changed = enabled ? _disabled.remove(id) : _disabled.add(id);
     if (!changed) return;
     if (!enabled) _summoned.remove(id);
-    notifyListeners();
+    _notify();
   }
 
   /// The pane filling the centre, if one is pinned there.
@@ -106,7 +130,8 @@ class PaneLayout extends ChangeNotifier {
     final clamped = value.clamp(minPaneFraction, maxPaneFraction);
     if (_fractions[id] == clamped) return;
     _fractions[id] = clamped;
-    notifyListeners();
+    _rearranged = true;
+    _notify();
     unawaited(save());
   }
 
@@ -119,7 +144,8 @@ class PaneLayout extends ChangeNotifier {
     final nowPinned = !isPinned(id);
     _pinned[id] = nowPinned;
     _summoned.remove(id);
-    notifyListeners();
+    _rearranged = true;
+    _notify();
     unawaited(save());
   }
 
@@ -128,18 +154,12 @@ class PaneLayout extends ChangeNotifier {
   void toggleSummoned(String id) {
     if (isPinned(id) || !_panes.containsKey(id)) return;
     if (!_summoned.remove(id)) _summoned.add(id);
-    notifyListeners();
-  }
-
-  /// Puts away every summoned pane — what a tap on the dock behind them means.
-  void dismissAll() {
-    if (_summoned.isEmpty) return;
-    _summoned.clear();
-    notifyListeners();
+    _notify();
   }
 
   Future<void> load() async {
     final prefs = _prefs ??= await SharedPreferences.getInstance();
+    if (_disposed || _rearranged) return;
     final raw = prefs.getString(_storageKey);
     if (raw == null) return;
 
@@ -176,20 +196,7 @@ class PaneLayout extends ChangeNotifier {
       }
     }
 
-    // Two panes both claiming the centre would leave one of them nowhere to
-    // render, so a stored layout that says so keeps the first and releases the
-    // rest.
-    var centreTaken = false;
-    for (final pane in _panes.values) {
-      if (!pane.fillsCentre || !isPinned(pane.id)) continue;
-      if (centreTaken) {
-        _pinned[pane.id] = false;
-      } else {
-        centreTaken = true;
-      }
-    }
-
-    notifyListeners();
+    _notify();
   }
 
   Future<void> save() async {
