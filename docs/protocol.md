@@ -534,4 +534,6 @@ On success the server persists the credential and republishes `stream.chat.statu
 
 ### Not in this protocol: sending messages
 
-Chat is display-only. Restream's chat WebSocket is documented as one-directional ("the server will ignore any incoming messages") and their REST surface exposes no send endpoint — the `reply_*` and `relay_*` actions report replies composed in Restream's own app rather than accepting them. Posting a message is therefore only possible inside the embedded chat UI itself, so CueBooth does not offer a send or canned-message command.
+Chat is display-only. Restream's chat WebSocket is documented as one-directional ("the server will ignore any incoming messages") and their REST surface exposes no send endpoint — the `reply_*` and `relay_*` actions report replies composed in Restream's own app rather than accepting them. Restream publishes no chat write scope at all, so no credential CueBooth can hold would authorize posting.
+
+The minted embed is display-only too: it renders the message list with no compose box. Posting a message means Restream's own web app, signed in as the operator — a separate session from the OAuth credential the server holds. CueBooth therefore offers no send or canned-message command, and cannot without a platform that exposes one.
