@@ -139,6 +139,26 @@ void main() {
     expect(find.byKey(paneKey('chat')), findsNothing);
   });
 
+  // A pane being pinned is moving into the dock, not leaving the screen. Every
+  // other test settles the animation first, which waits the ghost out.
+  testWidgets('pinning a summoned pane draws it once, not twice', (
+    tester,
+  ) async {
+    final layout = await layoutOf([
+      pane('grid', edge: PaneEdge.left, fillsCentre: true),
+      pane('chat', startsPinned: false),
+    ]);
+    await pump(tester, layout);
+    layout.toggleSummoned('chat');
+    await tester.pumpAndSettle();
+
+    layout.togglePin('chat');
+    await tester.pump();
+    await tester.pump(paneTransition ~/ 3);
+
+    expect(find.text('chat body'), findsOneWidget);
+  });
+
   // Below about 44px even the pin does not fit, and a header painting outside
   // its pane throws in debug and clips un-hittably in release.
   testWidgets('a dock too narrow for a header does not overflow', (

@@ -213,6 +213,19 @@ void main() {
     expect(tester.getRect(action).bottom, lessThanOrEqualTo(pane.bottom));
   });
 
+  // New in this branch, and the way an operator recovers a chat page that has
+  // gone stale during a service.
+  testWidgets('a ready chat pane offers a way to reload it', (tester) async {
+    await _pumpChatPane(
+      tester,
+      window: const Size(800, 600),
+      fraction: defaultPaneFraction,
+      ready: true,
+    );
+
+    expect(find.byTooltip('Reload chat'), findsOneWidget);
+  });
+
   testWidgets('the chat pane fits when dragged to its minimum', (tester) async {
     await _pumpChatPane(
       tester,

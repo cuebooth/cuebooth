@@ -43,7 +43,10 @@ const Duration paneTransition = Duration(milliseconds: 180);
 /// Each request is raised to [minPaneExtent] and the centre keeps
 /// [minCentreExtent]. When even that does not fit, every pane is scaled down
 /// together — below the floor, because an axis that small has nothing better to
-/// offer, and starving the panes beats overflowing the dock.
+/// offer, and starving the panes beats overflowing the dock. A pane starved
+/// that far loses its header and with it its pin, and a pinned pane has no tab,
+/// so on an axis under roughly 230px it is the window that has to give:
+/// widening it restores the pane and the size it was left at.
 List<double> allocatePaneExtents({
   required List<double> fractions,
   required double available,
@@ -360,9 +363,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         maxPaneFraction,
       );
       final wanted = layout.fractionOf(pane.id) + sign * delta / available;
-      // An axis too small for both bounds has no range left; hold at the floor
-      // rather than asserting inside clamp.
-      layout.setFraction(pane.id, high < low ? low : wanted.clamp(low, high));
+      layout.setFraction(pane.id, wanted.clamp(low, high));
     }
 
     // A window that shrank leaves every stored fraction on the axis larger
