@@ -339,6 +339,33 @@ A single app that consolidates:
 
 **Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web (fallback).
 
+**Layout: one pane of glass.** Those things are visible *at the same time*, and that
+is the product rather than an arrangement detail. What CueBooth replaces is an iPad
+running Safari in split view — the stream platform's chat in a third of the screen,
+Companion in the rest, a video overlay floating over both. An operator mid-service
+does not navigate; they look.
+
+So the client is a **dockable pane system**, not a stack of screens. A pane is
+either:
+
+- **Docked** — holding a region of the layout, resized by dragging a divider,
+  present for the whole service. The button grid, a compact meter strip, chat.
+- **Floating** — over the docked layout, summoned and dismissed by a control,
+  entering and leaving from an edge. Detailed per-channel audio strips, video
+  preview.
+
+The split is by **duration of attention, not by size**. Meters stay up all
+service; the channel strips are pulled down for a few seconds to fix something
+during a song and then put away. A pane is not fixed as one kind — the same pane
+docks on an iPad in landscape and floats on a phone, which is what lets one layout
+system cover every target rather than a tablet design and a separate phone one.
+
+**Where this boundary sits.** Layout is entirely the client's, and per device: a
+booth iPad keeps its arrangement, and the server neither stores nor knows it,
+consistent with the server holding no per-client state at all (*Delivery*, below).
+A feature contributes **a pane, not a route** — that is the seam every later panel
+lands on, and the reason this system precedes them.
+
 **Chat ownership.** The **server** owns chat authorization (see §3.3 *Chat Credential Broker*) and the client owns only rendering. The platform's OAuth offers no PKCE and its token exchange requires a client secret, so an app distributed to operators cannot hold one; the server does the exchange, persists the rotating refresh token, and mints a display URL on demand. The client asks for a URL when it needs one and never sees the long-lived credential — the client secret and the rotating refresh token stay on the server, which also means chat survives indefinitely without re-authorization rather than expiring on the operator. The minted URL itself carries a short-lived bearer credential, so it is fetched on demand and kept out of every state snapshot (protocol.md §11).
 
 What each side deliberately does *not* do: the client does not cache the chat URL (it embeds a token the platform expires), and neither side offers a send or canned-message path — the platform's chat API is receive-only, so composing a message is only possible inside the embedded UI. The server-side provider interface is the seam for adding YouTube or Twitch later without the client learning a second auth model. See [`protocol.md`](protocol.md) §11.
