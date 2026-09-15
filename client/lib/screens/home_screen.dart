@@ -27,7 +27,8 @@ const String chatPaneId = 'chat';
 /// directions: reading a drop as "no chat" takes the pane and its webview out
 /// of the dock on every blip, while reading it as "chat" puts a pane back on a
 /// server that has none — offering to reconnect to something that was never
-/// there. Only a snapshot answers the question, so only a snapshot changes it.
+/// there. Only a connected server answers, so only what it says changes the
+/// answer; a disconnection leaves the last one standing.
 class ChatPaneAvailability {
   bool? _answered;
 
@@ -36,6 +37,46 @@ class ChatPaneAvailability {
     // Until a server has said, assume the pane belongs: a deployment with chat
     // is the case where guessing wrong costs a webview.
     return _answered ?? true;
+  }
+}
+
+/// The centre pane's body: the stream controls over the button grid.
+///
+/// A pane is not a screen, and these two share a fixed amount of it. The bar's
+/// height depends on its own width — its controls stack when narrow — so no
+/// constant describes when it fits. Instead the grid is guaranteed the larger
+/// share and the bar takes what is left, scrolling inside it rather than
+/// pushing the grid to nothing. The grid is the product; the bar annotates it.
+class SurfacePaneBody extends StatelessWidget {
+  const SurfacePaneBody({super.key, required this.session});
+
+  /// Share of the pane the bar may occupy before it starts scrolling.
+  static const double barShare = 0.4;
+
+  /// Below this the bar has no room worth giving it.
+  static const double barFloor = 72;
+
+  final Session session;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final room = constraints.maxHeight * barShare;
+        return Column(
+          children: [
+            if (room >= barFloor)
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: room),
+                child: SingleChildScrollView(
+                  child: StreamControlBar(session: session),
+                ),
+              ),
+            Expanded(child: SurfaceGrid(session: session)),
+          ],
+        );
+      },
+    );
   }
 }
 
@@ -85,18 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (_) => ListenableBuilder(
             listenable: widget.session,
             builder: (_, _) => widget.session.ready
-                ? LayoutBuilder(
-                    builder: (context, constraints) => Column(
-                      children: [
-                        // A pane too short for both keeps the grid: it adapts to
-                        // whatever it is given, while the bar is a fixed height
-                        // that would push the grid out rather than share.
-                        if (constraints.maxHeight >= 200)
-                          StreamControlBar(session: widget.session),
-                        Expanded(child: SurfaceGrid(session: widget.session)),
-                      ],
-                    ),
-                  )
+                ? SurfacePaneBody(session: widget.session)
                 : _centered('Waiting for server…'),
           ),
         ),

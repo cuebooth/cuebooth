@@ -177,6 +177,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  // Sizes where a pinned pane is rendered but is shorter than its own header:
+  // the allocator gives it 6-26px rather than zero, so the frame is built and
+  // the guard is what keeps the header from painting outside it.
+  for (final height in const [190.0, 200.0, 210.0]) {
+    testWidgets('a pane shorter than its header does not overflow at $height', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(800, height);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final layout = await layoutOf([
+        pane('grid', edge: PaneEdge.left, fillsCentre: true),
+        pane('levels', edge: PaneEdge.bottom),
+      ]);
+      await pump(tester, layout);
+
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('a dock too short for a header does not overflow', (
     tester,
   ) async {

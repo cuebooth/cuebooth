@@ -232,9 +232,26 @@ void main() {
       final pending = layout.load();
       layout.dispose();
 
-      // The screen that built it can be popped before prefs resolve; notifying
-      // a disposed notifier throws.
+      // The screen that built it can be popped before prefs resolve.
       await expectLater(pending, completes);
+    });
+
+    // _load swallows whatever it throws, so a notification after disposal
+    // leaves no trace there. Every other path through _notify is reachable
+    // straight from a mutator, and that one does not swallow.
+    test('a mutator after disposal does not throw', () async {
+      // Built directly: the shared helper disposes at teardown, and disposing
+      // twice is its own assertion.
+      SharedPreferences.setMockInitialValues({});
+      final layout = PaneLayout(
+        panes: [_pane('a')],
+        prefs: await SharedPreferences.getInstance(),
+      );
+      layout.dispose();
+
+      expect(() => layout.togglePin('a'), returnsNormally);
+      expect(() => layout.setFraction('a', 0.4), returnsNormally);
+      expect(() => layout.setEnabled('a', false), returnsNormally);
     });
 
     test('a drag writes a couple of times, not once per frame', () async {
@@ -327,6 +344,23 @@ void main() {
 
       await expectLater(layout.load(), completes);
       expect(layout.isPinned('a'), isTrue, reason: 'defaults are usable');
+    });
+
+    test('a size the operator dragged survives a late load', () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1': '{"pinned":{},"fractions":{"a":0.55,"b":0.55}}',
+      });
+      final layout = PaneLayout(
+        panes: [_pane('a'), _pane('b')],
+        prefs: await SharedPreferences.getInstance(),
+      );
+      addTearDown(layout.dispose);
+
+      layout.setFraction('a', 0.25);
+      await layout.load();
+
+      expect(layout.fractionOf('a'), closeTo(0.25, 1e-9), reason: 'the drag');
+      expect(layout.fractionOf('b'), closeTo(0.55, 1e-9), reason: 'the store');
     });
 
     test('a fraction for something that is not a pane is not stored', () async {

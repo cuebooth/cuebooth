@@ -170,10 +170,9 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         final summoned = {for (final pane in layout.floating) pane.id};
         return LayoutBuilder(
           builder: (context, constraints) => Stack(
-            // Positioned children do not size a stack, so the dock's extent
-            // comes from the incoming constraints rather than from whatever
-            // happens to be in it.
-            fit: StackFit.expand,
+            // Every child here is positioned. A stack with one that is not
+            // sizes itself to that child instead of to its constraints, and the
+            // whole dock collapses to it.
             children: [
               Positioned.fill(
                 child: Padding(padding: insets, child: _buildDock(context)),

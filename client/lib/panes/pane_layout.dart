@@ -74,8 +74,6 @@ class PaneLayout extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    // A change made in the last moments is still the operator's.
-    if (_unsaved) unawaited(save());
     super.dispose();
   }
 

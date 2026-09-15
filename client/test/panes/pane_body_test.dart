@@ -4,9 +4,9 @@ import 'package:cuebooth_client/panes/pane.dart';
 import 'package:cuebooth_client/panes/pane_layout.dart';
 import 'package:cuebooth_client/panes/pane_scaffold.dart';
 import 'package:cuebooth_client/screens/chat_screen.dart';
+import 'package:cuebooth_client/screens/home_screen.dart';
 import 'package:cuebooth_client/services/chat_service.dart';
 import 'package:cuebooth_client/services/session.dart';
-import 'package:cuebooth_client/widgets/stream_control_bar.dart';
 import 'package:cuebooth_client/widgets/surface_grid.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -82,13 +82,10 @@ Future<void> _pumpChatPane(
         fillsCentre: true,
         // The body that ships, not a placeholder: a placeholder survives any
         // size, which is the whole reason this file exists.
+        // The same widget HomeScreen builds, not a re-creation of it: a test
+        // that rebuilds the composition cannot see a bug in the composition.
         builder: (_) => realCentre
-            ? Column(
-                children: [
-                  StreamControlBar(session: session),
-                  Expanded(child: SurfaceGrid(session: session)),
-                ],
-              )
+            ? SurfacePaneBody(session: session)
             : const SizedBox.expand(),
       ),
       PaneSpec(
@@ -137,6 +134,39 @@ void main() {
       );
       expect(tester.takeException(), isNull);
     });
+  }
+
+  // Narrow and short together, which neither the phone widths nor the short
+  // windows reach on their own. The bar's height depends on its width — its
+  // controls stack when narrow — so a gate on height alone admits a bar that
+  // does not fit, and Expanded then hands the button grid zero.
+  for (final window in const [
+    Size(600, 300),
+    Size(500, 300),
+    Size(400, 320),
+    Size(340, 300),
+    Size(360, 340),
+  ]) {
+    for (final fraction in const [defaultPaneFraction, maxPaneFraction]) {
+      testWidgets(
+        'the grid survives ${window.width.toInt()}x${window.height.toInt()} '
+        'at ${(fraction * 100).toInt()}%',
+        (tester) async {
+          await _pumpChatPane(
+            tester,
+            window: window,
+            fraction: fraction,
+            ready: false,
+          );
+
+          expect(tester.takeException(), isNull);
+          // The grid is the product; a bar that squeezes it to nothing has
+          // taken the pane over.
+          final grid = tester.getSize(find.byType(SurfaceGrid));
+          expect(grid.height, greaterThan(24));
+        },
+      );
+    }
   }
 
   testWidgets('the broadcast control stays inside the pane it is in', (
@@ -245,7 +275,14 @@ void main() {
     // A pane this narrow cannot show the whole prompt at once, so the body
     // scrolls. What matters is that the control can still be brought into the
     // pane and tapped — clipped, it was neither.
-    await tester.scrollUntilVisible(connect.first, 60);
+    await tester.scrollUntilVisible(
+      connect.first,
+      60,
+      scrollable: find.descendant(
+        of: find.byKey(paneKey('chat')),
+        matching: find.byType(Scrollable),
+      ),
+    );
     await tester.pumpAndSettle();
 
     final pane = tester.getRect(find.byKey(paneKey('chat')));
