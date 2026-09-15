@@ -22,7 +22,12 @@ PaneSpec _pane(
 
 Future<PaneLayout> _layout(List<PaneSpec> panes) async {
   SharedPreferences.setMockInitialValues({});
-  return PaneLayout(panes: panes, prefs: await SharedPreferences.getInstance());
+  final layout = PaneLayout(
+    panes: panes,
+    prefs: await SharedPreferences.getInstance(),
+  );
+  addTearDown(layout.dispose);
+  return layout;
 }
 
 Future<void> _pump(WidgetTester tester, PaneLayout layout) async {

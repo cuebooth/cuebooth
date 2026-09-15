@@ -300,10 +300,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
       final wanted = layout.fractionOf(pane.id) + sign * delta / available;
       // An axis too small for both bounds has no range left; hold at the floor
       // rather than asserting inside clamp.
-      layout.setFraction(
-        pane.id,
-        high < low ? low : wanted.clamp(low, high),
-      );
+      layout.setFraction(pane.id, high < low ? low : wanted.clamp(low, high));
     }
 
     return MouseRegion(
@@ -347,6 +344,11 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     ];
 
     return Positioned(
+      // The stack's children vary in number and order with what is pinned.
+      // Unkeyed, Flutter matches them positionally, and a strip appearing
+      // re-associates a floating pane's element with a different pane —
+      // restarting its travel and rebuilding its body from scratch.
+      key: ValueKey('pane-strip-${edge.name}'),
       left: edge == PaneEdge.right ? null : 0,
       right: edge == PaneEdge.left ? null : 0,
       // A full-height side strip would cover the ends of a top or bottom strip
@@ -386,6 +388,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     );
 
     return Positioned(
+      key: ValueKey('pane-float-${pane.id}'),
       // The axis it flies along is pinned to its own edge and given an explicit
       // extent; the cross axis spans the dock.
       left: pane.edge == PaneEdge.right ? null : insets.left,
@@ -440,7 +443,16 @@ class _SlideInState extends State<_SlideIn>
   void initState() {
     super.initState();
     _controller.addStatusListener(_onStatus);
-    if (widget.visible) _controller.forward();
+    if (widget.visible) {
+      _controller.forward();
+    } else {
+      // Summoned and dismissed inside one frame: the controller is already at
+      // rest, so no status will ever fire and the pane would stay mounted and
+      // off-screen for the life of the dock.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !widget.visible) widget.onRetired();
+      });
+    }
   }
 
   @override
@@ -467,12 +479,13 @@ class _SlideInState extends State<_SlideIn>
   @override
   Widget build(BuildContext context) {
     return SlideTransition(
-      position: Tween<Offset>(
-        begin: paneEntryOffset(widget.edge),
-        end: Offset.zero,
-      ).animate(
-        CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-      ),
+      position:
+          Tween<Offset>(
+            begin: paneEntryOffset(widget.edge),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
+          ),
       child: widget.child,
     );
   }
@@ -490,63 +503,78 @@ class _PaneFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pinned = layout.isPinned(pane.id);
-    return Column(
-      children: [
-        Container(
-          height: 32,
-          color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              // The pin is the only control that can restore a pane the
-              // operator has shrunk, so it is the last thing to go: the icon
-              // and then the title yield to it rather than overflowing.
-              final width = constraints.maxWidth;
-              return Row(
-                children: [
-                  if (width >= 112) ...[
-                    const SizedBox(width: 8),
-                    _withAttention(pane, Icon(pane.icon, size: 16)),
-                  ],
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: width >= 80
-                        ? Text(
-                            pane.title,
-                            style: Theme.of(context).textTheme.labelLarge,
-                            overflow: TextOverflow.ellipsis,
-                            softWrap: false,
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                  IconButton(
-                    iconSize: 16,
-                    // A default icon button reserves a 48px tap target from the
-                    // theme regardless of its box, which this bar would clip —
-                    // taking the hit area with it.
-                    style: IconButton.styleFrom(
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 32,
-                      height: 32,
-                    ),
-                    tooltip: pinned
-                        ? 'Unpin ${pane.title}'
-                        : 'Pin ${pane.title}',
-                    icon: Icon(
-                      pinned ? Icons.push_pin : Icons.push_pin_outlined,
-                    ),
-                    onPressed: () => layout.togglePin(pane.id),
-                  ),
-                  const SizedBox(width: 4),
-                ],
-              );
-            },
-          ),
-        ),
-        Expanded(child: pane.builder(context)),
-      ],
+    return LayoutBuilder(
+      builder: (context, frame) => Column(
+        children: [
+          // A pane shorter than its own header has no room for one: the header is
+          // a fixed height, and a Column that cannot fit its children reports an
+          // overflow rather than trimming them.
+          if (frame.maxHeight >= 44)
+            Container(
+              height: 32,
+              color: Theme.of(context).colorScheme.surfaceContainerHigh,
+              // Below ~44px even the pin alone does not fit. An axis that narrow
+              // has nothing usable to offer either way, so the header is clipped
+              // rather than allowed to paint outside the pane it belongs to.
+              child: ClipRect(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // The pin is the only control that can restore a pane the
+                    // operator has shrunk, so it is the last thing to go: the icon
+                    // and then the title yield to it rather than overflowing.
+                    final width = constraints.maxWidth;
+                    // Narrower than the pin itself. An axis this small cannot show
+                    // a header at all, and a Row that does not fit reports an
+                    // overflow rather than shrinking to suit.
+                    if (width < 44) return const SizedBox.shrink();
+                    return Row(
+                      children: [
+                        if (width >= 112) ...[
+                          const SizedBox(width: 8),
+                          _withAttention(pane, Icon(pane.icon, size: 16)),
+                        ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: width >= 80
+                              ? Text(
+                                  pane.title,
+                                  style: Theme.of(context).textTheme.labelLarge,
+                                  overflow: TextOverflow.ellipsis,
+                                  softWrap: false,
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                        IconButton(
+                          iconSize: 16,
+                          // A default icon button reserves a 48px tap target from the
+                          // theme regardless of its box, which this bar would clip —
+                          // taking the hit area with it.
+                          style: IconButton.styleFrom(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 32,
+                            height: 32,
+                          ),
+                          tooltip: pinned
+                              ? 'Unpin ${pane.title}'
+                              : 'Pin ${pane.title}',
+                          icon: Icon(
+                            pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                          ),
+                          onPressed: () => layout.togglePin(pane.id),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+          Expanded(child: pane.builder(context)),
+        ],
+      ),
     );
   }
 }

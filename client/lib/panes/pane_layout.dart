@@ -64,10 +64,38 @@ class PaneLayout extends ChangeNotifier {
 
   bool _disposed = false;
 
+  bool _writing = false;
+  bool _unsaved = false;
+
+  /// Writes made, for tests that care that a drag does not make one per frame.
+  @visibleForTesting
+  int writeCount = 0;
+
   @override
   void dispose() {
     _disposed = true;
+    // A change made in the last moments is still the operator's.
+    if (_unsaved) unawaited(save());
     super.dispose();
+  }
+
+  /// Coalesces writes. A divider drag lands a change per frame, and each write
+  /// is a platform round trip and a file write; only where the divider came to
+  /// rest is worth storing. Changes arriving while a write is in flight ride on
+  /// the one that follows it rather than queueing a write each.
+  void _saveSoon() {
+    _unsaved = true;
+    if (_writing) return;
+    unawaited(_drainSaves());
+  }
+
+  Future<void> _drainSaves() async {
+    _writing = true;
+    while (_unsaved) {
+      _unsaved = false;
+      await save();
+    }
+    _writing = false;
   }
 
   /// [load] and [save] await a platform channel, so the layout can outlive the
@@ -138,7 +166,7 @@ class PaneLayout extends ChangeNotifier {
     _fractions[id] = clamped;
     _rearranged.add(id);
     _notify();
-    unawaited(save());
+    _saveSoon();
   }
 
   /// Pins a floating pane into the layout, or releases a pinned one to its tab.
@@ -152,7 +180,7 @@ class PaneLayout extends ChangeNotifier {
     _summoned.remove(id);
     _rearranged.add(id);
     _notify();
-    unawaited(save());
+    _saveSoon();
   }
 
   /// Summons an unpinned pane, or puts it away. Pinned panes ignore this: they
@@ -220,6 +248,7 @@ class PaneLayout extends ChangeNotifier {
     try {
       await _loading;
       final prefs = _prefs ??= await SharedPreferences.getInstance();
+      writeCount++;
       await prefs.setString(
         _storageKey,
         jsonEncode({'pinned': _pinned, 'fractions': _fractions}),

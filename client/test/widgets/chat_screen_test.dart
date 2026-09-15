@@ -42,10 +42,8 @@ void main() {
     return session;
   }
 
-  ChatService serviceReturning(http.Response Function() respond) => ChatService(
-    serverBase: base,
-    client: MockClient((_) async => respond()),
-  );
+  ChatService serviceReturning(http.Response Function() respond) =>
+      ChatService(serverBase: base, client: MockClient((_) async => respond()));
 
   Future<void> pumpChat(
     WidgetTester tester, {
@@ -56,14 +54,18 @@ void main() {
   }) async {
     await tester.pumpWidget(
       MaterialApp(
-        home: ChatScreen(
-          session: session,
-          chat: chat,
-          useWebview: useWebview,
-          launch: (uri) async {
-            launched?.add(uri);
-            return true;
-          },
+        // In the app the pane sits under HomeScreen's Scaffold, which is what
+        // gives a SnackBar somewhere to appear.
+        home: Scaffold(
+          body: ChatScreen(
+            session: session,
+            chat: chat,
+            useWebview: useWebview,
+            launch: (uri) async {
+              launched?.add(uri);
+              return true;
+            },
+          ),
         ),
       ),
     );
@@ -345,7 +347,9 @@ void main() {
       client: MockClient((_) async {
         mints++;
         return http.Response(
-          jsonEncode({'url': 'https://chat.restream.io/embed?token=mint$mints'}),
+          jsonEncode({
+            'url': 'https://chat.restream.io/embed?token=mint$mints',
+          }),
           200,
         );
       }),
@@ -375,7 +379,11 @@ void main() {
     });
     await tester.pumpAndSettle();
 
-    expect(mints, 2, reason: 'the panel re-displayed a URL minted before the revocation');
+    expect(
+      mints,
+      2,
+      reason: 'the panel re-displayed a URL minted before the revocation',
+    );
   });
 
   // Every state change notifies the panel — viewer counts, scenes, meters — and
@@ -438,7 +446,11 @@ void main() {
     }
     await tester.pumpAndSettle();
 
-    expect(mints, 1, reason: 'unrelated deltas triggered $mints mints, each a token rotation');
+    expect(
+      mints,
+      1,
+      reason: 'unrelated deltas triggered $mints mints, each a token rotation',
+    );
   });
 
   // The Linux and Windows launchers throw rather than returning false, and
@@ -452,11 +464,15 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: ChatScreen(
-          session: session,
-          chat: serviceReturning(() => http.Response('{}', 409)),
-          useWebview: false,
-          launch: (_) async => throw Exception('no browser available'),
+        // In the app the pane sits under HomeScreen's Scaffold, which is what
+        // gives a SnackBar somewhere to appear.
+        home: Scaffold(
+          body: ChatScreen(
+            session: session,
+            chat: serviceReturning(() => http.Response('{}', 409)),
+            useWebview: false,
+            launch: (_) async => throw Exception('no browser available'),
+          ),
         ),
       ),
     );
@@ -510,17 +526,14 @@ void main() {
     // later microtask, so the zone has to be given the chance to see it.
     test('swallows a launcher failure', () async {
       Object? unhandled;
-      await runZonedGuarded(
-        () async {
-          openExternally(
-            'https://example.test/x',
-            launch: (uri, {LaunchMode mode = LaunchMode.platformDefault}) async =>
-                throw StateError('no handler'),
-          );
-          await Future<void>.delayed(Duration.zero);
-        },
-        (error, stack) => unhandled = error,
-      );
+      await runZonedGuarded(() async {
+        openExternally(
+          'https://example.test/x',
+          launch: (uri, {LaunchMode mode = LaunchMode.platformDefault}) async =>
+              throw StateError('no handler'),
+        );
+        await Future<void>.delayed(Duration.zero);
+      }, (error, stack) => unhandled = error);
       expect(unhandled, isNull);
     });
   });
@@ -689,8 +702,9 @@ void main() {
   // change: chat answers only on the address chat.public_url names. Falling
   // through to "Could not reach the server" would tell the operator to check
   // their network and offer a button that fails identically every time.
-  testWidgets('names the address when chat is configured for another one',
-      (tester) async {
+  testWidgets('names the address when chat is configured for another one', (
+    tester,
+  ) async {
     final session = await sessionWithChat(tester, {
       'provider': 'restream',
       'status': 'ready',

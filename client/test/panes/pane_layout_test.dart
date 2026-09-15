@@ -21,7 +21,12 @@ PaneSpec _pane(
 
 Future<PaneLayout> _layout(List<PaneSpec> panes) async {
   SharedPreferences.setMockInitialValues({});
-  return PaneLayout(panes: panes, prefs: await SharedPreferences.getInstance());
+  final layout = PaneLayout(
+    panes: panes,
+    prefs: await SharedPreferences.getInstance(),
+  );
+  addTearDown(layout.dispose);
+  return layout;
 }
 
 void main() {
@@ -205,10 +210,10 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'pane_layout_v1': '{"pinned":{"chat":false},"fractions":{}}',
       });
-      final layout = PaneLayout(
-        panes: [_pane('chat')],
-        prefs: await SharedPreferences.getInstance(),
-      );
+      // Deliberately without prefs: that is how the app builds it, and it is
+      // the only arrangement where the read actually suspends. Injecting them
+      // makes load() run start to finish before dispose() is even called.
+      final layout = PaneLayout(panes: [_pane('chat')]);
 
       final pending = layout.load();
       layout.dispose();
@@ -216,6 +221,40 @@ void main() {
       // The screen that built it can be popped before prefs resolve; notifying
       // a disposed notifier throws.
       await expectLater(pending, completes);
+    });
+
+    test('a drag writes a couple of times, not once per frame', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final layout = PaneLayout(panes: [_pane('chat')], prefs: prefs);
+      addTearDown(layout.dispose);
+      await layout.load();
+
+      // A drag lands a change per frame, and each write is a platform round
+      // trip and a file write.
+      for (var i = 0; i < 20; i++) {
+        layout.setFraction('chat', 0.2 + i * 0.01);
+      }
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(layout.writeCount, lessThanOrEqualTo(2));
+      // And the value that survives is where the drag ended.
+      expect(prefs.getString('pane_layout_v1'), contains('0.39'));
+    });
+
+    test('a change made as the layout goes away is still written', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final layout = PaneLayout(panes: [_pane('chat')], prefs: prefs);
+      await layout.load();
+
+      layout.setFraction('chat', 0.42);
+      layout.dispose();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(prefs.getString('pane_layout_v1'), contains('0.42'));
     });
 
     test('a layout loaded after the operator moved something keeps the gesture',

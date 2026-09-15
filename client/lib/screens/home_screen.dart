@@ -78,11 +78,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (chat == null) {
               return const Center(child: Text('Not connected.'));
             }
-            return ChatScreen(
-              session: widget.session,
-              chat: chat,
-              embedded: true,
-            );
+            return ChatScreen(session: widget.session, chat: chat);
           },
         ),
       ],

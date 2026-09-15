@@ -345,20 +345,22 @@ running Safari in split view — the stream platform's chat in a third of the sc
 Companion in the rest, a video overlay floating over both. An operator mid-service
 does not navigate; they look.
 
-So the client is a **dockable pane system**, not a stack of screens. A pane is
-either:
+So the client is a **dockable pane system**, not a stack of screens. Each pane
+carries a pin, and is either:
 
-- **Docked** — holding a region of the layout, resized by dragging a divider,
+- **Pinned** — holding a region of the layout, resized by dragging a divider,
   present for the whole service. The button grid, a compact meter strip, chat.
-- **Floating** — over the docked layout, summoned and dismissed by a control,
-  entering and leaving from an edge. Detailed per-channel audio strips, video
-  preview.
+- **Unpinned** — retracted to a tab on its own edge, travelling back over the
+  layout when summoned and away again when dismissed. Detailed per-channel audio
+  strips, video preview.
 
 The split is by **duration of attention, not by size**. Meters stay up all
 service; the channel strips are pulled down for a few seconds to fix something
-during a song and then put away. A pane is not fixed as one kind — the same pane
-docks on an iPad in landscape and floats on a phone, which is what lets one layout
-system cover every target rather than a tablet design and a separate phone one.
+during a song and then put away. The pin belongs to the pane rather than to its
+kind — the same pane is pinned on an iPad in landscape and unpinned on a phone,
+which is what lets one layout system cover every target rather than a tablet
+design and a separate phone one. Every pane can be unpinned, the one filling the
+centre included, so the empty layout is a state the operator can reach.
 
 **Where this boundary sits.** Layout is entirely the client's, and per device: a
 booth iPad keeps its arrangement, and the server neither stores nor knows it,

@@ -89,17 +89,12 @@ class ChatScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.chat,
-    this.embedded = false,
     @visibleForTesting this.useWebview,
     @visibleForTesting this.launch,
   });
 
   final Session session;
   final ChatService chat;
-
-  /// Renders without a [Scaffold] or [AppBar], for hosting inside a pane whose
-  /// frame already carries the title and the pin.
-  final bool embedded;
 
   /// Overrides platform detection so both branches are testable off-device.
   final bool? useWebview;
@@ -201,39 +196,23 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Inside a pane the surrounding frame supplies the title and the pin, so
-    // only the reload control is this widget's to place.
-    if (widget.embedded) {
-      return Column(
-        children: [
-          if (_result?.isReady ?? false)
-            Align(
-              alignment: Alignment.centerRight,
-              child: IconButton(
-                iconSize: 16,
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Reload chat',
-                onPressed: _loading ? null : _load,
-              ),
-            ),
-          Expanded(child: _body(context)),
-        ],
-      );
-    }
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Chat'),
-        actions: [
-          if (_result?.isReady ?? false)
-            IconButton(
+    // The pane frame around this supplies the title and the pin, so only the
+    // reload control is this widget's to place.
+    return Column(
+      children: [
+        if (_result?.isReady ?? false)
+          Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              iconSize: 16,
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.refresh),
               tooltip: 'Reload chat',
               onPressed: _loading ? null : _load,
             ),
-        ],
-      ),
-      body: _body(context),
+          ),
+        Expanded(child: _body(context)),
+      ],
     );
   }
 
