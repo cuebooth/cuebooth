@@ -442,34 +442,54 @@ class _ChatMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 44, color: theme.colorScheme.outline),
-              const SizedBox(height: 16),
-              Text(
-                title,
-                style: theme.textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                detail,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+    // This renders inside a pane the operator can shrink, not a full screen.
+    // A Column that does not fit clips, and the clipped part is outside the hit
+    // test — which would take the action with it, and the action is the only
+    // way out of the state being explained.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tight = constraints.maxWidth < 260 || constraints.maxHeight < 260;
+        final gap = tight ? 8.0 : 16.0;
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.all(tight ? 12 : 32),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!tight) ...[
+                        Icon(icon, size: 44, color: theme.colorScheme.outline),
+                        SizedBox(height: gap),
+                      ],
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      SizedBox(height: gap / 2),
+                      Text(
+                        detail,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (action != null) ...[
+                        SizedBox(height: tight ? 12 : 24),
+                        action!,
+                      ],
+                    ],
+                  ),
                 ),
-                textAlign: TextAlign.center,
               ),
-              if (action != null) ...[const SizedBox(height: 24), action!],
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

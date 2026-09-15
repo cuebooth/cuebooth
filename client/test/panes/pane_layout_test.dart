@@ -134,6 +134,20 @@ void main() {
       expect(layout.tabsAt(PaneEdge.right).map((p) => p.id), ['chat']);
     });
 
+    test('a disabled pane cannot be summoned', () async {
+      final layout = await _layout([_pane('chat', startsPinned: false)]);
+      layout.setEnabled('chat', false);
+
+      layout.toggleSummoned('chat');
+      layout.setEnabled('chat', true);
+
+      // Nothing renders a tab for a disabled pane, so a summons it accepted
+      // could only surface later — the pane opening on its own when the server
+      // reports a provider.
+      expect(layout.isVisible('chat'), isFalse);
+      expect(layout.floating, isEmpty);
+    });
+
     test('disabling puts away a summoned pane', () async {
       final layout = await _layout([_pane('chat', startsPinned: false)]);
       layout.toggleSummoned('chat');
@@ -243,6 +257,30 @@ void main() {
       expect(prefs.getString('pane_layout_v1'), contains('0.39'));
     });
 
+    // The gesture's save waits on the read; if the read gives up on disposal
+    // without merging, that save writes the defaults of every untouched pane.
+    test('a gesture then disposal does not write defaults over the rest', () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1':
+            '{"pinned":{"a":false,"b":false},"fractions":{"a":0.5,"b":0.55}}',
+      });
+      // Without injected prefs, so the read actually suspends — injecting them
+      // makes it finish before the gesture and disposal it is racing.
+      final layout = PaneLayout(panes: [_pane('a'), _pane('b')]);
+
+      final pending = layout.load();
+      layout.setFraction('b', 0.42);
+      layout.dispose();
+      await pending;
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString('pane_layout_v1')!;
+      expect(stored, contains('"a":false'), reason: "'a' keeps its stored pin");
+      expect(stored, contains('0.5'), reason: "'a' keeps its stored size");
+    });
+
     test('a change made as the layout goes away is still written', () async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
@@ -277,9 +315,11 @@ void main() {
     // reverted every untouched pane to its default and the save queued behind
     // the gesture then wrote that loss to disk.
     test('a gesture during load costs only the pane it touched', () async {
+      // 'b' is stored pinned so the gesture disagrees with the disk — stored
+      // and gestured agreeing would make the first expectation unable to fail.
       SharedPreferences.setMockInitialValues({
         'pane_layout_v1':
-            '{"pinned":{"a":false,"b":false},"fractions":{"a":0.5,"b":0.55}}',
+            '{"pinned":{"a":false,"b":true},"fractions":{"a":0.5,"b":0.55}}',
       });
       final layout = PaneLayout(
         panes: [_pane('a'), _pane('b')],

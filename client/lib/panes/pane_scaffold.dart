@@ -219,12 +219,25 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               child: _PaneFrame(layout: layout, pane: top[i]),
             ),
           );
-          column.add(_divider(context, top[i], constraints.maxHeight));
+          column.add(
+            _divider(
+              context,
+              top[i],
+              constraints.maxHeight,
+              paneCount: vertical.length,
+            ),
+          );
         }
         column.add(Expanded(child: middle));
         for (var i = 0; i < bottom.length; i++) {
           column.add(
-            _divider(context, bottom[i], constraints.maxHeight, before: true),
+            _divider(
+              context,
+              bottom[i],
+              constraints.maxHeight,
+              paneCount: vertical.length,
+              before: true,
+            ),
           );
           column.add(
             SizedBox(
@@ -252,12 +265,25 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               child: _PaneFrame(layout: layout, pane: left[i]),
             ),
           );
-          row.add(_divider(context, left[i], constraints.maxWidth));
+          row.add(
+            _divider(
+              context,
+              left[i],
+              constraints.maxWidth,
+              paneCount: horizontal.length,
+            ),
+          );
         }
         row.add(Expanded(child: middle));
         for (var i = 0; i < right.length; i++) {
           row.add(
-            _divider(context, right[i], constraints.maxWidth, before: true),
+            _divider(
+              context,
+              right[i],
+              constraints.maxWidth,
+              paneCount: horizontal.length,
+              before: true,
+            ),
           );
           row.add(
             SizedBox(
@@ -277,6 +303,7 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     BuildContext context,
     PaneSpec pane,
     double available, {
+    required int paneCount,
     bool before = false,
   }) {
     final layout = widget.layout;
@@ -285,18 +312,24 @@ class _PaneScaffoldState extends State<PaneScaffold> {
 
     // Both bounds stop where the dock stops honouring the fraction. Tracking
     // only the render would leave the stored value drifting past the clamp,
-    // which the operator feels as travel that moves nothing on the way back.
+    // which the operator feels as travel that moves nothing on the way back —
+    // so the ceiling has to account for the other panes sharing this axis, not
+    // just this one.
     void drag(double delta) {
       if (available <= 0) return;
       final low = (minPaneExtent / available).clamp(
         minPaneFraction,
         maxPaneFraction,
       );
-      final high =
-          ((available - dividerThickness - minCentreExtent) / available).clamp(
-            minPaneFraction,
-            maxPaneFraction,
-          );
+      final room = available - paneCount * dividerThickness - minCentreExtent;
+      final ceiling = math.max(
+        minPaneExtent,
+        room - (paneCount - 1) * minPaneExtent,
+      );
+      final high = (ceiling / available).clamp(
+        minPaneFraction,
+        maxPaneFraction,
+      );
       final wanted = layout.fractionOf(pane.id) + sign * delta / available;
       // An axis too small for both bounds has no range left; hold at the floor
       // rather than asserting inside clamp.

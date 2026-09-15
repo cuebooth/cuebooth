@@ -186,7 +186,7 @@ class PaneLayout extends ChangeNotifier {
   /// Summons an unpinned pane, or puts it away. Pinned panes ignore this: they
   /// are on screen by virtue of being pinned.
   void toggleSummoned(String id) {
-    if (isPinned(id) || !_panes.containsKey(id)) return;
+    if (isPinned(id) || !isEnabled(id) || !_panes.containsKey(id)) return;
     if (!_summoned.remove(id)) _summoned.add(id);
     _notify();
   }
@@ -201,8 +201,16 @@ class PaneLayout extends ChangeNotifier {
   Future<void> load() => _loading ??= _load();
 
   Future<void> _load() async {
+    try {
+      await _read();
+    } on Exception {
+      // Reading is a convenience in the same way writing is: the defaults are
+      // usable, and a failure here must not poison the writes that follow.
+    }
+  }
+
+  Future<void> _read() async {
     final prefs = _prefs ??= await SharedPreferences.getInstance();
-    if (_disposed) return;
     final raw = prefs.getString(_storageKey);
     if (raw == null) return;
 
