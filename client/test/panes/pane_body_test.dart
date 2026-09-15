@@ -6,6 +6,8 @@ import 'package:cuebooth_client/panes/pane_scaffold.dart';
 import 'package:cuebooth_client/screens/chat_screen.dart';
 import 'package:cuebooth_client/services/chat_service.dart';
 import 'package:cuebooth_client/services/session.dart';
+import 'package:cuebooth_client/widgets/stream_control_bar.dart';
+import 'package:cuebooth_client/widgets/surface_grid.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -53,6 +55,10 @@ Future<void> _pumpChatPane(
   required Size window,
   required double fraction,
   required bool ready,
+  // The centre body is the real one by default. A couple of cases exist to
+  // exercise chat at sizes no target actually reaches, and the button grid has
+  // its own floor well above them.
+  bool realCentre = true,
 }) async {
   tester.view.physicalSize = window;
   tester.view.devicePixelRatio = 1.0;
@@ -74,7 +80,16 @@ Future<void> _pumpChatPane(
         icon: Icons.grid_view,
         edge: PaneEdge.left,
         fillsCentre: true,
-        builder: (_) => const SizedBox.expand(),
+        // The body that ships, not a placeholder: a placeholder survives any
+        // size, which is the whole reason this file exists.
+        builder: (_) => realCentre
+            ? Column(
+                children: [
+                  StreamControlBar(session: session),
+                  Expanded(child: SurfaceGrid(session: session)),
+                ],
+              )
+            : const SizedBox.expand(),
       ),
       PaneSpec(
         id: 'chat',
@@ -100,6 +115,46 @@ Future<void> _pumpChatPane(
 }
 
 void main() {
+  // The default arrangement on the phone and small-split widths the README
+  // claims. The centre holds the control bar, whose Go Live and Record buttons
+  // are the last thing in their row — so what a too-narrow pane clips is the
+  // control that starts the broadcast, and clipped puts it outside the hit test.
+  for (final window in const [
+    Size(320, 768), // iPad Slide Over
+    Size(360, 800), // Android portrait
+    Size(390, 844), // iPhone 14/15
+    Size(430, 932), // iPhone Pro Max
+    Size(500, 800),
+  ]) {
+    testWidgets('the default arrangement fits at ${window.width.toInt()}dp', (
+      tester,
+    ) async {
+      await _pumpChatPane(
+        tester,
+        window: window,
+        fraction: defaultPaneFraction,
+        ready: false,
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('the broadcast control stays inside the pane it is in', (
+    tester,
+  ) async {
+    await _pumpChatPane(
+      tester,
+      window: const Size(390, 844),
+      fraction: defaultPaneFraction,
+      ready: false,
+    );
+
+    final go = find.widgetWithText(OutlinedButton, 'Go Live');
+    expect(go, findsOneWidget);
+    final pane = tester.getRect(find.byKey(paneKey('grid')));
+    expect(tester.getRect(go).right, lessThanOrEqualTo(pane.right + 0.001));
+  });
+
   testWidgets('the chat pane fits at the default arrangement', (tester) async {
     await _pumpChatPane(
       tester,
@@ -157,6 +212,7 @@ void main() {
       window: const Size(1280, 70),
       fraction: defaultPaneFraction,
       ready: true,
+      realCentre: false,
     );
     expect(tester.takeException(), isNull);
   });

@@ -204,9 +204,12 @@ class PaneLayout extends ChangeNotifier {
   Future<void> _load() async {
     try {
       await _read();
-    } on Exception {
-      // Reading is a convenience in the same way writing is: the defaults are
-      // usable, and a failure here must not poison the writes that follow.
+    } catch (_) {
+      // Not `on Exception`: a platform channel can throw an Error — web storage
+      // blocked by the browser does — and the screen gates its whole dock on
+      // this future, so an escape leaves the operator with nothing at all.
+      // Reading is a convenience in the same way writing is; the defaults are
+      // usable.
     }
   }
 
@@ -266,9 +269,10 @@ class PaneLayout extends ChangeNotifier {
         _storageKey,
         jsonEncode({'pinned': _pinned, 'fractions': _fractions}),
       );
-    } on Exception {
+    } catch (_) {
       // Persistence is a convenience; failing it must not break a gesture or
-      // take the layout down with it.
+      // take the layout down with it — and a platform channel can throw an
+      // Error as readily as an Exception.
     }
   }
 }

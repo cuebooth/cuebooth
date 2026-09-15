@@ -317,6 +317,18 @@ void main() {
       expect(layout.fractionOf('b'), minPaneFraction);
     });
 
+    // An Error is not an Exception, and the home screen gates its whole dock on
+    // this future: an escape leaves the operator with no controls at all and no
+    // explanation. A non-String under the key makes getString throw one.
+    test('a read that throws an Error still settles', () async {
+      SharedPreferences.setMockInitialValues({'flutter.pane_layout_v1': 12});
+      final layout = PaneLayout(panes: [_pane('a')]);
+      addTearDown(layout.dispose);
+
+      await expectLater(layout.load(), completes);
+      expect(layout.isPinned('a'), isTrue, reason: 'defaults are usable');
+    });
+
     test('a fraction for something that is not a pane is not stored', () async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();

@@ -85,11 +85,17 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (_) => ListenableBuilder(
             listenable: widget.session,
             builder: (_, _) => widget.session.ready
-                ? Column(
-                    children: [
-                      StreamControlBar(session: widget.session),
-                      Expanded(child: SurfaceGrid(session: widget.session)),
-                    ],
+                ? LayoutBuilder(
+                    builder: (context, constraints) => Column(
+                      children: [
+                        // A pane too short for both keeps the grid: it adapts to
+                        // whatever it is given, while the bar is a fixed height
+                        // that would push the grid out rather than share.
+                        if (constraints.maxHeight >= 200)
+                          StreamControlBar(session: widget.session),
+                        Expanded(child: SurfaceGrid(session: widget.session)),
+                      ],
+                    ),
                   )
                 : _centered('Waiting for server…'),
           ),
@@ -116,7 +122,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ],
     );
-    _layout.load().then((_) {
+    // The dock is gated on this, so it has to settle either way: a read that
+    // never completes would leave the operator looking at an empty dock with no
+    // controls and no explanation.
+    _layout.load().whenComplete(() {
       if (mounted) setState(() => _layoutLoaded = true);
     });
     widget.session.state.addListener(_syncPaneAvailability);
