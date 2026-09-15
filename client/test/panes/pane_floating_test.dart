@@ -157,8 +157,16 @@ void main() {
     ]);
 
     await _pump(tester, layout);
-
     expect(tester.takeException(), isNull);
-    expect(find.byType(SingleChildScrollView), findsWidgets);
+
+    // The last tab is past the edge of the strip, so it is only reachable if
+    // the strip scrolls — its mere presence proves nothing.
+    final last = find.byKey(paneTabKey('pane11'));
+    await tester.scrollUntilVisible(last, 60, scrollable: find.descendant(
+      of: find.byKey(ValueKey('pane-strip-${PaneEdge.bottom.name}')),
+      matching: find.byType(Scrollable),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.getRect(last).right, lessThanOrEqualTo(800.001));
   });
 }

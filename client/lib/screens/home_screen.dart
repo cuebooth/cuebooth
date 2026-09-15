@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../panes/pane.dart';
 import '../panes/pane_layout.dart';
 import '../panes/pane_scaffold.dart';
+import '../services/app_state.dart';
 import '../services/chat_service.dart';
 import '../services/server_connection.dart';
 import '../services/session.dart';
@@ -15,6 +16,18 @@ import 'chat_screen.dart';
 /// Pane ids. Stable strings: they key the persisted layout.
 const String surfacePaneId = 'surface';
 const String chatPaneId = 'chat';
+
+/// Whether this deployment offers chat at all.
+///
+/// A server with no chat provider should get no chat pane and no tab for one,
+/// rather than a pane that can only explain its own absence. But mirrored state
+/// is cleared on disconnect, so an absent chat topic means either that or that
+/// nothing has been heard yet — and only a server that has spoken and did not
+/// mention chat has answered the question. Reading a dropped connection as an
+/// answer would take the pane out of the dock on every blip, and the webview
+/// inside it with it.
+bool chatPaneOffered(AppState state) =>
+    !state.hasBaseline || state.chatConfigured;
 
 /// The operator's main control surface.
 ///
@@ -97,10 +110,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// A deployment whose server has no chat provider gets no chat pane and no
-  /// tab for one, rather than a pane that can only explain its own absence.
   void _syncPaneAvailability() {
-    _layout.setEnabled(chatPaneId, widget.session.state.chatConfigured);
+    _layout.setEnabled(chatPaneId, chatPaneOffered(widget.session.state));
   }
 
   /// The chat client, built from the same server this session is connected to.

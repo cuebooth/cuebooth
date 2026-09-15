@@ -123,7 +123,7 @@ void main() {
     );
 
     final action = find.byType(FilledButton);
-    if (action.evaluate().isEmpty) return; // no action in this state
+    expect(action, findsOneWidget);
     final pane = tester.getRect(find.byKey(paneKey('chat')));
     expect(tester.getRect(action).bottom, lessThanOrEqualTo(pane.bottom));
   });
@@ -144,6 +144,19 @@ void main() {
       window: const Size(390, 844),
       fraction: defaultPaneFraction,
       ready: false,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  // The reload control keeps its theme tap target whatever its icon size, so a
+  // short pane is where it stops fitting — and it only exists once chat is
+  // ready, which is the case the other short-window test does not reach.
+  testWidgets('a ready chat pane fits in a very short window', (tester) async {
+    await _pumpChatPane(
+      tester,
+      window: const Size(1280, 70),
+      fraction: defaultPaneFraction,
+      ready: true,
     );
     expect(tester.takeException(), isNull);
   });
@@ -171,7 +184,7 @@ void main() {
     );
 
     final connect = find.byType(FilledButton);
-    if (connect.evaluate().isEmpty) return;
+    expect(connect, findsOneWidget);
 
     // A pane this narrow cannot show the whole prompt at once, so the body
     // scrolls. What matters is that the control can still be brought into the

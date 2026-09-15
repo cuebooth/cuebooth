@@ -198,21 +198,26 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     // The pane frame around this supplies the title and the pin, so only the
     // reload control is this widget's to place.
-    return Column(
-      children: [
-        if (_result?.isReady ?? false)
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              iconSize: 16,
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Reload chat',
-              onPressed: _loading ? null : _load,
+    return LayoutBuilder(
+      builder: (context, constraints) => Column(
+        children: [
+          // The control keeps its theme tap target whatever its icon size, so
+          // in a short pane it is the difference between fitting and overflowing
+          // — and chat itself is what the operator opened the pane for.
+          if ((_result?.isReady ?? false) && constraints.maxHeight >= 96)
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                iconSize: 16,
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Reload chat',
+                onPressed: _loading ? null : _load,
+              ),
             ),
-          ),
-        Expanded(child: _body(context)),
-      ],
+          Expanded(child: _body(context)),
+        ],
+      ),
     );
   }
 

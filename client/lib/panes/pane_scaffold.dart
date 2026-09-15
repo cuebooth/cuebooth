@@ -205,8 +205,11 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         final top = layout.pinnedAt(PaneEdge.top);
         final bottom = layout.pinnedAt(PaneEdge.bottom);
         final vertical = [...top, ...bottom];
+        final verticalFractions = [
+          for (final p in vertical) layout.fractionOf(p.id),
+        ];
         final heights = allocatePaneExtents(
-          fractions: [for (final p in vertical) layout.fractionOf(p.id)],
+          fractions: verticalFractions,
           available: constraints.maxHeight,
           dividerCount: vertical.length,
         );
@@ -224,7 +227,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               top[i],
               constraints.maxHeight,
-              paneCount: vertical.length,
+              axisFractions: verticalFractions,
+              index: i,
             ),
           );
         }
@@ -235,7 +239,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               bottom[i],
               constraints.maxHeight,
-              paneCount: vertical.length,
+              axisFractions: verticalFractions,
+              index: top.length + i,
               before: true,
             ),
           );
@@ -251,8 +256,11 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         final left = layout.pinnedAt(PaneEdge.left);
         final right = layout.pinnedAt(PaneEdge.right);
         final horizontal = [...left, ...right];
+        final horizontalFractions = [
+          for (final p in horizontal) layout.fractionOf(p.id),
+        ];
         final widths = allocatePaneExtents(
-          fractions: [for (final p in horizontal) layout.fractionOf(p.id)],
+          fractions: horizontalFractions,
           available: constraints.maxWidth,
           dividerCount: horizontal.length,
         );
@@ -270,7 +278,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               left[i],
               constraints.maxWidth,
-              paneCount: horizontal.length,
+              axisFractions: horizontalFractions,
+              index: i,
             ),
           );
         }
@@ -281,7 +290,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               right[i],
               constraints.maxWidth,
-              paneCount: horizontal.length,
+              axisFractions: horizontalFractions,
+              index: left.length + i,
               before: true,
             ),
           );
@@ -303,7 +313,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     BuildContext context,
     PaneSpec pane,
     double available, {
-    required int paneCount,
+    required List<double> axisFractions,
+    required int index,
     bool before = false,
   }) {
     final layout = widget.layout;
@@ -321,11 +332,18 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         minPaneFraction,
         maxPaneFraction,
       );
-      final room = available - paneCount * dividerThickness - minCentreExtent;
-      final ceiling = math.max(
-        minPaneExtent,
-        room - (paneCount - 1) * minPaneExtent,
-      );
+      // Against what the other panes are actually asking for, not what they
+      // would settle for: a ceiling that assumed their floor let this pane
+      // overrun the axis, and the allocation then took the difference out of a
+      // pane the operator never touched.
+      var others = 0.0;
+      for (var i = 0; i < axisFractions.length; i++) {
+        if (i == index) continue;
+        others += math.max(available * axisFractions[i], minPaneExtent);
+      }
+      final room =
+          available - axisFractions.length * dividerThickness - minCentreExtent;
+      final ceiling = math.max(minPaneExtent, room - others);
       final high = (ceiling / available).clamp(
         minPaneFraction,
         maxPaneFraction,
@@ -415,10 +433,13 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     final available = horizontal
         ? window.width - insets.horizontal
         : window.height - insets.vertical;
-    final extent = floatingPaneExtent(
-      widget.layout.fractionOf(pane.id),
-      available,
-    );
+    // A centre pane has no divider, so its fraction is whatever the default
+    // was and nothing can change it. Summoned as a strip of that width it
+    // would be a sliver of the thing it is — a button grid squeezed to 30% —
+    // so it comes back over the dock at the size it held in it.
+    final extent = pane.fillsCentre
+        ? available
+        : floatingPaneExtent(widget.layout.fractionOf(pane.id), available);
 
     return Positioned(
       key: ValueKey('pane-float-${pane.id}'),
