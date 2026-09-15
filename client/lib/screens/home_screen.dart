@@ -49,11 +49,16 @@ class _HomeScreenState extends State<HomeScreen> {
           icon: Icons.grid_view,
           edge: PaneEdge.left,
           fillsCentre: true,
-          builder: (_) => Column(
-            children: [
-              StreamControlBar(session: widget.session),
-              Expanded(child: SurfaceGrid(session: widget.session)),
-            ],
+          builder: (_) => ListenableBuilder(
+            listenable: widget.session,
+            builder: (_, _) => widget.session.ready
+                ? Column(
+                    children: [
+                      StreamControlBar(session: widget.session),
+                      Expanded(child: SurfaceGrid(session: widget.session)),
+                    ],
+                  )
+                : _centered('Waiting for server…'),
           ),
         ),
         PaneSpec(
@@ -160,9 +165,10 @@ class _HomeScreenState extends State<HomeScreen> {
           if (session.protocolIncompatible) {
             return _centered('Incompatible server protocol.');
           }
-          if (!session.ready) {
-            return _centered('Waiting for server…');
-          }
+          // The dock survives a dropped connection. Tearing it down would take
+          // the chat webview with it, so a reconnect would re-mint a URL and
+          // reload the page; each pane says for itself what it cannot show
+          // while the session is away.
           return PaneScaffold(
             layout: _layout,
             emptyCentre: const _EmptyDock(),

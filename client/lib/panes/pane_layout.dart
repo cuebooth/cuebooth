@@ -26,6 +26,11 @@ class PaneLayout extends ChangeNotifier {
         'the centre is what the edges leave over, so a second pane claiming it '
         'would render nowhere and offer no tab to recover it',
       ),
+      assert(
+        panes.map((p) => p.id).toSet().length == panes.length,
+        'pane ids key the persisted layout, so a duplicate silently replaces '
+        'the pane it collides with',
+      ),
       _panes = {for (final p in panes) p.id: p},
       _prefs = prefs {
     for (final pane in panes) {
@@ -52,9 +57,10 @@ class PaneLayout extends ChangeNotifier {
 
   SharedPreferences? _prefs;
 
-  /// Set once the operator has moved something. A [load] that resolves after
-  /// that must not overwrite the gesture with what was on disk before it.
-  bool _rearranged = false;
+  /// Panes the operator has moved. A [load] resolving afterwards must not
+  /// overwrite those gestures, but the panes they did not touch still want
+  /// what was stored.
+  final Set<String> _rearranged = {};
 
   bool _disposed = false;
 
@@ -130,7 +136,7 @@ class PaneLayout extends ChangeNotifier {
     final clamped = value.clamp(minPaneFraction, maxPaneFraction);
     if (_fractions[id] == clamped) return;
     _fractions[id] = clamped;
-    _rearranged = true;
+    _rearranged.add(id);
     _notify();
     unawaited(save());
   }
@@ -144,7 +150,7 @@ class PaneLayout extends ChangeNotifier {
     final nowPinned = !isPinned(id);
     _pinned[id] = nowPinned;
     _summoned.remove(id);
-    _rearranged = true;
+    _rearranged.add(id);
     _notify();
     unawaited(save());
   }
@@ -157,9 +163,18 @@ class PaneLayout extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> load() async {
+  /// Reads the stored arrangement, once.
+  ///
+  /// Held so [save] can wait for it: a gesture made while this is in flight
+  /// would otherwise write the current defaults over the stored layout before
+  /// it had been read, and the read would then find only what the gesture wrote.
+  Future<void>? _loading;
+
+  Future<void> load() => _loading ??= _load();
+
+  Future<void> _load() async {
     final prefs = _prefs ??= await SharedPreferences.getInstance();
-    if (_disposed || _rearranged) return;
+    if (_disposed) return;
     final raw = prefs.getString(_storageKey);
     if (raw == null) return;
 
@@ -179,6 +194,7 @@ class PaneLayout extends ChangeNotifier {
         final id = entry.key;
         final value = entry.value;
         if (id is! String || value is! bool || !_panes.containsKey(id)) continue;
+        if (_rearranged.contains(id)) continue;
         _pinned[id] = value;
       }
     }
@@ -189,6 +205,7 @@ class PaneLayout extends ChangeNotifier {
         final id = entry.key;
         final value = entry.value;
         if (id is! String || value is! num || !_panes.containsKey(id)) continue;
+        if (_rearranged.contains(id)) continue;
         _fractions[id] = value.toDouble().clamp(
           minPaneFraction,
           maxPaneFraction,
@@ -201,6 +218,7 @@ class PaneLayout extends ChangeNotifier {
 
   Future<void> save() async {
     try {
+      await _loading;
       final prefs = _prefs ??= await SharedPreferences.getInstance();
       await prefs.setString(
         _storageKey,

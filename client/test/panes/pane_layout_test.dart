@@ -233,6 +233,27 @@ void main() {
 
       expect(layout.isPinned('chat'), isFalse);
     });
+
+    // The gesture must not cost the rest of the arrangement: a wholesale bail
+    // reverted every untouched pane to its default and the save queued behind
+    // the gesture then wrote that loss to disk.
+    test('a gesture during load costs only the pane it touched', () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1':
+            '{"pinned":{"a":false,"b":false},"fractions":{"a":0.5,"b":0.55}}',
+      });
+      final layout = PaneLayout(
+        panes: [_pane('a'), _pane('b')],
+        prefs: await SharedPreferences.getInstance(),
+      );
+
+      layout.togglePin('b'); // 'b' was pinned by default, so this unpins it
+      await layout.load();
+
+      expect(layout.isPinned('b'), isFalse, reason: 'the gesture stands');
+      expect(layout.isPinned('a'), isFalse, reason: "'a' keeps what was stored");
+      expect(layout.fractionOf('a'), closeTo(0.5, 1e-9));
+    });
   });
 
   group('registration', () {

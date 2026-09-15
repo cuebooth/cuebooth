@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 
 import 'pane.dart';
@@ -12,15 +13,19 @@ const double tabStripThickness = 36;
 /// Grab width of a divider between the centre and a pinned pane.
 const double dividerThickness = 8;
 
-/// Least a pinned pane may occupy along its own axis.
+/// The extent a pane is given along its own axis wherever the axis allows it.
 ///
 /// A pane narrower than its header cannot lay the header out, and the pin — the
-/// only control that would restore it — is pushed outside the window, so the
-/// operator can no longer unpin what they have just shrunk.
+/// only control that would restore it — is pushed outside the window. Where the
+/// axis is too small to give every pane this much, they share what there is
+/// instead: see [allocatePaneExtents].
 const double minPaneExtent = 120;
 
 /// Least the centre keeps whatever the edges ask for.
 const double minCentreExtent = 160;
+
+/// How long a summoned pane takes to travel in or out.
+const Duration paneTransition = Duration(milliseconds: 180);
 
 /// Extents for the pinned panes along one axis, in the order given.
 ///
@@ -28,6 +33,11 @@ const double minCentreExtent = 160;
 /// the window with no absolute floor, so on a narrow window it resolves to an
 /// extent too small for the pane to be usable, and several pinned panes can
 /// between them ask for more than the axis holds.
+///
+/// Each request is raised to [minPaneExtent] and the centre keeps
+/// [minCentreExtent]. When even that does not fit, every pane is scaled down
+/// together — below the floor, because an axis that small has nothing better to
+/// offer, and starving the panes beats overflowing the dock.
 List<double> allocatePaneExtents({
   required List<double> fractions,
   required double available,
@@ -43,9 +53,17 @@ List<double> allocatePaneExtents({
   ];
   final total = extents.fold<double>(0, (sum, e) => sum + e);
   if (total <= room) return extents;
-  // Not enough for every floor: share what there is, so a window dragged narrow
-  // starves the panes rather than overflowing the dock.
   return [for (final extent in extents) extent * room / total];
+}
+
+/// The extent a summoned pane covers along its own axis.
+///
+/// Floating panes are not bound by the centre's floor — covering the dock is
+/// what they are for — but they carry the same lower bound, since a pane too
+/// narrow for its own header cannot be dismissed from its pin either.
+double floatingPaneExtent(double fraction, double available) {
+  if (available <= 0) return 0;
+  return math.min(math.max(available * fraction, minPaneExtent), available);
 }
 
 /// Identifies a pane's rendered frame.
@@ -60,7 +78,7 @@ Key paneTabKey(String id) => ValueKey('pane-tab-$id');
 /// Renders the operator's arrangement: pinned panes holding the layout,
 /// unpinned ones waiting behind a tab, and whatever is summoned floating over
 /// the top (design.md §3.5 *Layout*).
-class PaneScaffold extends StatelessWidget {
+class PaneScaffold extends StatefulWidget {
   const PaneScaffold({super.key, required this.layout, this.emptyCentre});
 
   final PaneLayout layout;
@@ -70,19 +88,80 @@ class PaneScaffold extends StatelessWidget {
   final Widget? emptyCentre;
 
   @override
+  State<PaneScaffold> createState() => _PaneScaffoldState();
+}
+
+class _PaneScaffoldState extends State<PaneScaffold> {
+  /// Panes drawn over the dock. A dismissed pane stays here until it has
+  /// travelled back to its edge, which is the only way it can be seen leaving.
+  final Set<String> _drawn = {};
+
+  @override
+  void initState() {
+    super.initState();
+    widget.layout.addListener(_syncDrawn);
+    _syncDrawn();
+  }
+
+  @override
+  void didUpdateWidget(PaneScaffold old) {
+    super.didUpdateWidget(old);
+    if (old.layout != widget.layout) {
+      old.layout.removeListener(_syncDrawn);
+      widget.layout.addListener(_syncDrawn);
+      _drawn.clear();
+      _syncDrawn();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.layout.removeListener(_syncDrawn);
+    super.dispose();
+  }
+
+  void _syncDrawn() {
+    final layout = widget.layout;
+    final summoned = {for (final pane in layout.floating) pane.id};
+    final next = {..._drawn, ...summoned};
+    // A pane that has been pinned or withdrawn is not leaving the screen — it
+    // is moving into the dock, or gone entirely. Travelling it out would draw
+    // it twice on its way to a place it already is.
+    next.removeWhere(
+      (id) =>
+          !summoned.contains(id) &&
+          (layout.isPinned(id) || !layout.isEnabled(id)),
+    );
+    if (setEquals(next, _drawn)) return;
+    setState(() {
+      _drawn
+        ..clear()
+        ..addAll(next);
+    });
+  }
+
+  void _retired(String id) {
+    if (!mounted || !_drawn.contains(id)) return;
+    setState(() => _drawn.remove(id));
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final layout = widget.layout;
     return ListenableBuilder(
       listenable: layout,
       builder: (context, _) {
+        final tabbed = {
+          for (final edge in PaneEdge.values) edge: layout.tabsAt(edge),
+        };
         final insets = EdgeInsets.only(
-          left: layout.tabsAt(PaneEdge.left).isEmpty ? 0 : tabStripThickness,
-          right: layout.tabsAt(PaneEdge.right).isEmpty ? 0 : tabStripThickness,
-          top: layout.tabsAt(PaneEdge.top).isEmpty ? 0 : tabStripThickness,
-          bottom: layout.tabsAt(PaneEdge.bottom).isEmpty
-              ? 0
-              : tabStripThickness,
+          left: tabbed[PaneEdge.left]!.isEmpty ? 0 : tabStripThickness,
+          right: tabbed[PaneEdge.right]!.isEmpty ? 0 : tabStripThickness,
+          top: tabbed[PaneEdge.top]!.isEmpty ? 0 : tabStripThickness,
+          bottom: tabbed[PaneEdge.bottom]!.isEmpty ? 0 : tabStripThickness,
         );
 
+        final summoned = {for (final pane in layout.floating) pane.id};
         return LayoutBuilder(
           builder: (context, constraints) => Stack(
             // Positioned children do not size a stack, so the dock's extent
@@ -94,9 +173,17 @@ class PaneScaffold extends StatelessWidget {
                 child: Padding(padding: insets, child: _buildDock(context)),
               ),
               for (final edge in PaneEdge.values)
-                if (layout.tabsAt(edge).isNotEmpty) _tabStrip(context, edge),
-              for (final pane in layout.floating)
-                _floatingPane(context, pane, insets, constraints.biggest),
+                if (tabbed[edge]!.isNotEmpty)
+                  _tabStrip(context, edge, tabbed[edge]!, insets),
+              for (final id in _drawn)
+                if (layout.spec(id) case final pane?)
+                  _floatingPane(
+                    context,
+                    pane,
+                    insets,
+                    constraints.biggest,
+                    visible: summoned.contains(id),
+                  ),
             ],
           ),
         );
@@ -105,11 +192,12 @@ class PaneScaffold extends StatelessWidget {
   }
 
   Widget _buildDock(BuildContext context) {
+    final layout = widget.layout;
     return LayoutBuilder(
       builder: (context, constraints) {
         final centre = layout.centrePane;
         Widget middle = centre == null
-            ? (emptyCentre ?? const SizedBox.expand())
+            ? (widget.emptyCentre ?? const SizedBox.expand())
             : _PaneFrame(layout: layout, pane: centre);
 
         // Top and bottom sit between the left and right panes, so they are
@@ -191,22 +279,30 @@ class PaneScaffold extends StatelessWidget {
     double available, {
     bool before = false,
   }) {
+    final layout = widget.layout;
     final horizontal = edgeIsHorizontal(pane.edge);
     final sign = before ? -1 : 1;
 
-    // Stop at the extent the pane needs to stay usable rather than at the bare
-    // fraction, or the drag keeps shrinking a value the dock has already
-    // stopped honouring and the pane jumps when the window next changes size.
+    // Both bounds stop where the dock stops honouring the fraction. Tracking
+    // only the render would leave the stored value drifting past the clamp,
+    // which the operator feels as travel that moves nothing on the way back.
     void drag(double delta) {
-      final floor = available <= 0
-          ? minPaneFraction
-          : (minPaneExtent / available).clamp(minPaneFraction, maxPaneFraction);
+      if (available <= 0) return;
+      final low = (minPaneExtent / available).clamp(
+        minPaneFraction,
+        maxPaneFraction,
+      );
+      final high =
+          ((available - dividerThickness - minCentreExtent) / available).clamp(
+            minPaneFraction,
+            maxPaneFraction,
+          );
+      final wanted = layout.fractionOf(pane.id) + sign * delta / available;
+      // An axis too small for both bounds has no range left; hold at the floor
+      // rather than asserting inside clamp.
       layout.setFraction(
         pane.id,
-        (layout.fractionOf(pane.id) + sign * delta / available).clamp(
-          floor,
-          maxPaneFraction,
-        ),
+        high < low ? low : wanted.clamp(low, high),
       );
     }
 
@@ -238,25 +334,35 @@ class PaneScaffold extends StatelessWidget {
     );
   }
 
-  Widget _tabStrip(BuildContext context, PaneEdge edge) {
-    final tabs = layout.tabsAt(edge);
+  Widget _tabStrip(
+    BuildContext context,
+    PaneEdge edge,
+    List<PaneSpec> tabs,
+    EdgeInsets insets,
+  ) {
     final horizontal = edgeIsHorizontal(edge);
     final children = [
-      for (final pane in tabs) _PaneTab(layout: layout, pane: pane, edge: edge),
+      for (final pane in tabs)
+        _PaneTab(layout: widget.layout, pane: pane, edge: edge),
     ];
 
     return Positioned(
       left: edge == PaneEdge.right ? null : 0,
       right: edge == PaneEdge.left ? null : 0,
-      top: edge == PaneEdge.bottom ? null : 0,
-      bottom: edge == PaneEdge.top ? null : 0,
+      // A full-height side strip would cover the ends of a top or bottom strip
+      // and take their taps, so the side strips yield the corners.
+      top: edge == PaneEdge.bottom ? null : (horizontal ? insets.top : 0),
+      bottom: edge == PaneEdge.top ? null : (horizontal ? insets.bottom : 0),
       width: horizontal ? tabStripThickness : null,
       height: horizontal ? null : tabStripThickness,
-      child: ColoredBox(
+      child: Material(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: horizontal
-            ? Column(children: children)
-            : Row(children: children),
+        child: SingleChildScrollView(
+          scrollDirection: horizontal ? Axis.vertical : Axis.horizontal,
+          child: horizontal
+              ? Column(mainAxisSize: MainAxisSize.min, children: children)
+              : Row(mainAxisSize: MainAxisSize.min, children: children),
+        ),
       ),
     );
   }
@@ -267,13 +373,17 @@ class PaneScaffold extends StatelessWidget {
     BuildContext context,
     PaneSpec pane,
     EdgeInsets insets,
-    Size window,
-  ) {
+    Size window, {
+    required bool visible,
+  }) {
     final horizontal = edgeIsHorizontal(pane.edge);
-    final fraction = layout.fractionOf(pane.id);
-    final extent = horizontal
-        ? (window.width - insets.horizontal) * fraction
-        : (window.height - insets.vertical) * fraction;
+    final available = horizontal
+        ? window.width - insets.horizontal
+        : window.height - insets.vertical;
+    final extent = floatingPaneExtent(
+      widget.layout.fractionOf(pane.id),
+      available,
+    );
 
     return Positioned(
       // The axis it flies along is pinned to its own edge and given an explicit
@@ -286,20 +396,33 @@ class PaneScaffold extends StatelessWidget {
       height: horizontal ? null : extent,
       child: _SlideIn(
         edge: pane.edge,
+        visible: visible,
+        onRetired: () => _retired(pane.id),
         child: Material(
           elevation: 8,
-          child: _PaneFrame(layout: layout, pane: pane),
+          child: _PaneFrame(layout: widget.layout, pane: pane),
         ),
       ),
     );
   }
 }
 
-/// Animates a summoned pane in from its edge, and out again when dismissed.
+/// Travels a pane in from its edge when summoned, and back out when dismissed.
 class _SlideIn extends StatefulWidget {
-  const _SlideIn({required this.edge, required this.child});
+  const _SlideIn({
+    required this.edge,
+    required this.visible,
+    required this.onRetired,
+    required this.child,
+  });
 
   final PaneEdge edge;
+  final bool visible;
+
+  /// Called once the pane has finished travelling out, so it can stop being
+  /// drawn.
+  final VoidCallback onRetired;
+
   final Widget child;
 
   @override
@@ -310,11 +433,33 @@ class _SlideInState extends State<_SlideIn>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 180),
-  )..forward();
+    duration: paneTransition,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addStatusListener(_onStatus);
+    if (widget.visible) _controller.forward();
+  }
+
+  @override
+  void didUpdateWidget(_SlideIn old) {
+    super.didUpdateWidget(old);
+    if (widget.visible != old.visible) {
+      widget.visible ? _controller.forward() : _controller.reverse();
+    }
+  }
+
+  void _onStatus(AnimationStatus status) {
+    if (status == AnimationStatus.dismissed && !widget.visible) {
+      widget.onRetired();
+    }
+  }
 
   @override
   void dispose() {
+    _controller.removeStatusListener(_onStatus);
     _controller.dispose();
     super.dispose();
   }
@@ -350,37 +495,54 @@ class _PaneFrame extends StatelessWidget {
         Container(
           height: 32,
           color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          child: Row(
-            children: [
-              const SizedBox(width: 8),
-              Icon(pane.icon, size: 16),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  pane.title,
-                  style: Theme.of(context).textTheme.labelLarge,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              IconButton(
-                iconSize: 16,
-                // A default icon button reserves a 48px tap target from the
-                // theme regardless of its box, which this bar would clip —
-                // taking the hit area with it.
-                style: IconButton.styleFrom(
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints.tightFor(
-                  width: 32,
-                  height: 32,
-                ),
-                tooltip: pinned ? 'Unpin ${pane.title}' : 'Pin ${pane.title}',
-                icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined),
-                onPressed: () => layout.togglePin(pane.id),
-              ),
-              const SizedBox(width: 4),
-            ],
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // The pin is the only control that can restore a pane the
+              // operator has shrunk, so it is the last thing to go: the icon
+              // and then the title yield to it rather than overflowing.
+              final width = constraints.maxWidth;
+              return Row(
+                children: [
+                  if (width >= 112) ...[
+                    const SizedBox(width: 8),
+                    _withAttention(pane, Icon(pane.icon, size: 16)),
+                  ],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: width >= 80
+                        ? Text(
+                            pane.title,
+                            style: Theme.of(context).textTheme.labelLarge,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: false,
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                  IconButton(
+                    iconSize: 16,
+                    // A default icon button reserves a 48px tap target from the
+                    // theme regardless of its box, which this bar would clip —
+                    // taking the hit area with it.
+                    style: IconButton.styleFrom(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 32,
+                      height: 32,
+                    ),
+                    tooltip: pinned
+                        ? 'Unpin ${pane.title}'
+                        : 'Pin ${pane.title}',
+                    icon: Icon(
+                      pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                    ),
+                    onPressed: () => layout.togglePin(pane.id),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+              );
+            },
           ),
         ),
         Expanded(child: pane.builder(context)),
@@ -425,21 +587,23 @@ class _PaneTab extends StatelessWidget {
       ],
     );
 
-    return InkWell(
-      onTap: () => layout.toggleSummoned(pane.id),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        color: summoned
-            ? Theme.of(context).colorScheme.secondaryContainer
-            : null,
-        child: edgeIsHorizontal(edge)
-            // A vertical strip has no width for a horizontal label, so it turns
-            // to read up the left edge and down the right.
-            ? RotatedBox(
-                quarterTurns: edge == PaneEdge.left ? 3 : 1,
-                child: label,
-              )
-            : label,
+    return Material(
+      color: summoned
+          ? Theme.of(context).colorScheme.secondaryContainer
+          : Colors.transparent,
+      child: InkWell(
+        onTap: () => layout.toggleSummoned(pane.id),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: edgeIsHorizontal(edge)
+              // A vertical strip has no width for a horizontal label, so it
+              // turns to read up the left edge and down the right.
+              ? RotatedBox(
+                  quarterTurns: edge == PaneEdge.left ? 3 : 1,
+                  child: label,
+                )
+              : label,
+        ),
       ),
     );
   }
