@@ -161,6 +161,7 @@ class PaneLayout extends ChangeNotifier {
   double fractionOf(String id) => _fractions[id] ?? defaultPaneFraction;
 
   void setFraction(String id, double value) {
+    if (!_panes.containsKey(id)) return;
     final clamped = value.clamp(minPaneFraction, maxPaneFraction);
     if (_fractions[id] == clamped) return;
     _fractions[id] = clamped;
@@ -229,7 +230,9 @@ class PaneLayout extends ChangeNotifier {
       for (final entry in pinned.entries) {
         final id = entry.key;
         final value = entry.value;
-        if (id is! String || value is! bool || !_panes.containsKey(id)) continue;
+        if (id is! String || value is! bool || !_panes.containsKey(id)) {
+          continue;
+        }
         if (_rearranged.contains(id)) continue;
         _pinned[id] = value;
       }
@@ -254,7 +257,9 @@ class PaneLayout extends ChangeNotifier {
 
   Future<void> save() async {
     try {
-      await _loading;
+      // Not _loading: a save that runs before anything asked for the stored
+      // layout would otherwise write defaults over it.
+      await load();
       final prefs = _prefs ??= await SharedPreferences.getInstance();
       writeCount++;
       await prefs.setString(

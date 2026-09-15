@@ -10,8 +10,14 @@ import 'pane_layout.dart';
 /// that has one, so a tab never sits over the pane behind it.
 const double tabStripThickness = 36;
 
-/// Grab width of a divider between the centre and a pinned pane.
-const double dividerThickness = 8;
+/// Space a divider occupies between the centre and a pinned pane.
+///
+/// The line drawn in it is 1px; the rest is grab room. What sits next to a
+/// divider is the button grid, which fires Companion on tap-down, so a grab
+/// that lands beside the divider presses a cue rather than missing harmlessly.
+/// Still under the 44pt/48dp both platforms ask for — that would cost a gutter
+/// wide enough to notice between every pane.
+const double dividerThickness = 24;
 
 /// The extent a pane is given along its own axis wherever the axis allows it.
 ///
@@ -205,11 +211,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         final top = layout.pinnedAt(PaneEdge.top);
         final bottom = layout.pinnedAt(PaneEdge.bottom);
         final vertical = [...top, ...bottom];
-        final verticalFractions = [
-          for (final p in vertical) layout.fractionOf(p.id),
-        ];
         final heights = allocatePaneExtents(
-          fractions: verticalFractions,
+          fractions: [for (final p in vertical) layout.fractionOf(p.id)],
           available: constraints.maxHeight,
           dividerCount: vertical.length,
         );
@@ -227,7 +230,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               top[i],
               constraints.maxHeight,
-              axisFractions: verticalFractions,
+              axisPanes: vertical,
+              axisExtents: heights,
               index: i,
             ),
           );
@@ -239,7 +243,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               bottom[i],
               constraints.maxHeight,
-              axisFractions: verticalFractions,
+              axisPanes: vertical,
+              axisExtents: heights,
               index: top.length + i,
               before: true,
             ),
@@ -256,11 +261,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         final left = layout.pinnedAt(PaneEdge.left);
         final right = layout.pinnedAt(PaneEdge.right);
         final horizontal = [...left, ...right];
-        final horizontalFractions = [
-          for (final p in horizontal) layout.fractionOf(p.id),
-        ];
         final widths = allocatePaneExtents(
-          fractions: horizontalFractions,
+          fractions: [for (final p in horizontal) layout.fractionOf(p.id)],
           available: constraints.maxWidth,
           dividerCount: horizontal.length,
         );
@@ -278,7 +280,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               left[i],
               constraints.maxWidth,
-              axisFractions: horizontalFractions,
+              axisPanes: horizontal,
+              axisExtents: widths,
               index: i,
             ),
           );
@@ -290,7 +293,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
               context,
               right[i],
               constraints.maxWidth,
-              axisFractions: horizontalFractions,
+              axisPanes: horizontal,
+              axisExtents: widths,
               index: left.length + i,
               before: true,
             ),
@@ -313,7 +317,8 @@ class _PaneScaffoldState extends State<PaneScaffold> {
     BuildContext context,
     PaneSpec pane,
     double available, {
-    required List<double> axisFractions,
+    required List<PaneSpec> axisPanes,
+    required List<double> axisExtents,
     required int index,
     bool before = false,
   }) {
@@ -332,17 +337,17 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         minPaneFraction,
         maxPaneFraction,
       );
-      // Against what the other panes are actually asking for, not what they
-      // would settle for: a ceiling that assumed their floor let this pane
-      // overrun the axis, and the allocation then took the difference out of a
-      // pane the operator never touched.
+      // Measured against what the other panes are rendered at, not what they
+      // asked for. The two part company exactly when the axis is
+      // over-subscribed and the dock is scaling everyone down — and a bound
+      // taken from the requests then sits far from what is on screen, so the
+      // first pixel of drag snaps the layout to it.
       var others = 0.0;
-      for (var i = 0; i < axisFractions.length; i++) {
-        if (i == index) continue;
-        others += math.max(available * axisFractions[i], minPaneExtent);
+      for (var i = 0; i < axisExtents.length; i++) {
+        if (i != index) others += axisExtents[i];
       }
       final room =
-          available - axisFractions.length * dividerThickness - minCentreExtent;
+          available - axisExtents.length * dividerThickness - minCentreExtent;
       final ceiling = math.max(minPaneExtent, room - others);
       final high = (ceiling / available).clamp(
         minPaneFraction,
@@ -354,6 +359,19 @@ class _PaneScaffoldState extends State<PaneScaffold> {
       layout.setFraction(pane.id, high < low ? low : wanted.clamp(low, high));
     }
 
+    // A window that shrank leaves every stored fraction on the axis larger
+    // than what the dock renders, and a drag against those stale numbers moves
+    // panes the operator is not touching. Grabbing a divider is a deliberate
+    // resize of this axis, so it is the moment to adopt what is on screen —
+    // whereas a rotation, which is not a resize gesture, leaves the operator's
+    // proportions alone to come back to.
+    void adoptRenderedExtents() {
+      if (available <= 0) return;
+      for (var i = 0; i < axisPanes.length; i++) {
+        layout.setFraction(axisPanes[i].id, axisExtents[i] / available);
+      }
+    }
+
     return MouseRegion(
       key: paneDividerKey(pane.id),
       cursor: horizontal
@@ -361,6 +379,10 @@ class _PaneScaffoldState extends State<PaneScaffold> {
           : SystemMouseCursors.resizeUpDown,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: horizontal
+            ? (_) => adoptRenderedExtents()
+            : null,
+        onVerticalDragStart: horizontal ? null : (_) => adoptRenderedExtents(),
         onHorizontalDragUpdate: horizontal
             ? (details) => drag(details.delta.dx)
             : null,

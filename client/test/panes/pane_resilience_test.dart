@@ -90,6 +90,46 @@ void main() {
     expect(_widthOf(tester, 'b'), closeTo(bBefore, 0.5));
   });
 
+  // After an axis shrinks, the stored fractions can be ones the dock is already
+  // scaling down. Starting a drag from the stored value rather than the
+  // rendered one made the first pixel of travel jump the layout.
+  testWidgets('the first pixel of a drag moves one pixel of layout', (
+    tester,
+  ) async {
+    final layout = await _layout([
+      _pane('centre', edge: PaneEdge.top, fillsCentre: true),
+      _pane('a', edge: PaneEdge.left),
+      _pane('b', edge: PaneEdge.right),
+    ]);
+    // Fractions an operator can reach on a wide window, carried to a narrow one.
+    layout.setFraction('a', maxPaneFraction);
+    layout.setFraction('b', 0.312);
+    await _pump(tester, layout);
+    final aBefore = _widthOf(tester, 'a');
+    final bBefore = _widthOf(tester, 'b');
+
+    await tester.drag(find.byKey(paneDividerKey('a')), const Offset(1, 0));
+    await tester.pumpAndSettle();
+
+    expect(_widthOf(tester, 'a'), closeTo(aBefore, 2));
+    expect(_widthOf(tester, 'b'), closeTo(bBefore, 2));
+  });
+
+  testWidgets('the divider offers a grab target wider than a hairline', (
+    tester,
+  ) async {
+    final layout = await _layout([
+      _pane('grid', edge: PaneEdge.left, fillsCentre: true),
+      _pane('chat'),
+    ]);
+    await _pump(tester, layout);
+
+    // What sits next to it is the button grid, which fires Companion on
+    // tap-down: a grab that misses presses a cue rather than doing nothing.
+    final grab = tester.getRect(find.byKey(paneDividerKey('chat')));
+    expect(grab.width, greaterThanOrEqualTo(20));
+  });
+
   // The stored fraction must not drift past what the dock will render, or the
   // divider goes dead on the way back.
   testWidgets('a dragged fraction stays one the dock will honour', (

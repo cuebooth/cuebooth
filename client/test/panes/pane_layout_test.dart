@@ -281,6 +281,36 @@ void main() {
       expect(stored, contains('0.5'), reason: "'a' keeps its stored size");
     });
 
+    // save() waits on the read so it cannot write over it — but if nothing had
+    // asked for the read, there was nothing to wait on and the write landed on
+    // top of the stored layout anyway.
+    test('a save before any load does not discard what was stored', () async {
+      SharedPreferences.setMockInitialValues({
+        'pane_layout_v1': '{"pinned":{"a":false},"fractions":{"a":0.55}}',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final layout = PaneLayout(panes: [_pane('a'), _pane('b')], prefs: prefs);
+      addTearDown(layout.dispose);
+
+      layout.togglePin('b'); // no load() first
+      await layout.save();
+
+      expect(prefs.getString('pane_layout_v1'), contains('0.55'));
+    });
+
+    test('a fraction for something that is not a pane is not stored', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final layout = PaneLayout(panes: [_pane('a')], prefs: prefs);
+      addTearDown(layout.dispose);
+      await layout.load();
+
+      layout.setFraction('ghost', 0.4);
+      await layout.save();
+
+      expect(prefs.getString('pane_layout_v1'), isNot(contains('ghost')));
+    });
+
     test('a change made as the layout goes away is still written', () async {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
