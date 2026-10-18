@@ -110,7 +110,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
   // Seeded with sensible defaults; overwritten by any persisted last-good value.
   final _hostCtrl = TextEditingController(text: defaultServerAddress().host);
-  final _portCtrl = TextEditingController(text: '${defaultServerAddress().port}');
+  final _portCtrl = TextEditingController(
+    text: '${defaultServerAddress().port}',
+  );
   String? _portError;
   bool _connecting = false;
   // The address of the in-flight connect attempt, persisted once it succeeds.
@@ -232,9 +234,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
         widget.connection.disconnect();
         if (!mounted) return;
         setState(() => _connecting = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not connect: $err')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not connect: $err')));
       case ServerConnectionState.connecting:
       case ServerConnectionState.reconnecting:
       case ServerConnectionState.disconnected:

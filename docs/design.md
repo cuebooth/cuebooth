@@ -339,6 +339,35 @@ A single app that consolidates:
 
 **Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web (fallback).
 
+**Layout: one pane of glass.** Those things are visible *at the same time*, and that
+is the product rather than an arrangement detail. What CueBooth replaces is an iPad
+running Safari in split view — the stream platform's chat in a third of the screen,
+Companion in the rest, a video overlay floating over both. An operator mid-service
+does not navigate; they look.
+
+So the client is a **dockable pane system**, not a stack of screens. Each pane
+carries a pin, and is either:
+
+- **Pinned** — holding a region of the layout, resized by dragging a divider,
+  present for the whole service. The button grid, a compact meter strip, chat.
+- **Unpinned** — retracted to a tab on its own edge, travelling back over the
+  layout when summoned and away again when dismissed. Detailed per-channel audio
+  strips, video preview.
+
+The split is by **duration of attention, not by size**. Meters stay up all
+service; the channel strips are pulled down for a few seconds to fix something
+during a song and then put away. The pin belongs to the pane rather than to its
+kind — the same pane is pinned on an iPad in landscape and unpinned on a phone,
+which is what lets one layout system cover every target rather than a tablet
+design and a separate phone one. Every pane can be unpinned, the one filling the
+centre included, so the empty layout is a state the operator can reach.
+
+**Where this boundary sits.** Layout is entirely the client's, and per device: a
+booth iPad keeps its arrangement, and the server neither stores nor knows it,
+consistent with the server holding no per-client state at all (*Delivery*, below).
+A feature contributes **a pane, not a route** — that is the seam every later panel
+lands on, and the reason this system precedes them.
+
 **Chat ownership.** The **server** owns chat authorization (see §3.3 *Chat Credential Broker*) and the client owns only rendering. The platform's OAuth offers no PKCE and its token exchange requires a client secret, so an app distributed to operators cannot hold one; the server does the exchange, persists the rotating refresh token, and mints a display URL on demand. The client asks for a URL when it needs one and never sees the long-lived credential — the client secret and the rotating refresh token stay on the server, which also means chat survives indefinitely without re-authorization rather than expiring on the operator. The minted URL itself carries a short-lived bearer credential, so it is fetched on demand and kept out of every state snapshot (protocol.md §11).
 
 What each side deliberately does *not* do: the client does not cache the chat URL (it embeds a token the platform expires), and neither side offers a send or canned-message path. Restream exposes no chat write scope, and the minted embed renders the message list without a compose box — so what CueBooth surfaces is a chat *monitor*. Replying means Restream's own web app, signed in as the operator, which is a session the server does not hold and cannot mint. The server-side provider interface is the seam for adding YouTube or Twitch later without the client learning a second auth model. See [`protocol.md`](protocol.md) §11.

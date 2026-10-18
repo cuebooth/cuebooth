@@ -20,7 +20,9 @@ CueBooth was started to replace the manual A/V workflow for a hybrid in-person a
 
 **Phase 1 — the Companion control surface — works.** The server registers with Bitfocus Companion as a Satellite surface, streams the rendered button grid to the Flutter client over a WebSocket, and routes presses back. Companion's own page navigation comes with it, so a surface that links to other surfaces behaves as it does on hardware. The server also carries the web client and serves it at `/`, so a browser on any machine on the network is a working client with nothing installed.
 
-It also surfaces the stream's chat. That renders inside the app on iPad, iPhone, Android and macOS; on Windows, Linux and Web it opens in the system browser instead, because Flutter endorses no webview implementation for those platforms.
+It also surfaces the stream's chat. That renders inside the app on iPad, iPhone, Android and macOS; on Windows, Linux and Web it opens in the system browser instead, because Flutter endorses no webview implementation for those platforms. Chat is read-only: the platform exposes no way to send, so replying still means the platform's own app.
+
+The client arranges what it shows as panes rather than as separate screens. Each is either pinned — holding a region of the layout, resized by dragging its divider — or unpinned, waiting behind a tab on its edge and travelling back over the layout when summoned. Every pane can be unpinned, so the operator chooses what stays in view for the whole event. The arrangement is kept per device.
 
 CI exercises the Satellite integration against real Companion releases. None of it has yet been run against a full production rig.
 

@@ -119,47 +119,74 @@ class _StatusControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Row(
+    final labels = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        Text(
+          title,
+          style: Theme.of(context).textTheme.labelMedium,
+          overflow: TextOverflow.ellipsis,
+          softWrap: false,
+        ),
+        Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(title, style: Theme.of(context).textTheme.labelMedium),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  active ? Icons.circle : Icons.circle_outlined,
-                  size: 12,
-                  color: active ? scheme.error : scheme.outline,
+            Icon(
+              active ? Icons.circle : Icons.circle_outlined,
+              size: 12,
+              color: active ? scheme.error : scheme.outline,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                active ? activeLabel : inactiveLabel,
+                style: TextStyle(
+                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
+                  color: active ? scheme.error : null,
                 ),
-                const SizedBox(width: 6),
-                Text(
-                  active ? activeLabel : inactiveLabel,
-                  style: TextStyle(
-                    fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                    color: active ? scheme.error : null,
-                  ),
-                ),
-              ],
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+              ),
             ),
           ],
         ),
-        const SizedBox(width: 12),
-        active
-            ? FilledButton.icon(
-                onPressed: onPressed,
-                icon: Icon(icon),
-                label: Text(buttonLabel),
-              )
-            : OutlinedButton.icon(
-                onPressed: onPressed,
-                icon: Icon(icon),
-                label: Text(buttonLabel),
-              ),
       ],
+    );
+    final button = active
+        ? FilledButton.icon(
+            onPressed: onPressed,
+            icon: Icon(icon),
+            label: Text(buttonLabel),
+          )
+        : OutlinedButton.icon(
+            onPressed: onPressed,
+            icon: Icon(icon),
+            label: Text(buttonLabel),
+          );
+
+    // This sits in a pane now, not across the window. Side by side the control
+    // cannot shrink below its labels plus its button, and what gets clipped off
+    // the end is the button that starts the broadcast — clipped meaning outside
+    // the hit test, not merely hard to read.
+    return LayoutBuilder(
+      builder: (context, constraints) => constraints.maxWidth >= 240
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // The button keeps its full width; it is the label that gives,
+                // because a truncated word still reads and a truncated control
+                // cannot be pressed.
+                Flexible(child: labels),
+                const SizedBox(width: 12),
+                button,
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [labels, const SizedBox(height: 8), button],
+            ),
     );
   }
 }
