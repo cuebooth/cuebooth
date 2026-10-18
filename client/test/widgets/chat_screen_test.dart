@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:cuebooth_client/screens/chat_frame.dart';
 import 'package:cuebooth_client/screens/chat_screen.dart';
 import 'package:cuebooth_client/services/chat_service.dart';
 import 'package:cuebooth_client/services/session.dart';
@@ -49,7 +50,7 @@ void main() {
     WidgetTester tester, {
     required Session session,
     required ChatService chat,
-    bool useWebview = false,
+    ChatEmbed embed = ChatEmbed.browser,
     List<Uri>? launched,
   }) async {
     await tester.pumpWidget(
@@ -60,7 +61,7 @@ void main() {
           body: ChatScreen(
             session: session,
             chat: chat,
-            useWebview: useWebview,
+            embed: embed,
             launch: (uri) async {
               launched?.add(uri);
               return true;
@@ -470,7 +471,7 @@ void main() {
           body: ChatScreen(
             session: session,
             chat: serviceReturning(() => http.Response('{}', 409)),
-            useWebview: false,
+            embed: ChatEmbed.browser,
             launch: (_) async => throw Exception('no browser available'),
           ),
         ),
@@ -807,5 +808,117 @@ void main() {
 
     expect(find.text('Connect restream'), findsNothing);
     expect(find.text('Open chat in your browser'), findsOneWidget);
+  });
+
+  group('chatEmbedFor', () {
+    // A browser reports the device it runs on, so the iPad's Safari arrives
+    // here as iOS — where a native build would take the webview the web client
+    // does not have.
+    test('web frames chat whatever device the browser reports', () {
+      for (final platform in TargetPlatform.values) {
+        expect(
+          chatEmbedFor(isWeb: true, platform: platform),
+          ChatEmbed.frame,
+          reason: '$platform',
+        );
+      }
+    });
+
+    test('native builds use the webview where one exists', () {
+      expect(
+        chatEmbedFor(isWeb: false, platform: TargetPlatform.iOS),
+        ChatEmbed.webview,
+      );
+      expect(
+        chatEmbedFor(isWeb: false, platform: TargetPlatform.android),
+        ChatEmbed.webview,
+      );
+      expect(
+        chatEmbedFor(isWeb: false, platform: TargetPlatform.macOS),
+        ChatEmbed.webview,
+      );
+    });
+
+    test('Windows and Linux still open chat in the browser', () {
+      expect(
+        chatEmbedFor(isWeb: false, platform: TargetPlatform.windows),
+        ChatEmbed.browser,
+      );
+      expect(
+        chatEmbedFor(isWeb: false, platform: TargetPlatform.linux),
+        ChatEmbed.browser,
+      );
+    });
+  });
+
+  group('framed chat', () {
+    /// A ready session whose server mints `token=1`, `token=2`, ... in turn.
+    Future<(Session, ChatService, int Function())> framedChat(
+      WidgetTester tester,
+    ) async {
+      final session = await sessionWithChat(tester, {
+        'provider': 'restream',
+        'status': 'ready',
+      });
+      var mints = 0;
+      final chat = ChatService(
+        serverBase: base,
+        client: MockClient((_) async {
+          mints++;
+          return http.Response(
+            jsonEncode({'url': 'https://chat.restream.io/embed?token=$mints'}),
+            200,
+          );
+        }),
+      );
+      await pumpChat(
+        tester,
+        session: session,
+        chat: chat,
+        embed: ChatEmbed.frame,
+      );
+      return (session, chat, () => mints);
+    }
+
+    String framedUrl(WidgetTester tester) =>
+        tester.widget<ChatFrame>(find.byType(ChatFrame)).url;
+
+    testWidgets('shows the minted URL in the panel', (tester) async {
+      await framedChat(tester);
+
+      expect(framedUrl(tester), 'https://chat.restream.io/embed?token=1');
+      expect(find.text('Open chat in your browser'), findsNothing);
+    });
+
+    // The frame loads its URL once, so a reload that kept the old frame would
+    // re-mint — rotating the token — and go on showing the old page.
+    testWidgets('reload re-mints into a new frame', (tester) async {
+      final (_, _, mints) = await framedChat(tester);
+      final before = tester.element(find.byType(ChatFrameView));
+
+      await tester.tap(find.byTooltip('Reload chat'));
+      await tester.pumpAndSettle();
+
+      expect(mints(), 2);
+      expect(framedUrl(tester), 'https://chat.restream.io/embed?token=2');
+      expect(tester.element(find.byType(ChatFrameView)), isNot(same(before)));
+    });
+
+    // A new element is a new iframe, which reloads chat mid-service.
+    testWidgets('a rebuild keeps the same frame', (tester) async {
+      final (session, chat, mints) = await framedChat(tester);
+      final before = tester.element(find.byType(ChatFrameView));
+
+      // A fresh ChatScreen widget in the same place, as a parent rebuild gives.
+      await pumpChat(
+        tester,
+        session: session,
+        chat: chat,
+        embed: ChatEmbed.frame,
+      );
+
+      expect(mints(), 1);
+      expect(tester.element(find.byType(ChatFrameView)), same(before));
+    });
   });
 }

@@ -3,10 +3,12 @@ import 'dart:async';
 import 'package:cuebooth_client/panes/pane.dart';
 import 'package:cuebooth_client/panes/pane_layout.dart';
 import 'package:cuebooth_client/panes/pane_scaffold.dart';
+import 'package:cuebooth_client/screens/chat_frame.dart';
 import 'package:cuebooth_client/screens/chat_screen.dart';
 import 'package:cuebooth_client/screens/home_screen.dart';
 import 'package:cuebooth_client/services/chat_service.dart';
 import 'package:cuebooth_client/services/session.dart';
+import 'package:cuebooth_client/widgets/pointer_shield.dart';
 import 'package:cuebooth_client/widgets/surface_grid.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,7 +52,7 @@ ChatService _chat(String body, int status) => ChatService(
   client: MockClient((_) async => http.Response(body, status)),
 );
 
-Future<void> _pumpChatPane(
+Future<PaneLayout> _pumpChatPane(
   WidgetTester tester, {
   required Size window,
   required double fraction,
@@ -59,6 +61,7 @@ Future<void> _pumpChatPane(
   // exercise chat at sizes no target actually reaches, and the button grid has
   // its own floor well above them.
   bool realCentre = true,
+  ChatEmbed embed = ChatEmbed.browser,
 }) async {
   tester.view.physicalSize = window;
   tester.view.devicePixelRatio = 1.0;
@@ -95,7 +98,7 @@ Future<void> _pumpChatPane(
         builder: (_) => ChatScreen(
           session: session,
           chat: chat,
-          useWebview: false,
+          embed: embed,
           launch: (_) async => true,
         ),
       ),
@@ -109,6 +112,20 @@ Future<void> _pumpChatPane(
     MaterialApp(home: Scaffold(body: PaneScaffold(layout: layout))),
   );
   await tester.pumpAndSettle();
+  return layout;
+}
+
+/// Expects the framed chat to span the pane below its controls, with nothing
+/// overflowing.
+void _expectFrameFillsPane(WidgetTester tester) {
+  expect(tester.takeException(), isNull);
+  final pane = tester.getRect(find.byKey(paneKey('chat')));
+  final frame = tester.getRect(find.byType(ChatFrame));
+  expect(frame.left, moreOrLessEquals(pane.left));
+  expect(frame.right, moreOrLessEquals(pane.right));
+  expect(frame.bottom, moreOrLessEquals(pane.bottom));
+  expect(frame.top, greaterThanOrEqualTo(pane.top - 0.001));
+  expect(frame.height, greaterThan(0));
 }
 
 void main() {
@@ -303,5 +320,89 @@ void main() {
     expect(rect.bottom, lessThanOrEqualTo(pane.bottom + 0.001));
     expect(rect.right, lessThanOrEqualTo(pane.right + 0.001));
     await tester.tap(connect.first);
+  });
+
+  // On web chat itself is the body, not a button, so it has to fill whatever
+  // the pane is — including the sizes the reload control gives way at.
+  for (final (window, fraction, label) in const [
+    (Size(800, 600), defaultPaneFraction, 'the default arrangement'),
+    (Size(800, 600), minPaneFraction, 'its minimum'),
+    (Size(800, 600), maxPaneFraction, 'its maximum'),
+    (Size(390, 844), defaultPaneFraction, 'a phone'),
+    (Size(1280, 400), defaultPaneFraction, 'a short window'),
+    (Size(1280, 70), defaultPaneFraction, 'a very short window'),
+  ]) {
+    testWidgets('framed chat fills the pane at $label', (tester) async {
+      await _pumpChatPane(
+        tester,
+        window: window,
+        fraction: fraction,
+        ready: true,
+        realCentre: window.height >= 300,
+        embed: ChatEmbed.frame,
+      );
+      _expectFrameFillsPane(tester);
+    });
+  }
+
+  // Summoned over the dock, a pane can cover a pinned chat frame; without the
+  // shield the browser hands the frame the taps meant for the pane.
+  testWidgets('a summoned pane is shielded from the frame beneath it', (
+    tester,
+  ) async {
+    final layout = await _pumpChatPane(
+      tester,
+      window: const Size(800, 600),
+      fraction: defaultPaneFraction,
+      ready: true,
+      realCentre: false,
+      embed: ChatEmbed.frame,
+    );
+    layout.togglePin('grid');
+    layout.toggleSummoned('grid');
+    await tester.pumpAndSettle();
+
+    expect(
+      find.ancestor(
+        of: find.byKey(paneKey('grid')),
+        matching: find.byType(PointerShield),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('framed chat fills the pane when summoned', (tester) async {
+    final layout = await _pumpChatPane(
+      tester,
+      window: const Size(800, 600),
+      fraction: defaultPaneFraction,
+      ready: true,
+      embed: ChatEmbed.frame,
+    );
+    layout.togglePin('chat');
+    layout.toggleSummoned('chat');
+    await tester.pumpAndSettle();
+
+    _expectFrameFillsPane(tester);
+  });
+
+  // Dragging the divider rebuilds the pane at every step. A new frame element
+  // is a new iframe, which would reload chat — and re-mint it — mid-drag.
+  testWidgets('resizing the pane keeps the same frame', (tester) async {
+    final layout = await _pumpChatPane(
+      tester,
+      window: const Size(800, 600),
+      fraction: defaultPaneFraction,
+      ready: true,
+      embed: ChatEmbed.frame,
+    );
+    final before = tester.element(find.byType(ChatFrameView));
+
+    for (final fraction in const [minPaneFraction, maxPaneFraction, 0.4]) {
+      layout.setFraction('chat', fraction);
+      await tester.pumpAndSettle();
+      _expectFrameFillsPane(tester);
+      expect(tester.element(find.byType(ChatFrameView)), same(before));
+    }
   });
 }

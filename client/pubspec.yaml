@@ -45,10 +45,14 @@ dependencies:
   shared_preferences: ^2.3.0
 
   # Renders the stream chat in-app (CB-017). Supports Android, iOS, and macOS
-  # only — Windows, Linux, and web open chat in the system browser instead
-  # (CB-093), which costs nothing because the server hands out an already
-  # authenticated URL.
+  # only — web frames chat instead, and Windows and Linux open it in the system
+  # browser (CB-093), which costs nothing because the server hands out an
+  # already authenticated URL.
   webview_flutter: ^4.14.1
+
+  # Configures the iframe that renders chat on web. Already in the tree through
+  # Flutter's web plugins; named here because the client imports it.
+  web: ^1.1.0
 
   # Opens the chat URL and the authorization flow in the system browser.
   url_launcher: ^6.3.0

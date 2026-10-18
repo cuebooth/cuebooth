@@ -7,24 +7,38 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../services/chat_service.dart';
 import '../services/session.dart';
+import 'chat_frame.dart';
 
-/// Whether an in-app webview can render chat on this platform.
+/// How a ready chat panel shows chat.
+enum ChatEmbed {
+  /// An in-app webview.
+  webview,
+
+  /// An iframe in the page.
+  frame,
+
+  /// A button that opens chat in the system browser.
+  browser,
+}
+
+/// How chat renders on [platform], or in a browser page when [isWeb].
 ///
 /// `webview_flutter` ships Android, iOS, and macOS implementations only — the
-/// Apple one covers both because WKWebView is the same framework on each.
-/// Elsewhere chat opens in the system browser, which costs the operator nothing
+/// Apple one covers both because WKWebView is the same framework on each. The
+/// web client frames the embed instead, which the provider permits. Windows and
+/// Linux open chat in the system browser, which costs the operator nothing
 /// because the server hands out an already-authenticated URL (CB-093).
-bool get webviewSupported {
-  if (kIsWeb) return false;
-  switch (defaultTargetPlatform) {
+ChatEmbed chatEmbedFor({required bool isWeb, required TargetPlatform platform}) {
+  if (isWeb) return ChatEmbed.frame;
+  switch (platform) {
     case TargetPlatform.android:
     case TargetPlatform.iOS:
     case TargetPlatform.macOS:
-      return true;
+      return ChatEmbed.webview;
     case TargetPlatform.windows:
     case TargetPlatform.linux:
     case TargetPlatform.fuchsia:
-      return false;
+      return ChatEmbed.browser;
   }
 }
 
@@ -92,15 +106,15 @@ class ChatScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.chat,
-    @visibleForTesting this.useWebview,
+    @visibleForTesting this.embed,
     @visibleForTesting this.launch,
   });
 
   final Session session;
   final ChatService chat;
 
-  /// Overrides platform detection so both branches are testable off-device.
-  final bool? useWebview;
+  /// Overrides platform detection so every branch is testable off-device.
+  final ChatEmbed? embed;
 
   /// Overrides how external URLs are opened, for tests.
   final Future<bool> Function(Uri)? launch;
@@ -115,7 +129,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _wasReady = false;
   bool _reloadWhenIdle = false;
 
-  bool get _useWebview => widget.useWebview ?? webviewSupported;
+  ChatEmbed get _embed =>
+      widget.embed ??
+      chatEmbedFor(isWeb: kIsWeb, platform: defaultTargetPlatform);
 
   @override
   void initState() {
@@ -254,7 +270,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final held = _result;
     if (held != null && held.isReady) {
       final url = held.url!;
-      return _useWebview ? _ChatWebview(url: url) : _openInBrowser(url);
+      return switch (_embed) {
+        ChatEmbed.webview => _ChatWebview(url: url),
+        ChatEmbed.frame => ChatFrame(url: url),
+        ChatEmbed.browser => _openInBrowser(url),
+      };
     }
 
     if (state.chatNeedsAuth) {

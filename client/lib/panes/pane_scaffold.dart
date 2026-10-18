@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 
+import '../widgets/pointer_shield.dart';
 import 'pane.dart';
 import 'pane_layout.dart';
 
@@ -484,9 +485,12 @@ class _PaneScaffoldState extends State<PaneScaffold> {
         edge: pane.edge,
         visible: visible,
         onRetired: () => _retired(pane.id),
-        child: Material(
-          elevation: 8,
-          child: _PaneFrame(layout: widget.layout, pane: pane),
+        // A summoned pane can cover a pinned one showing chat in an iframe.
+        child: PointerShield(
+          child: Material(
+            elevation: 8,
+            child: _PaneFrame(layout: widget.layout, pane: pane),
+          ),
         ),
       ),
     );

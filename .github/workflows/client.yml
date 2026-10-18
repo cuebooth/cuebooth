@@ -41,3 +41,7 @@ jobs:
         run: flutter analyze
       - name: flutter test
         run: flutter test
+      # Code that touches the DOM only compiles for web; the runner's Chrome
+      # runs it.
+      - name: flutter test (browser)
+        run: flutter test --platform chrome test/web
