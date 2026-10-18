@@ -337,7 +337,14 @@ A single app that consolidates:
 - Stream status (live/offline, viewer count, recording status).
 - Quick-access channel profiles (EQ presets per mic).
 
-**Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web (fallback).
+**Platform targets:** iPad (primary), iPhone, Android, Windows, macOS, Linux, Web.
+
+**The iPad is reached through the web client.** The server already carries and serves
+it (*Delivery*, below), so the operator's primary device needs no developer account, no
+store review and no install step, and every server update is a client update. A native
+iOS build stays a target but is deferred at least until the client is feature complete,
+and may turn out unnecessary. Client features are therefore built and judged on web
+first: something that works only in a native build is a gap to close, not the norm.
 
 **Layout: one pane of glass.** Those things are visible *at the same time*, and that
 is the product rather than an arrangement detail. What CueBooth replaces is an iPad
@@ -444,11 +451,11 @@ The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 
 ## 5. Implementation Phases
 
-### Phase 0: Foundation & Documentation (This Session)
+### Phase 0: Foundation & Documentation
 - [x] Document current system and manual procedures.
 - [x] Finalize architecture design (this document).
-- [ ] Create GitHub repo and project board.
-- [ ] Set up initial project structure (Go server, Flutter client, C# sidecar).
+- [x] Create GitHub repo and project board.
+- [x] Set up initial project structure (Go server, Flutter client, C# sidecar).
 
 ### Phase 1: Server Core + Companion Integration
 **Goal:** Prove out the server architecture by wrapping Companion's HTTP API. Get the Flutter client talking to the server and controlling things through Companion.
@@ -543,6 +550,8 @@ The server binds to `0.0.0.0` (or a configurable interface). For remote access:
 ## 6. Story Breakdown (GitHub Issues)
 
 Below is a suggested set of GitHub issues organized by phase. Each is scoped to be independently completable. Labels: `server`, `client`, `sidecar`, `docs`, `infra`.
+
+This is the original breakdown. The issue tracker is the live list: work filed since — CB-088 onward, including the pane layout and the chat follow-ups — is there and not repeated here.
 
 ### Phase 0 — Foundation
 - **CB-001** `docs` — Write operational runbook for manual worship service operation
