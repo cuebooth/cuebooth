@@ -33,7 +33,7 @@ void main() {
   }
 
   bool interactive(WidgetTester tester) =>
-      tester.widget<ChatFrameView>(find.byType(ChatFrameView)).interactive;
+      tester.widget<ChatFrameView>(find.byType(ChatFrameView)).interactive.value;
 
   // A re-minted URL carries a new token; a frame kept across it would go on
   // showing the page the old one loaded.
@@ -86,7 +86,7 @@ void main() {
     final drag = await tester.startGesture(
       tester.getCenter(find.byKey(const Key('beside'))),
     );
-    await tester.pump();
+    // Before any frame: the drag's first move can reach the frame that soon.
     expect(interactive(tester), isFalse);
 
     await drag.moveTo(tester.getCenter(find.byType(ChatFrame)));

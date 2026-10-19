@@ -31,6 +31,12 @@ class ChatFrame extends StatefulWidget {
 class _ChatFrameState extends State<ChatFrame> {
   /// Devices with a press down on Flutter content.
   final Set<int> _pressed = {};
+  bool _routeIsCurrent = true;
+
+  /// Changed as the pointer events arrive rather than on the next frame: the
+  /// divider sits against the frame, so a drag's first move can reach it
+  /// before a rebuild would.
+  final ValueNotifier<bool> _interactive = ValueNotifier(true);
 
   @override
   void initState() {
@@ -39,8 +45,16 @@ class _ChatFrameState extends State<ChatFrame> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _routeIsCurrent = ModalRoute.isCurrentOf(context) ?? true;
+    _update();
+  }
+
+  @override
   void dispose() {
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_onPointer);
+    _interactive.dispose();
     super.dispose();
   }
 
@@ -48,19 +62,23 @@ class _ChatFrameState extends State<ChatFrame> {
     // By device rather than pointer, which is new for every press: a release
     // that never arrived would otherwise leave the frame dead for good, where
     // the device's next press and release clear it.
-    final changed = switch (event) {
-      PointerDownEvent() => _pressed.add(event.device),
-      PointerUpEvent() || PointerCancelEvent() || PointerRemovedEvent() =>
-        _pressed.remove(event.device),
-      _ => false,
-    };
-    if (changed && mounted) setState(() {});
+    switch (event) {
+      case PointerDownEvent():
+        _pressed.add(event.device);
+      case PointerUpEvent() || PointerCancelEvent() || PointerRemovedEvent():
+        _pressed.remove(event.device);
+      default:
+        return;
+    }
+    _update();
   }
+
+  void _update() => _interactive.value = _pressed.isEmpty && _routeIsCurrent;
 
   @override
   Widget build(BuildContext context) => ChatFrameView(
     key: ValueKey(widget.url),
     url: widget.url,
-    interactive: _pressed.isEmpty && (ModalRoute.isCurrentOf(context) ?? true),
+    interactive: _interactive,
   );
 }

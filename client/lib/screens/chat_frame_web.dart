@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:web/web.dart' as web;
 
@@ -16,36 +17,42 @@ class ChatFrameView extends StatefulWidget {
   final String url;
 
   /// Whether the frame takes pointer events.
-  final bool interactive;
+  final ValueListenable<bool> interactive;
 
   @override
   State<ChatFrameView> createState() => _ChatFrameViewState();
 }
 
 class _ChatFrameViewState extends State<ChatFrameView> {
-  web.HTMLIFrameElement? _frame;
+  VoidCallback? _unbind;
 
   @override
-  void didUpdateWidget(ChatFrameView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (_frame case final frame?) {
-      setChatFrameInteractive(frame, widget.interactive);
-    }
+  void dispose() {
+    _unbind?.call();
+    super.dispose();
   }
 
+  // The element is created once per state, so a new URL or notifier needs a
+  // new view; ChatFrame keys it by URL and keeps one notifier for its life.
   @override
   Widget build(BuildContext context) => HtmlElementView.fromTagName(
     tagName: 'iframe',
-    onElementCreated: (element) {
-      final frame = _frame = element as web.HTMLIFrameElement;
-      configureChatFrame(frame, widget.url);
-      setChatFrameInteractive(frame, widget.interactive);
-    },
+    onElementCreated: (element) => _unbind = bindChatFrame(
+      element as web.HTMLIFrameElement,
+      widget.url,
+      widget.interactive,
+    ),
   );
 }
 
-/// Prepares [frame] to show chat from [url], before it joins the page.
-void configureChatFrame(web.HTMLIFrameElement frame, String url) {
+/// Prepares [frame] to show chat from [url] before it joins the page, and
+/// keeps whether it takes pointer events in step with [interactive] until the
+/// returned callback is called.
+VoidCallback bindChatFrame(
+  web.HTMLIFrameElement frame,
+  String url,
+  ValueListenable<bool> interactive,
+) {
   // Sandbox flags are fixed when a navigation starts, so they go on first.
   frame.setAttribute('sandbox', chatFrameSandbox);
   frame.style
@@ -53,8 +60,10 @@ void configureChatFrame(web.HTMLIFrameElement frame, String url) {
     ..width = '100%'
     ..height = '100%';
   frame.src = url;
-}
 
-void setChatFrameInteractive(web.HTMLIFrameElement frame, bool interactive) {
-  frame.style.pointerEvents = interactive ? 'auto' : 'none';
+  void apply() =>
+      frame.style.pointerEvents = interactive.value ? 'auto' : 'none';
+  apply();
+  interactive.addListener(apply);
+  return () => interactive.removeListener(apply);
 }

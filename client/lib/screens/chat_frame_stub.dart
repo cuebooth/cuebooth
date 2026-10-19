@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 /// Off the web there is no DOM to put an iframe in, and `HtmlElementView`
@@ -8,7 +9,7 @@ class ChatFrameView extends StatelessWidget {
   final String url;
 
   /// Whether the frame takes pointer events.
-  final bool interactive;
+  final ValueListenable<bool> interactive;
 
   @override
   Widget build(BuildContext context) => const SizedBox.expand();
